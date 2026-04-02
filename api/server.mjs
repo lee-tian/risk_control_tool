@@ -1951,27 +1951,97 @@ async function fetchLatestOfficialVixDailyClose() {
   };
 }
 
-async function fetchFearGreedIndex() {
+function getSetCookieValues(headers) {
+  if (!headers) {
+    return [];
+  }
+
+  if (typeof headers.getSetCookie === 'function') {
+    return headers.getSetCookie();
+  }
+
+  const singleHeader = headers.get?.('set-cookie');
+  if (typeof singleHeader !== 'string' || singleHeader.trim() === '') {
+    return [];
+  }
+
+  return singleHeader
+    .split(/,(?=[^;,=\s]+=[^;,]+)/u)
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+export function buildCookieHeaderFromSetCookie(setCookieValues) {
+  if (!Array.isArray(setCookieValues) || setCookieValues.length === 0) {
+    return '';
+  }
+
+  return setCookieValues
+    .map((value) => (typeof value === 'string' ? value.split(';', 1)[0].trim() : ''))
+    .filter(Boolean)
+    .join('; ');
+}
+
+async function fetchFearGreedGraphData(init = {}) {
   const response = await fetchWithTimeout('https://production.dataviz.cnn.io/index/fearandgreed/graphdata', {
+    ...init,
     headers: {
       Accept: 'application/json, text/plain, */*',
       'Accept-Language': 'en-US,en;q=0.9',
       Origin: 'https://www.cnn.com',
       Referer: 'https://www.cnn.com/',
       'User-Agent':
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      ...(init.headers ?? {})
     }
   });
-  const data = await readJsonFromResponse(response, 'Failed to fetch TwelveData price');
+  const data = await readJsonFromResponse(response, 'Failed to fetch CNN Fear & Greed Index');
 
   if (!response.ok || !data?.fear_and_greed || typeof data.fear_and_greed.score !== 'number') {
     throw new Error('Failed to fetch CNN Fear & Greed Index');
   }
 
-  return {
-    score: data.fear_and_greed.score,
-    rating: typeof data.fear_and_greed.rating === 'string' ? data.fear_and_greed.rating : ''
-  };
+  return data;
+}
+
+async function fetchFearGreedIndex() {
+  try {
+    const pageResponse = await fetchWithTimeout('https://www.cnn.com/markets/fear-and-greed', {
+      headers: {
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cache-Control': 'no-cache',
+        Pragma: 'no-cache',
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+      }
+    });
+    const cookieHeader = buildCookieHeaderFromSetCookie(getSetCookieValues(pageResponse.headers));
+    const data = await fetchFearGreedGraphData(
+      cookieHeader
+        ? {
+            headers: {
+              Cookie: cookieHeader
+            }
+          }
+        : {}
+    );
+
+    return {
+      score: data.fear_and_greed.score,
+      rating: typeof data.fear_and_greed.rating === 'string' ? data.fear_and_greed.rating : ''
+    };
+  } catch (sessionError) {
+    const data = await fetchFearGreedGraphData();
+    const sessionMessage =
+      sessionError instanceof Error ? sessionError.message : 'Failed to fetch CNN Fear & Greed Index';
+
+    return {
+      score: data.fear_and_greed.score,
+      rating: typeof data.fear_and_greed.rating === 'string' ? data.fear_and_greed.rating : '',
+      sessionMessage
+    };
+  }
 }
 
 async function fetchQuote(requestItem) {
