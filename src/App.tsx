@@ -1265,6 +1265,7 @@ function App() {
   } | null>(null);
   const [closePreview, setClosePreview] = useState<{
     row: PutRiskRow;
+    contractsToClose: string;
     buybackPremiumPerShare: string;
     closedAt: string;
     reflectionNotes: string;
@@ -2553,6 +2554,7 @@ function App() {
   function handleOpenClosePut(row: PutRiskRow) {
     setClosePreview({
       row,
+      contractsToClose: row.contracts.toString(),
       buybackPremiumPerShare:
         row.option_market_price_per_share != null ? row.option_market_price_per_share.toString() : row.premium_per_share.toString(),
       closedAt: getTodayDateInput(),
@@ -2828,7 +2830,12 @@ function App() {
       return;
     }
 
+    const contractsToClose = Number(closePreview.contractsToClose);
     const buybackPremiumPerShare = Number(closePreview.buybackPremiumPerShare);
+    if (!Number.isFinite(contractsToClose) || contractsToClose <= 0 || contractsToClose > closePreview.row.contracts) {
+      setImportExportMessage(`平仓张数请输入 1 到 ${closePreview.row.contracts} 之间的有效数字`);
+      return;
+    }
     if (!Number.isFinite(buybackPremiumPerShare) || buybackPremiumPerShare < 0) {
       setImportExportMessage('买回权利金请输入有效数字');
       return;
@@ -2841,24 +2848,29 @@ function App() {
       buybackPremiumPerShare,
       closePreview.closedAt,
       closePreview.reflectionNotes,
-      generateId
+      generateId,
+      contractsToClose
     );
-
-    const nextDeletedPositionIds = [...deletedPositionIds.filter((item) => item !== closePreview.row.id), closePreview.row.id].sort();
     saveClosedTrades(closeResult.nextClosedTrades);
     savePuts(closeResult.nextPuts);
-    saveDeletedPositionIds(nextDeletedPositionIds);
     setClosedTrades(closeResult.nextClosedTrades);
     setPuts(closeResult.nextPuts);
-    setDeletedPositionIds(nextDeletedPositionIds);
-    if (editingPutId === closePreview.row.id) {
+
+    const isFullyClosed = contractsToClose >= closePreview.row.contracts;
+    if (isFullyClosed) {
+      const nextDeletedPositionIds = [...deletedPositionIds.filter((item) => item !== closePreview.row.id), closePreview.row.id].sort();
+      saveDeletedPositionIds(nextDeletedPositionIds);
+      setDeletedPositionIds(nextDeletedPositionIds);
+    }
+
+    if (editingPutId === closePreview.row.id && isFullyClosed) {
       setEditingPutId(null);
       setPutForm(createEmptyPut());
       setPutErrors({});
     }
     setImportExportMessage(
-      `已平仓 ${closePreview.row.ticker}，实现盈亏 ${formatCurrency(
-        (closePreview.row.premium_per_share - buybackPremiumPerShare) * closePreview.row.contracts * 100
+      `已平仓 ${closePreview.row.ticker} ${contractsToClose} 张，已实现盈亏 ${formatCurrency(
+        (closePreview.row.premium_per_share - buybackPremiumPerShare) * contractsToClose * 100
       )}`
     );
     setClosePreview(null);
@@ -5352,6 +5364,19 @@ function App() {
               <h3 id="close-position-title">{closePreview.row.ticker} 平仓记录</h3>
               <div className="form-grid compact">
                 <label>
+                  <span>Close contracts</span>
+                  <input
+                    type="number"
+                    step="1"
+                    min="1"
+                    max={closePreview.row.contracts}
+                    value={closePreview.contractsToClose}
+                    onChange={(event) =>
+                      setClosePreview((current) => (current ? { ...current, contractsToClose: event.target.value } : current))
+                    }
+                  />
+                </label>
+                <label>
                   <span>Buyback premium / share</span>
                   <input
                     type="number"
@@ -5384,7 +5409,8 @@ function App() {
                 </label>
               </div>
               <div className="scenario-caption">
-                这笔单将记录为历史交易：卖出 {formatCurrency(closePreview.row.premium_per_share)}/share，当前买回
+                这次将平仓 {closePreview.contractsToClose || '0'} / {closePreview.row.contracts} 张：
+                卖出 {formatCurrency(closePreview.row.premium_per_share)}/share，当前买回
                 {' '}
                 {formatCurrency(Number(closePreview.buybackPremiumPerShare || 0))}/share。
               </div>

@@ -167,7 +167,8 @@ export function createClosedTradeFromPosition(
   closedAt: string,
   reflectionNotes: string,
   closeReason: ClosedPutTrade['close_reason'],
-  generateIdFn: () => string
+  generateIdFn: () => string,
+  contractsToClose = position.contracts
 ): ClosedPutTrade {
   return {
     id: generateIdFn(),
@@ -177,12 +178,12 @@ export function createClosedTradeFromPosition(
     put_strike: position.put_strike,
     premium_sold_per_share: position.premium_per_share,
     premium_bought_back_per_share: buybackPremiumPerShare,
-    contracts: position.contracts,
+    contracts: contractsToClose,
     date_sold: position.date_sold,
     expiration_date: position.expiration_date,
     closed_at: closedAt,
     close_reason: closeReason,
-    realized_pnl: (position.premium_per_share - buybackPremiumPerShare) * position.contracts * 100,
+    realized_pnl: (position.premium_per_share - buybackPremiumPerShare) * contractsToClose * 100,
     reflection_notes: reflectionNotes.trim()
   };
 }
@@ -194,10 +195,24 @@ export function closeOpenPosition(
   buybackPremiumPerShare: number,
   closedAt: string,
   reflectionNotes: string,
-  generateIdFn: () => string
+  generateIdFn: () => string,
+  contractsToClose = position.contracts
 ): { nextPuts: PutPosition[]; nextClosedTrades: ClosedPutTrade[] } {
+  const normalizedContractsToClose = Math.max(1, Math.min(position.contracts, Math.floor(contractsToClose)));
+  const remainingContracts = position.contracts - normalizedContractsToClose;
+
   return {
-    nextPuts: puts.filter((item) => item.id !== position.id),
+    nextPuts:
+      remainingContracts <= 0
+        ? puts.filter((item) => item.id !== position.id)
+        : puts.map((item) =>
+            item.id === position.id
+              ? {
+                  ...item,
+                  contracts: remainingContracts
+                }
+              : item
+          ),
     nextClosedTrades: [
       createClosedTradeFromPosition(
         position,
@@ -205,7 +220,8 @@ export function closeOpenPosition(
         closedAt,
         reflectionNotes,
         'manual',
-        generateIdFn
+        generateIdFn,
+        normalizedContractsToClose
       ),
       ...closedTrades
     ]

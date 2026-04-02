@@ -329,6 +329,39 @@ describe('closeOpenPosition', () => {
       existingHistory[0]
     ]);
   });
+
+  it('supports partially closing a multi-contract position', () => {
+    const multiContractPut: PutPosition = {
+      ...basePut,
+      contracts: 3
+    };
+
+    const result = closeOpenPosition(
+      [multiContractPut],
+      [],
+      multiContractPut,
+      1.1,
+      '2026-04-01',
+      'partial close',
+      () => 'partial-trade',
+      1
+    );
+
+    expect(result.nextPuts).toEqual([
+      expect.objectContaining({
+        id: 'put-1',
+        contracts: 2
+      })
+    ]);
+    expect(result.nextClosedTrades).toEqual([
+      expect.objectContaining({
+        id: 'partial-trade',
+        position_id: 'put-1',
+        contracts: 1,
+        realized_pnl: (multiContractPut.premium_per_share - 1.1) * 100
+      })
+    ]);
+  });
 });
 
 describe('expireOpenPositions', () => {
