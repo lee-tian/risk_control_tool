@@ -52,12 +52,16 @@ function getDaysBetween(dateSold: string, expirationDate: string): number {
   return Math.ceil(diffInMs / millisecondsPerDay);
 }
 
-function getDistanceToStrikePct(currentPrice: number, strike: number): number {
+function getDistanceToStrikePct(
+  currentPrice: number,
+  strike: number,
+  optionSide: 'put' | 'call'
+): number {
   if (currentPrice <= 0) {
     return 0;
   }
 
-  return Math.max((currentPrice - strike) / currentPrice, 0);
+  return optionSide === 'call' ? (strike - currentPrice) / currentPrice : (currentPrice - strike) / currentPrice;
 }
 
 const MIN_PUT_STRESS_FLOOR_PCT = 0.02;
@@ -76,7 +80,7 @@ export function calculatePortfolioMetrics(
     const tickerEntry = tickerMap.get(put.ticker);
     const beta = tickerEntry?.beta ?? 1;
     const currentPrice = tickerEntry?.current_price ?? 0;
-    const distance_pct = optionSide === 'put' ? getDistanceToStrikePct(currentPrice, put.put_strike) : 0;
+    const distance_pct = getDistanceToStrikePct(currentPrice, put.put_strike, optionSide);
     const baseStressAfterDistancePct =
       optionSide === 'put' ? Math.max(stressDropPct - distance_pct, MIN_PUT_STRESS_FLOOR_PCT) : 0;
     const effectiveStressPct = optionSide === 'put' ? baseStressAfterDistancePct * beta : 0;
@@ -84,7 +88,8 @@ export function calculatePortfolioMetrics(
     const premiumIncome = put.premium_per_share * put.contracts * 100;
     const daysToExpiration = getDaysBetween(put.date_sold, put.expiration_date);
     const annualizedYield = safeDivide(premiumIncome, nominalExposure) * safeDivide(365, daysToExpiration);
-    const breakevenPrice = put.put_strike - put.premium_per_share;
+    const breakevenPrice =
+      optionSide === 'call' ? put.put_strike + put.premium_per_share : put.put_strike - put.premium_per_share;
     const netCostBasis = breakevenPrice * put.contracts * 100;
     const putRisk = optionSide === 'put' ? netCostBasis * effectiveStressPct : 0;
     const riskPctOfCash = safeDivide(putRisk, config?.cash ?? 0);

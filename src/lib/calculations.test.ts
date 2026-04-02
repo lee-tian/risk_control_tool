@@ -144,6 +144,16 @@ describe('calculatePortfolioMetrics', () => {
       premiumCapturedPct: 0.625,
       thetaIncomePerDay: 24
     });
+    expect(metrics.putRows[2]).toMatchObject({
+      ticker: 'NVDA',
+      option_side: 'call',
+      distance_pct: 0.1,
+      baseStressAfterDistancePct: 0,
+      effectiveStressPct: 0,
+      breakevenPrice: 222,
+      netCostBasis: 22200,
+      putRisk: 0
+    });
   });
 
   it('flags overloaded risk when cash or limit is insufficient', () => {
@@ -244,11 +254,13 @@ describe('calculatePortfolioMetrics', () => {
       0.1
     );
 
-    expect(metrics.totalPutRisk).toBeCloseTo(2360, 6);
+    expect(metrics.totalPutRisk).toBeCloseTo(7080, 6);
     expect(metrics.totalStockRisk).toBe(7000);
     expect(metrics.totalCoveredCallOffset).toBe(150);
-    expect(metrics.totalRisk).toBeCloseTo(9210, 6);
-    expect(metrics.groupedTickerRisk).toEqual([{ ticker: 'TSLA', risk: 2360 }]);
+    expect(metrics.totalRisk).toBeCloseTo(13930, 6);
+    expect(metrics.groupedTickerRisk).toHaveLength(1);
+    expect(metrics.groupedTickerRisk[0]?.ticker).toBe('TSLA');
+    expect(metrics.groupedTickerRisk[0]?.risk).toBeCloseTo(7080, 6);
   });
 
   it('counts covered call size by contracts rather than position rows', () => {

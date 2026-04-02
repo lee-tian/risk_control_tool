@@ -441,6 +441,14 @@ function getPercentDistanceToStrike(
   return optionSide === 'call' ? (strike - price) / price : (price - strike) / price;
 }
 
+function formatDistanceToStrikeLabel(distancePct: number, optionSide: 'put' | 'call'): string {
+  if (distancePct < 0) {
+    return `ITM ${formatPercent(Math.abs(distancePct))}`;
+  }
+
+  return `${optionSide === 'call' ? 'OTM' : ''}${optionSide === 'call' ? ' ' : ''}${formatPercent(distancePct)}`.trim();
+}
+
 function buildStockExtremeSignal(entry: TickerEntry): StockExtremeSignal | null {
   if (entry.current_price === null || (entry.rsi_14 === null && entry.rsi_14_1h === null)) {
     return null;
@@ -620,6 +628,7 @@ function getPositionRiskAssessment(
 ): { label: string; tone: PositionRiskTone; reasons: string[] } {
   let score = 0;
   const reasons: string[] = [];
+  const isCall = row.option_side === 'call';
 
   if (row.riskPctOfCash >= 0.015) {
     score += 2;
@@ -630,7 +639,15 @@ function getPositionRiskAssessment(
   }
 
   if (tickerEntry?.current_price !== null && tickerEntry?.current_price !== undefined) {
-    if (tickerEntry.ma_200 !== null && tickerEntry.ma_200 !== undefined && tickerEntry.current_price < tickerEntry.ma_200) {
+    if (isCall) {
+      if (tickerEntry.ma_200 !== null && tickerEntry.ma_200 !== undefined && tickerEntry.current_price > tickerEntry.ma_200) {
+        score += 1;
+        reasons.push('股价在 MA200 上方');
+      } else if (tickerEntry.ma_21 !== null && tickerEntry.ma_21 !== undefined && tickerEntry.current_price > tickerEntry.ma_21) {
+        score += 1;
+        reasons.push('股价站上 MA21');
+      }
+    } else if (tickerEntry.ma_200 !== null && tickerEntry.ma_200 !== undefined && tickerEntry.current_price < tickerEntry.ma_200) {
       score += 2;
       reasons.push('股价在 MA200 下方');
     } else if (tickerEntry.ma_21 !== null && tickerEntry.ma_21 !== undefined && tickerEntry.current_price < tickerEntry.ma_21) {
@@ -642,10 +659,10 @@ function getPositionRiskAssessment(
   if (tickerEntry?.rsi_14 !== null && tickerEntry?.rsi_14 !== undefined) {
     if (tickerEntry.rsi_14 >= 65) {
       score += 2;
-      reasons.push('RSI 偏热');
+      reasons.push(isCall ? 'RSI 偏热，接近行权' : 'RSI 偏热');
     } else if (tickerEntry.rsi_14 >= 55) {
       score += 1;
-      reasons.push('RSI 偏高');
+      reasons.push(isCall ? 'RSI 偏高，需留意行权' : 'RSI 偏高');
     }
   }
 
@@ -659,7 +676,18 @@ function getPositionRiskAssessment(
     reasons.push('PCR 偏高');
   }
 
-  if (row.distance_pct < 0.04) {
+  if (isCall) {
+    if (row.distance_pct < 0) {
+      score += 3;
+      reasons.push('Call 已 ITM');
+    } else if (row.distance_pct < 0.04) {
+      score += 2;
+      reasons.push('Call 接近 Strike');
+    }
+  } else if (row.distance_pct < 0) {
+    score += 3;
+    reasons.push('Put 已 ITM');
+  } else if (row.distance_pct < 0.04) {
     score += 1;
     reasons.push('Strike 缓冲偏薄');
   }
@@ -5313,16 +5341,25 @@ function App() {
 
                   <div className="position-metrics">
                     <div className="position-metric"><span>Premium / share</span><strong>{formatCurrency(row.premium_per_share)}</strong></div>
-                    <div className="position-metric"><span>Distance to strike</span><strong>{formatPercent(row.distance_pct)}</strong></div>
+                    <div className="position-metric">
+                      <span>Distance to strike</span>
+                      <strong>{formatDistanceToStrikeLabel(row.distance_pct, row.option_side === 'call' ? 'call' : 'put')}</strong>
+                    </div>
                     <div className="position-metric"><span>Date Sold</span><strong>{row.date_sold || '-'}</strong></div>
                     <div className="position-metric"><span>Expiration</span><strong>{row.expiration_date || '-'}</strong></div>
                     <div className="position-metric"><span>Nominal exposure</span><strong>{formatCurrency(row.nominalExposure)}</strong></div>
                     <div className="position-metric"><span>Days</span><strong>{row.daysToExpiration}</strong></div>
                     <div className="position-metric"><span>Beta</span><strong>{row.beta.toFixed(2)}</strong></div>
-                    <div className="position-metric"><span>Stress after distance</span><strong>{formatPercent(row.baseStressAfterDistancePct)}</strong></div>
-                    <div className="position-metric"><span>Effective stress</span><strong>{formatPercent(row.effectiveStressPct)}</strong></div>
-                    <div className="position-metric"><span>Breakeven</span><strong>{formatCurrency(row.breakevenPrice)}</strong></div>
-                    <div className="position-metric"><span>Net cost basis</span><strong>{formatCurrency(row.netCostBasis)}</strong></div>
+                    {row.option_side !== 'call' ? (
+                      <>
+                        <div className="position-metric"><span>Stress after distance</span><strong>{formatPercent(row.baseStressAfterDistancePct)}</strong></div>
+                        <div className="position-metric"><span>Effective stress</span><strong>{formatPercent(row.effectiveStressPct)}</strong></div>
+                        <div className="position-metric"><span>Breakeven</span><strong>{formatCurrency(row.breakevenPrice)}</strong></div>
+                        <div className="position-metric"><span>Net cost basis</span><strong>{formatCurrency(row.netCostBasis)}</strong></div>
+                      </>
+                    ) : (
+                      <div className="position-metric"><span>Call breakeven</span><strong>{formatCurrency(row.breakevenPrice)}</strong></div>
+                    )}
                     <div className="position-metric"><span>Option price updated</span><strong>{displayedOptionUpdatedAt ? new Date(displayedOptionUpdatedAt).toLocaleString() : '-'}</strong></div>
                   </div>
                   </div>
