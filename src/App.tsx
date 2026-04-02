@@ -421,7 +421,11 @@ function getPercentDistanceFromAverage(price: number | null, average: number | n
   return ((price - average) / average) * 100;
 }
 
-function getPercentDistanceToStrike(price: number | null | undefined, strike: number | null | undefined): number | null {
+function getPercentDistanceToStrike(
+  price: number | null | undefined,
+  strike: number | null | undefined,
+  optionSide: 'put' | 'call'
+): number | null {
   if (
     price === null ||
     price === undefined ||
@@ -434,7 +438,7 @@ function getPercentDistanceToStrike(price: number | null | undefined, strike: nu
     return null;
   }
 
-  return Math.abs(price - strike) / price;
+  return optionSide === 'call' ? (strike - price) / price : (price - strike) / price;
 }
 
 function buildStockExtremeSignal(entry: TickerEntry): StockExtremeSignal | null {
@@ -1330,10 +1334,19 @@ function App() {
 
   function applyRemoteSnapshot(snapshotPayload: unknown, successMessage?: string) {
     const snapshot = parseAppStateSnapshot(JSON.stringify(snapshotPayload));
+    const closedPositionIds = new Set(
+      [...closedTrades, ...snapshot.data.closedTrades]
+        .map((trade) => trade.position_id.trim())
+        .filter(Boolean)
+    );
+
     setConfig(snapshot.data.config);
     setConfigForm(snapshot.data.config ?? DEFAULT_CONFIG);
     setPuts((current) =>
-      mergePutPositionsPreservingLocal(filterDeletedPutPositions(snapshot.data.puts, deletedPositionIds), current)
+      mergePutPositionsPreservingLocal(
+        filterDeletedPutPositions(snapshot.data.puts, deletedPositionIds).filter((put) => !closedPositionIds.has(put.id)),
+        current.filter((put) => !closedPositionIds.has(put.id) && !deletedPositionIds.includes(put.id))
+      )
     );
     setClosedTrades((current) => mergeClosedTradesPreservingLocal(snapshot.data.closedTrades, current));
     setTickerList((current) =>
@@ -1909,7 +1922,7 @@ function App() {
         const currentPrice = stockEntry?.current_price ?? null;
         const marketValue = shares * (currentPrice ?? 0);
         const strikeDistances = callRows
-          .map((row) => getPercentDistanceToStrike(currentPrice, row.put_strike))
+          .map((row) => getPercentDistanceToStrike(currentPrice, row.put_strike, 'call'))
           .filter((value): value is number => value !== null);
 
         return {
@@ -2033,7 +2046,7 @@ function App() {
         nearestStrikeDistancePct: (() => {
           const positions = putRowsByTicker.get(item.ticker) ?? [];
           const distances = positions
-            .map((row) => getPercentDistanceToStrike(tickerList.find((entry) => entry.ticker === item.ticker)?.current_price, row.put_strike))
+            .map((row) => getPercentDistanceToStrike(tickerList.find((entry) => entry.ticker === item.ticker)?.current_price, row.put_strike, 'put'))
             .filter((value): value is number => value !== null);
 
           return distances.length > 0 ? Math.min(...distances) : null;
@@ -2045,8 +2058,8 @@ function App() {
         totalPremiumIncome: premiumIncomeByTicker.get(item.ticker) ?? 0,
         positions: [...(putRowsByTicker.get(item.ticker) ?? [])].sort((a, b) => {
           const distanceDiff =
-            (getPercentDistanceToStrike(tickerList.find((entry) => entry.ticker === item.ticker)?.current_price, a.put_strike) ?? Number.POSITIVE_INFINITY) -
-            (getPercentDistanceToStrike(tickerList.find((entry) => entry.ticker === item.ticker)?.current_price, b.put_strike) ?? Number.POSITIVE_INFINITY);
+            (getPercentDistanceToStrike(tickerList.find((entry) => entry.ticker === item.ticker)?.current_price, a.put_strike, 'put') ?? Number.POSITIVE_INFINITY) -
+            (getPercentDistanceToStrike(tickerList.find((entry) => entry.ticker === item.ticker)?.current_price, b.put_strike, 'put') ?? Number.POSITIVE_INFINITY);
           if (distanceDiff !== 0) {
             return distanceDiff;
           }
@@ -3687,8 +3700,10 @@ function App() {
                           </div>
                           {item.nearestStrikeDistancePct !== null ? (
                             <small className={item.nearestStrikeDistancePct <= 0.02 ? 'strike-warning-text' : ''}>
-                              距最近 Strike {formatPercent(item.nearestStrikeDistancePct)}
-                              {item.nearestStrikeDistancePct <= 0.02 ? ' · 接近 Strike' : ''}
+                              {item.nearestStrikeDistancePct < 0
+                                ? `最近 Strike 已 ITM ${formatPercent(Math.abs(item.nearestStrikeDistancePct))}`
+                                : `距最近 Strike ${formatPercent(item.nearestStrikeDistancePct)}`}
+                              {item.nearestStrikeDistancePct < 0 ? ' · 已进入 ITM' : item.nearestStrikeDistancePct <= 0.02 ? ' · 接近 Strike' : ''}
                             </small>
                           ) : null}
                           <div className="stock-holding-section">
@@ -3709,7 +3724,7 @@ function App() {
                             <div className="risk-put-details-list">
                               {item.positions.map((row) => {
                                 const currentPrice = tickerList.find((entry) => entry.ticker === row.ticker)?.current_price;
-                                const strikeDistancePct = getPercentDistanceToStrike(currentPrice, row.put_strike);
+                                const strikeDistancePct = getPercentDistanceToStrike(currentPrice, row.put_strike, 'put');
                                 const isNearStrike = strikeDistancePct !== null && strikeDistancePct <= 0.02;
 
                                 return (
@@ -3724,7 +3739,11 @@ function App() {
                                     <div className="risk-put-detail-grid">
                                       <small>距 Strike</small>
                                       <strong className={isNearStrike ? 'value-negative' : ''}>
-                                        {strikeDistancePct === null ? '-' : formatPercent(strikeDistancePct)}
+                                        {strikeDistancePct === null
+                                          ? '-'
+                                          : strikeDistancePct < 0
+                                            ? `ITM ${formatPercent(Math.abs(strikeDistancePct))}`
+                                            : formatPercent(strikeDistancePct)}
                                       </strong>
                                       <small>权利金</small>
                                       <strong>{formatCurrency(row.premiumIncome)}</strong>
@@ -3769,8 +3788,10 @@ function App() {
                           </div>
                           {holding.nearestStrikeDistancePct !== null ? (
                             <small className={holding.nearestStrikeDistancePct <= 0.02 ? 'strike-warning-text' : ''}>
-                              距最近 Strike {formatPercent(holding.nearestStrikeDistancePct)}
-                              {holding.nearestStrikeDistancePct <= 0.02 ? ' · 接近 Strike' : ''}
+                              {holding.nearestStrikeDistancePct < 0
+                                ? `最近 Strike 已 ITM ${formatPercent(Math.abs(holding.nearestStrikeDistancePct))}`
+                                : `距最近 Strike ${formatPercent(holding.nearestStrikeDistancePct)}`}
+                              {holding.nearestStrikeDistancePct < 0 ? ' · 已进入 ITM' : holding.nearestStrikeDistancePct <= 0.02 ? ' · 接近 Strike' : ''}
                             </small>
                           ) : null}
                           {holding.hasStockHolding ? (
@@ -3822,7 +3843,9 @@ function App() {
                                   <>
                                     <small>距 Strike</small>
                                     <strong className={holding.nearestStrikeDistancePct <= 0.02 ? 'value-negative' : ''}>
-                                      {formatPercent(holding.nearestStrikeDistancePct)}
+                                      {holding.nearestStrikeDistancePct < 0
+                                        ? `ITM ${formatPercent(Math.abs(holding.nearestStrikeDistancePct))}`
+                                        : formatPercent(holding.nearestStrikeDistancePct)}
                                     </strong>
                                   </>
                                 ) : null}
