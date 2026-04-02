@@ -4,6 +4,7 @@ import {
   describeStorageTarget,
   readAppState,
   setBlobSdkLoaderForTests,
+  readVixCache,
   writeAppState
 } from './lib/storage/blobStore.mjs';
 
@@ -48,5 +49,18 @@ describe('blob storage adapter', () => {
     });
 
     globalThis.fetch = originalFetch;
+  });
+
+  it('treats a missing blob as an empty cache instead of throwing', async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = 'blob-secret-token';
+
+    setBlobSdkLoaderForTests(async () => ({
+      put: async () => ({ pathname: 'risk-tool/vix-cache.json' }),
+      head: async () => {
+        throw new Error('Vercel Blob: The requested blob does not exist');
+      }
+    }));
+
+    await expect(readVixCache()).resolves.toBeNull();
   });
 });

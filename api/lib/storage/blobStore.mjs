@@ -37,7 +37,7 @@ async function readJsonBlob(pathname) {
     return text.trim() === '' ? null : JSON.parse(text);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (/not found/iu.test(message)) {
+    if (/not found|does not exist|blob not found/iu.test(message)) {
       return null;
     }
 
