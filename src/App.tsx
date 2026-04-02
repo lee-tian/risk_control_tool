@@ -1425,8 +1425,11 @@ function App() {
 
     setConfig(snapshot.data.config);
     setConfigForm(snapshot.data.config ?? DEFAULT_CONFIG);
-    setPuts((current) => reconcileHydratedOpenPositions(snapshot.data.puts, current, deletedPositionIds));
-    setClosedTrades((current) => mergeClosedTradesPreservingLocal(snapshot.data.closedTrades, current));
+    setClosedTrades((currentClosedTrades) => {
+      const nextClosedTrades = mergeClosedTradesPreservingLocal(snapshot.data.closedTrades, currentClosedTrades);
+      setPuts((currentPuts) => reconcileHydratedOpenPositions(snapshot.data.puts, currentPuts, deletedPositionIds, nextClosedTrades));
+      return nextClosedTrades;
+    });
     setTickerList((current) =>
       filterDeletedTickers(mergeTickerListsPreservingManualFields(snapshot.data.tickerList, current), deletedTickers)
     );

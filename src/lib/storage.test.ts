@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { PutPosition } from '../types';
+import type { ClosedPutTrade, PutPosition } from '../types';
 import {
   applyPutPositionsImportPayload,
   buildAppStateSnapshot,
@@ -300,7 +300,7 @@ describe('storage helpers', () => {
       }
     ] as PutPosition[];
 
-    expect(reconcileHydratedOpenPositions([], localPuts, [])).toEqual([
+    expect(reconcileHydratedOpenPositions([], localPuts, [], [])).toEqual([
       expect.objectContaining({ id: 'call-1', contracts: 2, option_side: 'call' })
     ]);
   });
@@ -325,7 +325,102 @@ describe('storage helpers', () => {
       }
     ] as PutPosition[];
 
-    expect(reconcileHydratedOpenPositions(localPuts, localPuts, ['put-1'])).toEqual([]);
+    expect(reconcileHydratedOpenPositions(localPuts, localPuts, ['put-1'], [])).toEqual([]);
+  });
+
+  it('filters stale snapshot rows for fully closed positions while keeping partially closed rows', () => {
+    const snapshotPuts = [
+      {
+        id: 'call-1',
+        ticker: 'MSFT',
+        option_side: 'call',
+        put_strike: 400,
+        premium_per_share: 6.95,
+        contracts: 3,
+        iv_rank: 38,
+        date_sold: '2026-04-01',
+        expiration_date: '2026-05-15',
+        option_market_price_per_share: null,
+        option_market_price_updated: null,
+        option_theta_per_share: null,
+        decision_rationale: '',
+        decision_snapshot: null
+      },
+      {
+        id: 'put-1',
+        ticker: 'AAPL',
+        option_side: 'put',
+        put_strike: 200,
+        premium_per_share: 3.1,
+        contracts: 1,
+        iv_rank: 25,
+        date_sold: '2026-03-01',
+        expiration_date: '2026-04-01',
+        option_market_price_per_share: null,
+        option_market_price_updated: null,
+        option_theta_per_share: null,
+        decision_rationale: '',
+        decision_snapshot: null
+      }
+    ] as PutPosition[];
+
+    const localPuts = [
+      {
+        id: 'call-1',
+        ticker: 'MSFT',
+        option_side: 'call',
+        put_strike: 400,
+        premium_per_share: 6.95,
+        contracts: 2,
+        iv_rank: 38,
+        date_sold: '2026-04-01',
+        expiration_date: '2026-05-15',
+        option_market_price_per_share: null,
+        option_market_price_updated: null,
+        option_theta_per_share: null,
+        decision_rationale: '',
+        decision_snapshot: null
+      }
+    ] as PutPosition[];
+
+    const closedTrades: ClosedPutTrade[] = [
+      {
+        id: 'trade-1',
+        position_id: 'call-1',
+        ticker: 'MSFT',
+        option_side: 'call',
+        put_strike: 400,
+        premium_sold_per_share: 6.95,
+        premium_bought_back_per_share: 1,
+        contracts: 1,
+        date_sold: '2026-04-01',
+        expiration_date: '2026-05-15',
+        closed_at: '2026-04-02',
+        close_reason: 'manual',
+        realized_pnl: 595,
+        reflection_notes: ''
+      },
+      {
+        id: 'trade-2',
+        position_id: 'put-1',
+        ticker: 'AAPL',
+        option_side: 'put',
+        put_strike: 200,
+        premium_sold_per_share: 3.1,
+        premium_bought_back_per_share: 1.2,
+        contracts: 1,
+        date_sold: '2026-03-01',
+        expiration_date: '2026-04-01',
+        closed_at: '2026-03-15',
+        close_reason: 'manual',
+        realized_pnl: 190,
+        reflection_notes: ''
+      }
+    ];
+
+    expect(reconcileHydratedOpenPositions(snapshotPuts, localPuts, [], closedTrades)).toEqual([
+      expect.objectContaining({ id: 'call-1', contracts: 2, option_side: 'call' })
+    ]);
   });
 
   it('merges snapshot closed trades with local trades and preserves local call history', () => {

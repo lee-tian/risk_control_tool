@@ -207,10 +207,18 @@ export function filterDeletedPutPositions(puts: PutPosition[], deletedIds: strin
 export function reconcileHydratedOpenPositions(
   snapshotPuts: PutPosition[],
   localPuts: PutPosition[],
-  deletedIds: string[]
+  deletedIds: string[],
+  closedTrades: ClosedPutTrade[]
 ): PutPosition[] {
+  const localOpenIds = new Set(localPuts.map((put) => put.id).filter(Boolean));
+  const closedPositionIds = new Set(
+    closedTrades
+      .map((trade) => trade.position_id.trim())
+      .filter((id) => id !== '' && !localOpenIds.has(id))
+  );
+
   return mergePutPositionsPreservingLocal(
-    filterDeletedPutPositions(snapshotPuts, deletedIds),
+    filterDeletedPutPositions(snapshotPuts, deletedIds).filter((put) => !closedPositionIds.has(put.id)),
     filterDeletedPutPositions(localPuts, deletedIds)
   );
 }
