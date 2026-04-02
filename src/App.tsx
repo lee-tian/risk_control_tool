@@ -1866,70 +1866,82 @@ function App() {
     setImportExportMessage(`已自动按到期处理 ${expiredRows.length} 笔 Put，并记入历史记录`);
   }, [closedTrades, deletedPositionIds, editingPutId, puts]);
 
-  const stockHoldings = useMemo(
-    () =>
-      tickerList
-        .filter((entry) => (entry.shares ?? 0) > 0)
-        .map((entry) => {
-          const callRows = puts.filter((row) => row.ticker === entry.ticker && row.option_side === 'call');
-          const distinctStrikes = [...new Set(callRows.map((row) => row.put_strike))].sort((a, b) => a - b);
-          const callContracts = callRows.reduce((sum, row) => sum + row.contracts, 0);
-          const callPremiumIncome = callRows.reduce(
-            (sum, row) => sum + row.premium_per_share * row.contracts * 100,
-            0
-          );
-          const callUnrealizedPnl = callRows.reduce((sum, row) => {
-            if (typeof row.option_market_price_per_share !== 'number') {
-              return sum;
-            }
+  const stockHoldings = useMemo(() => {
+    const stockEntries = tickerList.filter((entry) => (entry.shares ?? 0) > 0);
+    const callTickers = [...new Set(puts.filter((row) => row.option_side === 'call').map((row) => row.ticker))];
+    const holdingTickers = [...new Set([...stockEntries.map((entry) => entry.ticker), ...callTickers])];
 
-            return sum + (row.premium_per_share - row.option_market_price_per_share) * row.contracts * 100;
-          }, 0);
-          const coveredCallShares = callRows.reduce((sum, row) => sum + row.contracts * 100, 0);
+    return holdingTickers
+      .map((ticker) => {
+        const stockEntry = tickerList.find((entry) => entry.ticker === ticker);
+        const callRows = puts.filter((row) => row.ticker === ticker && row.option_side === 'call');
+        const distinctStrikes = [...new Set(callRows.map((row) => row.put_strike))].sort((a, b) => a - b);
+        const callContracts = callRows.reduce((sum, row) => sum + row.contracts, 0);
+        const callPremiumIncome = callRows.reduce(
+          (sum, row) => sum + row.premium_per_share * row.contracts * 100,
+          0
+        );
+        const callUnrealizedPnl = callRows.reduce((sum, row) => {
+          if (typeof row.option_market_price_per_share !== 'number') {
+            return sum;
+          }
 
-          return {
-            ticker: entry.ticker,
-            shares: entry.shares ?? 0,
-            averageCost: entry.average_cost_basis,
-            currentPrice: entry.current_price,
-            marketValue: (entry.shares ?? 0) * (entry.current_price ?? 0),
-            unrealizedPnlAmount:
-              typeof entry.average_cost_basis === 'number' &&
-              typeof entry.current_price === 'number' &&
-              typeof entry.shares === 'number'
-                ? (entry.current_price - entry.average_cost_basis) * entry.shares
-                : null,
-            unrealizedPnlPct:
-              typeof entry.average_cost_basis === 'number' &&
-              entry.average_cost_basis > 0 &&
-              typeof entry.current_price === 'number'
-                ? (entry.current_price - entry.average_cost_basis) / entry.average_cost_basis
-                : null,
-            callCount: callContracts,
-            coveredCallShares,
-            callPremiumIncome,
-            callUnrealizedPnl: callRows.some((row) => typeof row.option_market_price_per_share === 'number')
-              ? callUnrealizedPnl
+          return sum + (row.premium_per_share - row.option_market_price_per_share) * row.contracts * 100;
+        }, 0);
+        const coveredCallShares = callRows.reduce((sum, row) => sum + row.contracts * 100, 0);
+        const shares = stockEntry?.shares ?? 0;
+        const currentPrice = stockEntry?.current_price ?? null;
+        const marketValue = shares * (currentPrice ?? 0);
+
+        return {
+          ticker,
+          shares,
+          averageCost: stockEntry?.average_cost_basis,
+          currentPrice,
+          hasStockHolding: shares > 0,
+          marketValue,
+          summaryValue: shares > 0 ? marketValue : callPremiumIncome,
+          unrealizedPnlAmount:
+            typeof stockEntry?.average_cost_basis === 'number' &&
+            typeof currentPrice === 'number' &&
+            shares > 0
+              ? (currentPrice - stockEntry.average_cost_basis) * shares
               : null,
-            callStrikeLabel:
-              distinctStrikes.length === 0
-                ? ''
-                : distinctStrikes.length === 1
-                  ? String(distinctStrikes[0])
-                  : distinctStrikes.slice(0, 2).join(' / ')
-          };
-        })
-        .sort((a, b) => {
-          if (b.marketValue !== a.marketValue) {
-            return b.marketValue - a.marketValue;
-          }
-          if (b.shares !== a.shares) {
-            return b.shares - a.shares;
-          }
-          return a.ticker.localeCompare(b.ticker);
-        }),
-    [puts, tickerList]
-  );
+          unrealizedPnlPct:
+            typeof stockEntry?.average_cost_basis === 'number' &&
+            stockEntry.average_cost_basis > 0 &&
+            typeof currentPrice === 'number' &&
+            shares > 0
+              ? (currentPrice - stockEntry.average_cost_basis) / stockEntry.average_cost_basis
+              : null,
+          callCount: callContracts,
+          coveredCallShares,
+          callPremiumIncome,
+          callUnrealizedPnl: callRows.some((row) => typeof row.option_market_price_per_share === 'number')
+            ? callUnrealizedPnl
+            : null,
+          callSectionLabel: shares > 0 ? 'Covered Call' : 'Call Position',
+          callStrikeLabel:
+            distinctStrikes.length === 0
+              ? ''
+              : distinctStrikes.length === 1
+                ? String(distinctStrikes[0])
+                : distinctStrikes.slice(0, 2).join(' / ')
+        };
+      })
+      .sort((a, b) => {
+        if (b.summaryValue !== a.summaryValue) {
+          return b.summaryValue - a.summaryValue;
+        }
+        if (b.shares !== a.shares) {
+          return b.shares - a.shares;
+        }
+        if (b.callCount !== a.callCount) {
+          return b.callCount - a.callCount;
+        }
+        return a.ticker.localeCompare(b.ticker);
+      });
+  }, [puts, tickerList]);
   const totalStockMarketValue = useMemo(
     () => stockHoldings.reduce((sum, holding) => sum + holding.marketValue, 0),
     [stockHoldings]
@@ -3671,7 +3683,7 @@ function App() {
                   <h3>股票持仓摘要</h3>
                 </div>
                 {stockHoldings.length === 0 ? (
-                  <div className="empty-state compact-empty">当前还没有录入股票持股数量。</div>
+                  <div className="empty-state compact-empty">当前还没有录入股票持仓或 Call 仓位。</div>
                 ) : (
                   <div className="ticker-risk-list">
                     {stockHoldings.map((holding) => (
@@ -3682,46 +3694,48 @@ function App() {
                         <div className="ticker-risk-main">
                           <div className="stock-holding-topline">
                             <span>{holding.ticker}</span>
-                            <small>{holding.shares} shares</small>
+                            <small>{holding.hasStockHolding ? `${holding.shares} shares` : 'Call only'}</small>
                           </div>
-                          <div className="stock-holding-section">
-                            <small className="stock-section-label">股票持仓</small>
-                            <div className="stock-holding-grid">
-                              <small>现价</small>
-                              <strong>{holding.currentPrice == null ? '-' : formatCurrency(holding.currentPrice)}</strong>
-                              <small>股票盈亏</small>
-                              <strong
-                                className={
-                                  holding.unrealizedPnlAmount == null
-                                    ? ''
-                                    : holding.unrealizedPnlAmount > 0
-                                      ? 'value-positive'
-                                      : holding.unrealizedPnlAmount < 0
-                                        ? 'value-negative'
-                                        : ''
-                                }
-                              >
-                                {formatSignedCurrency(holding.unrealizedPnlAmount)}
-                              </strong>
-                              <small>股票盈亏 %</small>
-                              <strong
-                                className={
-                                  holding.unrealizedPnlPct == null
-                                    ? ''
-                                    : holding.unrealizedPnlPct > 0
-                                      ? 'value-positive'
-                                      : holding.unrealizedPnlPct < 0
-                                        ? 'value-negative'
-                                        : ''
-                                }
-                              >
-                                {formatSignedPercent(holding.unrealizedPnlPct)}
-                              </strong>
+                          {holding.hasStockHolding ? (
+                            <div className="stock-holding-section">
+                              <small className="stock-section-label">股票持仓</small>
+                              <div className="stock-holding-grid">
+                                <small>现价</small>
+                                <strong>{holding.currentPrice == null ? '-' : formatCurrency(holding.currentPrice)}</strong>
+                                <small>股票盈亏</small>
+                                <strong
+                                  className={
+                                    holding.unrealizedPnlAmount == null
+                                      ? ''
+                                      : holding.unrealizedPnlAmount > 0
+                                        ? 'value-positive'
+                                        : holding.unrealizedPnlAmount < 0
+                                          ? 'value-negative'
+                                          : ''
+                                  }
+                                >
+                                  {formatSignedCurrency(holding.unrealizedPnlAmount)}
+                                </strong>
+                                <small>股票盈亏 %</small>
+                                <strong
+                                  className={
+                                    holding.unrealizedPnlPct == null
+                                      ? ''
+                                      : holding.unrealizedPnlPct > 0
+                                        ? 'value-positive'
+                                        : holding.unrealizedPnlPct < 0
+                                          ? 'value-negative'
+                                          : ''
+                                  }
+                                >
+                                  {formatSignedPercent(holding.unrealizedPnlPct)}
+                                </strong>
+                              </div>
                             </div>
-                          </div>
+                          ) : null}
                           {holding.callCount > 0 ? (
                             <div className="stock-holding-section stock-call-section">
-                              <small className="stock-section-label">Covered Call</small>
+                              <small className="stock-section-label">{holding.callSectionLabel}</small>
                               <div className="stock-holding-grid">
                                 <small>合约数</small>
                                 <strong>{holding.callCount} 张</strong>
@@ -3756,13 +3770,14 @@ function App() {
                               </strong>
                             </div>
                           ) : null}
-                          {holding.unrealizedPnlAmount !== null &&
+                          {holding.hasStockHolding &&
+                          holding.unrealizedPnlAmount !== null &&
                           holding.unrealizedPnlAmount < 0 &&
                           Math.abs(holding.unrealizedPnlAmount) >= stockLossAlertThreshold ? (
                             <small>已达到总资金 1% 亏损线：{formatCurrency(stockLossAlertThreshold)}</small>
                           ) : null}
                         </div>
-                        <strong>{formatCurrency(holding.marketValue)}</strong>
+                        <strong>{formatCurrency(holding.summaryValue)}</strong>
                       </div>
                     ))}
                   </div>
