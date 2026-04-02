@@ -3841,13 +3841,14 @@ function App() {
                     <strong>暂不可用</strong>
                   )}
                 </div>
-                <div className="scenario-caption stress-caption">
-                  <strong>{getFearGreedStatusLabel(vixSnapshot)}</strong>
-                  {vixSnapshot?.storageDriver ? `；storage ${vixSnapshot.storageDriver}` : ''}
-                  {vixSnapshot?.cacheWriteOk === false ? '；cache write failed' : vixSnapshot?.cacheWriteOk === true ? '；cache write ok' : ''}
-                  {vixSnapshot?.fearGreedError ? `；fetch error: ${vixSnapshot.fearGreedError}` : ''}
-                  {vixSnapshot?.cacheWriteError ? `；cache error: ${vixSnapshot.cacheWriteError}` : ''}
-                </div>
+                {(vixSnapshot?.fearGreedError || vixSnapshot?.cacheWriteError || vixSnapshot?.cacheWriteOk === false) && (
+                  <div className="scenario-caption stress-caption">
+                    <strong>{getFearGreedStatusLabel(vixSnapshot)}</strong>
+                    {vixSnapshot?.fearGreedError ? `；fetch error: ${vixSnapshot.fearGreedError}` : ''}
+                    {vixSnapshot?.cacheWriteError ? `；cache error: ${vixSnapshot.cacheWriteError}` : ''}
+                    {vixSnapshot?.cacheWriteOk === false ? '；cache write failed' : ''}
+                  </div>
+                )}
                 <div className="scenario-caption stress-caption">
                   真实压力按 <strong>{formatPercent(activeScenario)} × Beta</strong> 计算。
                   {baseVixForStress !== null && ` Base stress 参考 7D Avg VIX ${baseVixForStress.toFixed(2)}。`}
