@@ -2417,6 +2417,7 @@ export async function handleApiRequest(req, res) {
     try {
       const todayKey = getDateKey();
       const cached = await loadVixCache();
+      const storageTarget = describeStorageTarget();
       let vixValue = cached && cached.fetched_on === todayKey && typeof cached.value === 'number' ? cached.value : null;
       let vixAsOf = cached && typeof cached.as_of === 'string' ? cached.as_of : null;
 
@@ -2432,6 +2433,13 @@ export async function handleApiRequest(req, res) {
         cached && typeof cached.fear_greed_rating === 'string' ? cached.fear_greed_rating : null;
       let fearGreedFetchedAt =
         cached && typeof cached.fear_greed_fetched_at === 'string' ? cached.fear_greed_fetched_at : null;
+      let fearGreedStatus =
+        fearGreedScore !== null && fearGreedFetchedAt && isFreshTimestamp(fearGreedFetchedAt, FEAR_GREED_CACHE_MS)
+          ? 'cached'
+          : fearGreedScore !== null
+            ? 'stale-cache'
+            : 'no-cache';
+      let fearGreedError = null;
 
       if (!isFreshTimestamp(fearGreedFetchedAt, FEAR_GREED_CACHE_MS)) {
         try {
@@ -2439,26 +2447,40 @@ export async function handleApiRequest(req, res) {
           fearGreedScore = fetchedFearGreed.score;
           fearGreedRating = fetchedFearGreed.rating;
           fearGreedFetchedAt = new Date().toISOString();
-        } catch {
-          // Keep the last cached fear & greed value if refresh fails.
+          fearGreedStatus = 'fetched-live';
+        } catch (error) {
+          fearGreedError = error instanceof Error ? error.message : 'Failed to fetch CNN Fear & Greed Index';
+          fearGreedStatus = fearGreedScore !== null ? 'fetch-failed-used-cache' : 'fetch-failed-no-cache';
         }
       }
 
-      await saveVixCache({
-        fetched_on: todayKey,
-        value: vixValue,
-        as_of: vixAsOf,
-        fear_greed_score: fearGreedScore,
-        fear_greed_rating: fearGreedRating,
-        fear_greed_fetched_at: fearGreedFetchedAt
-      });
+      let cacheWriteOk = true;
+      let cacheWriteError = null;
+      try {
+        await saveVixCache({
+          fetched_on: todayKey,
+          value: vixValue,
+          as_of: vixAsOf,
+          fear_greed_score: fearGreedScore,
+          fear_greed_rating: fearGreedRating,
+          fear_greed_fetched_at: fearGreedFetchedAt
+        });
+      } catch (error) {
+        cacheWriteOk = false;
+        cacheWriteError = error instanceof Error ? error.message : 'Failed to save VIX cache';
+      }
       sendJson(res, 200, {
         value: vixValue,
         as_of: vixAsOf,
         source: 'Cboe official daily close',
         cached: true,
         fear_greed_score: fearGreedScore,
-        fear_greed_rating: fearGreedRating
+        fear_greed_rating: fearGreedRating,
+        fear_greed_status: fearGreedStatus,
+        fear_greed_error: fearGreedError,
+        storage_driver: storageTarget.driver,
+        cache_write_ok: cacheWriteOk,
+        cache_write_error: cacheWriteError
       });
     } catch (error) {
       sendJson(res, 502, {

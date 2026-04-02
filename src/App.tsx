@@ -67,6 +67,11 @@ type VixSnapshot = {
   asOf: string;
   fearGreedScore: number | null;
   fearGreedRating: string | null;
+  fearGreedStatus: string | null;
+  fearGreedError: string | null;
+  storageDriver: string | null;
+  cacheWriteOk: boolean | null;
+  cacheWriteError: string | null;
 };
 
 type AppTab = 'dashboard' | 'sell' | 'positions' | 'history' | 'stocks';
@@ -743,6 +748,29 @@ function getFearGreedStressAdjustment(score: number | null | undefined): number 
   // while keeping mid-teen values closer to a ~2% reduction.
   const t = (20 - score) / (20 - 12);
   return -(0.01 + Math.pow(t, 3.5) * 0.04);
+}
+
+function getFearGreedStatusLabel(snapshot: VixSnapshot | null): string {
+  if (!snapshot) {
+    return '';
+  }
+
+  switch (snapshot.fearGreedStatus) {
+    case 'cached':
+      return 'Fear & Greed 来自缓存';
+    case 'stale-cache':
+      return 'Fear & Greed 使用旧缓存';
+    case 'fetched-live':
+      return 'Fear & Greed 本次实时抓取成功';
+    case 'fetch-failed-used-cache':
+      return 'Fear & Greed 抓取失败，当前使用旧缓存';
+    case 'fetch-failed-no-cache':
+      return 'Fear & Greed 抓取失败，且当前无缓存';
+    case 'no-cache':
+      return 'Fear & Greed 当前无缓存';
+    default:
+      return 'Fear & Greed 状态未知';
+  }
 }
 
 function getHistoryDayKey(timestamp: string): string {
@@ -2135,6 +2163,11 @@ function App() {
         as_of?: string;
         fear_greed_score?: number | null;
         fear_greed_rating?: string | null;
+        fear_greed_status?: string | null;
+        fear_greed_error?: string | null;
+        storage_driver?: string | null;
+        cache_write_ok?: boolean | null;
+        cache_write_error?: string | null;
         error?: string;
       };
 
@@ -2146,7 +2179,12 @@ function App() {
         value: payload.value,
         asOf: payload.as_of ?? new Date().toISOString(),
         fearGreedScore: typeof payload.fear_greed_score === 'number' ? payload.fear_greed_score : null,
-        fearGreedRating: typeof payload.fear_greed_rating === 'string' ? payload.fear_greed_rating : null
+        fearGreedRating: typeof payload.fear_greed_rating === 'string' ? payload.fear_greed_rating : null,
+        fearGreedStatus: typeof payload.fear_greed_status === 'string' ? payload.fear_greed_status : null,
+        fearGreedError: typeof payload.fear_greed_error === 'string' ? payload.fear_greed_error : null,
+        storageDriver: typeof payload.storage_driver === 'string' ? payload.storage_driver : null,
+        cacheWriteOk: typeof payload.cache_write_ok === 'boolean' ? payload.cache_write_ok : null,
+        cacheWriteError: typeof payload.cache_write_error === 'string' ? payload.cache_write_error : null
       });
 
       const nextHistoryPoint: VixHistoryPoint = {
@@ -3798,6 +3836,13 @@ function App() {
                       : ''}
                   </div>
                 )}
+                <div className="scenario-caption stress-caption">
+                  <strong>{getFearGreedStatusLabel(vixSnapshot)}</strong>
+                  {vixSnapshot?.storageDriver ? `；storage ${vixSnapshot.storageDriver}` : ''}
+                  {vixSnapshot?.cacheWriteOk === false ? '；cache write failed' : vixSnapshot?.cacheWriteOk === true ? '；cache write ok' : ''}
+                  {vixSnapshot?.fearGreedError ? `；fetch error: ${vixSnapshot.fearGreedError}` : ''}
+                  {vixSnapshot?.cacheWriteError ? `；cache error: ${vixSnapshot.cacheWriteError}` : ''}
+                </div>
                 <div className="scenario-caption stress-caption">
                   真实压力按 <strong>{formatPercent(activeScenario)} × Beta</strong> 计算。
                   {baseVixForStress !== null && ` Base stress 参考 7D Avg VIX ${baseVixForStress.toFixed(2)}。`}
