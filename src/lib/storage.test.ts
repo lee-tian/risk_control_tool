@@ -17,6 +17,7 @@ import {
   mergeTickerListsPreservingManualFields,
   parseAppStateSnapshot,
   parsePutPositionsImportPayload,
+  reconcileHydratedOpenPositions,
   saveConfig,
   saveClosedTrades,
   saveDeletedPositionIds,
@@ -277,6 +278,54 @@ describe('storage helpers', () => {
         expect.objectContaining({ id: 'call-1', option_side: 'call', contracts: 3 })
       ])
     );
+  });
+
+  it('keeps partially closed positions during hydration even when a closed trade shares the same position id', () => {
+    const localPuts = [
+      {
+        id: 'call-1',
+        ticker: 'MSFT',
+        option_side: 'call',
+        put_strike: 400,
+        premium_per_share: 6.95,
+        contracts: 2,
+        iv_rank: 38,
+        date_sold: '2026-04-01',
+        expiration_date: '2026-05-15',
+        option_market_price_per_share: null,
+        option_market_price_updated: null,
+        option_theta_per_share: null,
+        decision_rationale: '',
+        decision_snapshot: null
+      }
+    ] as PutPosition[];
+
+    expect(reconcileHydratedOpenPositions([], localPuts, [])).toEqual([
+      expect.objectContaining({ id: 'call-1', contracts: 2, option_side: 'call' })
+    ]);
+  });
+
+  it('removes fully deleted positions during hydration reconciliation', () => {
+    const localPuts = [
+      {
+        id: 'put-1',
+        ticker: 'MSFT',
+        option_side: 'put',
+        put_strike: 390,
+        premium_per_share: 12.57,
+        contracts: 2,
+        iv_rank: 30,
+        date_sold: '2026-04-01',
+        expiration_date: '2026-05-15',
+        option_market_price_per_share: null,
+        option_market_price_updated: null,
+        option_theta_per_share: null,
+        decision_rationale: '',
+        decision_snapshot: null
+      }
+    ] as PutPosition[];
+
+    expect(reconcileHydratedOpenPositions(localPuts, localPuts, ['put-1'])).toEqual([]);
   });
 
   it('merges snapshot closed trades with local trades and preserves local call history', () => {

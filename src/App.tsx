@@ -8,7 +8,6 @@ import { buildCapitalAllocationChart, buildRiskCalculator, buildTickerAllocation
 import {
   buildAppStateSnapshot,
   applyPutPositionsImportPayload,
-  filterDeletedPutPositions,
   filterDeletedTickers,
   loadClosedTrades,
   loadConfig,
@@ -19,10 +18,10 @@ import {
   loadTickerList,
   loadVixHistory,
   mergeClosedTradesPreservingLocal,
-  mergePutPositionsPreservingLocal,
   mergeTickerListsPreservingManualFields,
   parseAppStateSnapshot,
   parsePutPositionsImportPayload,
+  reconcileHydratedOpenPositions,
   saveConfig,
   saveClosedTrades,
   saveDeletedPositionIds,
@@ -1423,20 +1422,10 @@ function App() {
 
   function applyRemoteSnapshot(snapshotPayload: unknown, successMessage?: string) {
     const snapshot = parseAppStateSnapshot(JSON.stringify(snapshotPayload));
-    const closedPositionIds = new Set(
-      [...closedTrades, ...snapshot.data.closedTrades]
-        .map((trade) => trade.position_id.trim())
-        .filter(Boolean)
-    );
 
     setConfig(snapshot.data.config);
     setConfigForm(snapshot.data.config ?? DEFAULT_CONFIG);
-    setPuts((current) =>
-      mergePutPositionsPreservingLocal(
-        filterDeletedPutPositions(snapshot.data.puts, deletedPositionIds).filter((put) => !closedPositionIds.has(put.id)),
-        current.filter((put) => !closedPositionIds.has(put.id) && !deletedPositionIds.includes(put.id))
-      )
-    );
+    setPuts((current) => reconcileHydratedOpenPositions(snapshot.data.puts, current, deletedPositionIds));
     setClosedTrades((current) => mergeClosedTradesPreservingLocal(snapshot.data.closedTrades, current));
     setTickerList((current) =>
       filterDeletedTickers(mergeTickerListsPreservingManualFields(snapshot.data.tickerList, current), deletedTickers)

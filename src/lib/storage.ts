@@ -204,6 +204,17 @@ export function filterDeletedPutPositions(puts: PutPosition[], deletedIds: strin
   return puts.filter((put) => !deletedSet.has(put.id));
 }
 
+export function reconcileHydratedOpenPositions(
+  snapshotPuts: PutPosition[],
+  localPuts: PutPosition[],
+  deletedIds: string[]
+): PutPosition[] {
+  return mergePutPositionsPreservingLocal(
+    filterDeletedPutPositions(snapshotPuts, deletedIds),
+    filterDeletedPutPositions(localPuts, deletedIds)
+  );
+}
+
 export function mergePutPositionsPreservingLocal(snapshotPuts: PutPosition[], localPuts: PutPosition[]): PutPosition[] {
   const mergedById = new Map<string, PutPosition>();
 
