@@ -8,6 +8,10 @@ function getVixCachePath() {
   return process.env.VIX_CACHE_BLOB_PATH ?? 'risk-tool/vix-cache.json';
 }
 
+function getRefreshStatusPath() {
+  return process.env.REFRESH_STATUS_BLOB_PATH ?? 'risk-tool/refresh-status.json';
+}
+
 async function loadBlobSdk() {
   return blobSdkLoader();
 }
@@ -72,12 +76,21 @@ export async function writeVixCache(payload) {
   await writeJsonBlob(getVixCachePath(), payload);
 }
 
+export async function readRefreshStatus() {
+  return readJsonBlob(getRefreshStatusPath());
+}
+
+export async function writeRefreshStatus(payload) {
+  await writeJsonBlob(getRefreshStatusPath(), payload);
+}
+
 export function describeStorageTarget() {
   return {
     driver: 'blob-json',
     blobAccess: 'public',
     appStateTarget: getAppStatePath(),
-    vixCacheTarget: getVixCachePath()
+    vixCacheTarget: getVixCachePath(),
+    refreshStatusTarget: getRefreshStatusPath()
   };
 }
 

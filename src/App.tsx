@@ -74,6 +74,24 @@ type VixSnapshot = {
   cacheWriteError: string | null;
 };
 
+type BackgroundRefreshStatus = {
+  status: 'idle' | 'running' | 'success' | 'error';
+  source: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  updatedAt: string | null;
+  marketOpen: boolean | null;
+  force: boolean;
+  includeVix: boolean;
+  totalSteps: number;
+  completedSteps: number;
+  refreshedTickers: number;
+  refreshedOptions: number;
+  currentLabel: string | null;
+  message: string | null;
+  error: string | null;
+};
+
 type AppTab = 'dashboard' | 'sell' | 'positions' | 'history' | 'stocks';
 type HistoryFilter = 'all' | 'profit' | 'loss';
 
@@ -1134,6 +1152,29 @@ function loadOptionDraftState(): OptionDraftState {
   };
 }
 
+function normalizeBackgroundRefreshStatus(raw: unknown): BackgroundRefreshStatus {
+  const record = typeof raw === 'object' && raw !== null ? raw as Record<string, unknown> : {};
+  const status = record.status;
+
+  return {
+    status: status === 'running' || status === 'success' || status === 'error' ? status : 'idle',
+    source: typeof record.source === 'string' ? record.source : null,
+    startedAt: typeof record.started_at === 'string' ? record.started_at : null,
+    finishedAt: typeof record.finished_at === 'string' ? record.finished_at : null,
+    updatedAt: typeof record.updated_at === 'string' ? record.updated_at : null,
+    marketOpen: typeof record.market_open === 'boolean' ? record.market_open : null,
+    force: record.force === true,
+    includeVix: record.include_vix !== false,
+    totalSteps: typeof record.total_steps === 'number' ? record.total_steps : 0,
+    completedSteps: typeof record.completed_steps === 'number' ? record.completed_steps : 0,
+    refreshedTickers: typeof record.refreshed_tickers === 'number' ? record.refreshed_tickers : 0,
+    refreshedOptions: typeof record.refreshed_options === 'number' ? record.refreshed_options : 0,
+    currentLabel: typeof record.current_label === 'string' ? record.current_label : null,
+    message: typeof record.message === 'string' ? record.message : null,
+    error: typeof record.error === 'string' ? record.error : null
+  };
+}
+
 function App() {
   const initialOptionDraft = loadOptionDraftState();
   const savedConfig = loadConfig();
@@ -1165,6 +1206,7 @@ function App() {
   } | null>(null);
   const [vixMessage, setVixMessage] = useState('');
   const [vixSnapshot, setVixSnapshot] = useState<VixSnapshot | null>(null);
+  const [backgroundRefreshStatus, setBackgroundRefreshStatus] = useState<BackgroundRefreshStatus | null>(null);
   const [refreshingTicker, setRefreshingTicker] = useState<string | null>(null);
   const [isRefreshingAllTickers, setIsRefreshingAllTickers] = useState(false);
   const [isCheckingPut, setIsCheckingPut] = useState(false);
@@ -1267,6 +1309,25 @@ function App() {
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const addPutSectionRef = useRef<HTMLElement | null>(null);
   const hasHydratedSnapshotRef = useRef(false);
+  const latestBackgroundRefreshFinishedAtRef = useRef<string | null>(null);
+
+  function applyRemoteSnapshot(snapshotPayload: unknown, successMessage?: string) {
+    const snapshot = parseAppStateSnapshot(JSON.stringify(snapshotPayload));
+    setConfig(snapshot.data.config);
+    setConfigForm(snapshot.data.config ?? DEFAULT_CONFIG);
+    setPuts((current) =>
+      mergePutPositionsPreservingLocal(filterDeletedPutPositions(snapshot.data.puts, deletedPositionIds), current)
+    );
+    setClosedTrades((current) => mergeClosedTradesPreservingLocal(snapshot.data.closedTrades, current));
+    setTickerList((current) =>
+      filterDeletedTickers(mergeTickerListsPreservingManualFields(snapshot.data.tickerList, current), deletedTickers)
+    );
+    setScenario(snapshot.data.scenario ?? DEFAULT_STRESS_SCENARIO);
+    setVixHistory(mergeSeededVixHistory(snapshot.data.vixHistory));
+    if (successMessage) {
+      setImportExportMessage(successMessage);
+    }
+  }
 
   const stressAdjustment = useMemo(() => getDynamicStressAdjustment(vixHistory), [vixHistory]);
   const baseVixForStress = stressAdjustment.sevenDayAverage ?? vixSnapshot?.value ?? null;
@@ -1505,17 +1566,7 @@ function App() {
           return;
         }
 
-        const snapshot = parseAppStateSnapshot(JSON.stringify(payload.snapshot));
-        setConfig(snapshot.data.config);
-        setConfigForm(snapshot.data.config ?? DEFAULT_CONFIG);
-        setPuts((current) =>
-          mergePutPositionsPreservingLocal(filterDeletedPutPositions(snapshot.data.puts, deletedPositionIds), current)
-        );
-        setClosedTrades((current) => mergeClosedTradesPreservingLocal(snapshot.data.closedTrades, current));
-        setTickerList((current) => filterDeletedTickers(mergeTickerListsPreservingManualFields(snapshot.data.tickerList, current), deletedTickers));
-        setScenario(snapshot.data.scenario ?? DEFAULT_STRESS_SCENARIO);
-        setVixHistory(mergeSeededVixHistory(snapshot.data.vixHistory));
-        setImportExportMessage('已加载本地保存的数据');
+        applyRemoteSnapshot(payload.snapshot, '已加载本地保存的数据');
       } catch {
         // Keep browser localStorage state if no saved snapshot is available.
       } finally {
@@ -1529,6 +1580,54 @@ function App() {
 
     return () => {
       ignore = true;
+    };
+  }, [deletedPositionIds, deletedTickers]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function pollBackgroundRefreshStatus() {
+      try {
+        const response = await fetch('/api/refresh-status');
+        const payload = (await response.json()) as { status?: unknown; error?: string };
+        if (!response.ok || payload.error || cancelled) {
+          return;
+        }
+
+        const nextStatus = normalizeBackgroundRefreshStatus(payload.status);
+        if (cancelled) {
+          return;
+        }
+
+        setBackgroundRefreshStatus(nextStatus);
+
+        if (
+          nextStatus.finishedAt &&
+          nextStatus.finishedAt !== latestBackgroundRefreshFinishedAtRef.current &&
+          nextStatus.status !== 'running'
+        ) {
+          latestBackgroundRefreshFinishedAtRef.current = nextStatus.finishedAt;
+          const snapshotResponse = await fetch('/api/app-state');
+          const snapshotPayload = (await snapshotResponse.json()) as { snapshot?: unknown; error?: string };
+          if (!snapshotResponse.ok || snapshotPayload.error || !snapshotPayload.snapshot || cancelled) {
+            return;
+          }
+
+          applyRemoteSnapshot(snapshotPayload.snapshot, '已同步后台刷新后的市场数据');
+        }
+      } catch {
+        // Keep the UI quiet if the background status endpoint is temporarily unavailable.
+      }
+    }
+
+    void pollBackgroundRefreshStatus();
+    const timer = window.setInterval(() => {
+      void pollBackgroundRefreshStatus();
+    }, 15 * 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
     };
   }, [deletedPositionIds, deletedTickers]);
 
@@ -5610,6 +5709,61 @@ function App() {
             </div>
           </div>
           {importExportMessage && <div className="copy-message">{importExportMessage}</div>}
+          {backgroundRefreshStatus && (
+            <div className="refresh-progress-card background-refresh-card">
+              <div className="refresh-progress-header">
+                <strong>
+                  后台刷新
+                  {backgroundRefreshStatus.status === 'running'
+                    ? '进行中'
+                    : backgroundRefreshStatus.status === 'success'
+                      ? '已完成'
+                      : backgroundRefreshStatus.status === 'error'
+                        ? '失败'
+                        : '待命'}
+                </strong>
+                <span>
+                  {backgroundRefreshStatus.finishedAt
+                    ? `最近完成：${new Date(backgroundRefreshStatus.finishedAt).toLocaleString()}`
+                    : backgroundRefreshStatus.startedAt
+                      ? `开始于：${new Date(backgroundRefreshStatus.startedAt).toLocaleString()}`
+                      : '尚未检测到后台刷新记录'}
+                </span>
+              </div>
+              <div className="refresh-progress-bar" aria-hidden="true">
+                <div
+                  className="refresh-progress-fill"
+                  style={{
+                    width: `${
+                      backgroundRefreshStatus.totalSteps > 0
+                        ? Math.min(
+                            100,
+                            Math.round((backgroundRefreshStatus.completedSteps / backgroundRefreshStatus.totalSteps) * 100)
+                          )
+                        : backgroundRefreshStatus.status === 'success'
+                          ? 100
+                          : 0
+                    }%`
+                  }}
+                />
+              </div>
+              <div className="background-refresh-meta">
+                <span>
+                  {backgroundRefreshStatus.message ??
+                    (backgroundRefreshStatus.marketOpen === false
+                      ? '当前非盘中，后台任务会跳过股票与期权刷新'
+                      : '后台任务会按 20 / 30 分钟规则自动刷新')}
+                </span>
+                <span>
+                  已刷新 {backgroundRefreshStatus.refreshedTickers} 个股票，{backgroundRefreshStatus.refreshedOptions} 笔期权
+                </span>
+              </div>
+              {backgroundRefreshStatus.currentLabel && (
+                <div className="copy-message">{backgroundRefreshStatus.currentLabel}</div>
+              )}
+              {backgroundRefreshStatus.error && <div className="validation-message">{backgroundRefreshStatus.error}</div>}
+            </div>
+          )}
           <div className="form-grid">
             <label>
               <span>可用于卖期权的资金</span>

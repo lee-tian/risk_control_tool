@@ -20,6 +20,10 @@ function getVixCacheKey() {
   return process.env.VIX_CACHE_KV_KEY ?? 'risk-tool:vix-cache';
 }
 
+function getRefreshStatusKey() {
+  return process.env.REFRESH_STATUS_KV_KEY ?? 'risk-tool:refresh-status';
+}
+
 async function readJsonKey(key) {
   const { baseUrl, token } = getKvConfig();
   const response = await fetch(`${baseUrl}/get/${encodeURIComponent(key)}`, {
@@ -72,10 +76,19 @@ export async function writeVixCache(payload) {
   await writeJsonKey(getVixCacheKey(), payload);
 }
 
+export async function readRefreshStatus() {
+  return readJsonKey(getRefreshStatusKey());
+}
+
+export async function writeRefreshStatus(payload) {
+  await writeJsonKey(getRefreshStatusKey(), payload);
+}
+
 export function describeStorageTarget() {
   return {
     driver: 'kv',
     appStateTarget: getAppStateKey(),
-    vixCacheTarget: getVixCacheKey()
+    vixCacheTarget: getVixCacheKey(),
+    refreshStatusTarget: getRefreshStatusKey()
   };
 }

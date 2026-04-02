@@ -373,6 +373,19 @@ textarea:focus {
   transition: width 180ms ease;
 }
 
+.background-refresh-card {
+  margin-bottom: 18px;
+}
+
+.background-refresh-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

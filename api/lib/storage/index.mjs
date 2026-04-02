@@ -35,6 +35,14 @@ export async function writeVixCache(payload) {
   return getStore().writeVixCache(payload);
 }
 
+export async function readRefreshStatus() {
+  return getStore().readRefreshStatus();
+}
+
+export async function writeRefreshStatus(payload) {
+  return getStore().writeRefreshStatus(payload);
+}
+
 export function describeStorageTarget() {
   return getStore().describeStorageTarget();
 }

@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: '*/10 * * * *'
   workflow_dispatch:
+    inputs:
+      force_refresh:
+        description: Force refresh even outside market hours
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   refresh:
@@ -11,8 +17,9 @@ jobs:
     steps:
       - name: Trigger background refresh endpoint
         env:
-          CRON_REFRESH_URL: ${{ secrets.CRON_REFRESH_URL }}
+          CRON_REFRESH_URL: ${{ secrets.CRON_REFRESH_URL || vars.CRON_REFRESH_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          FORCE_REFRESH: ${{ github.event.inputs.force_refresh }}
         run: |
           if [ -z "$CRON_REFRESH_URL" ]; then
             echo "Missing CRON_REFRESH_URL secret"
@@ -29,4 +36,4 @@ jobs:
             -H "Authorization: Bearer $CRON_SECRET" \
             -H "Content-Type: application/json" \
             "$CRON_REFRESH_URL" \
-            -d '{"source":"github-actions","include_vix":true}'
+            -d "{\"source\":\"github-actions\",\"include_vix\":true,\"force\":${FORCE_REFRESH:-false}}"

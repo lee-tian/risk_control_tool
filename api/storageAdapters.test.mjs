@@ -35,7 +35,8 @@ describe('file storage adapter', () => {
     expect(fileStore.describeStorageTarget()).toEqual({
       driver: 'file',
       appStateTarget: path.join(tempDir, 'app-state.json'),
-      vixCacheTarget: path.join(tempDir, 'vix-cache.json')
+      vixCacheTarget: path.join(tempDir, 'vix-cache.json'),
+      refreshStatusTarget: path.join(tempDir, 'refresh-status.json')
     });
   });
 });
@@ -71,7 +72,8 @@ describe('storage driver selector', () => {
       driver: 'blob-json',
       blobAccess: 'public',
       appStateTarget: 'risk-tool/test/app-state.json',
-      vixCacheTarget: 'risk-tool/test/vix-cache.json'
+      vixCacheTarget: 'risk-tool/test/vix-cache.json',
+      refreshStatusTarget: 'risk-tool/refresh-status.json'
     });
   });
 });

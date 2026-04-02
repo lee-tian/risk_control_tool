@@ -86,7 +86,10 @@ CRON_SECRET=<和 Vercel 完全相同的值>
 CRON_REFRESH_URL=https://你的域名/api/cron/refresh-market-data
 ```
 
+`CRON_REFRESH_URL` 放在 `Repository variable` 里也可以，工作流两种都支持。
+
 3. push 到 GitHub 后，GitHub Actions 会自动按计划调用
+4. 在 GitHub `Actions -> Refresh Market Data -> Run workflow` 里可以手动触发；手动触发时支持 `force refresh`
 
 也可以手动测试：
 

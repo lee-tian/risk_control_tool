@@ -4,8 +4,10 @@ import { readJsonFromResponse } from './httpResponses.mjs';
 import {
   describeStorageTarget,
   readAppState,
+  readRefreshStatus,
   readVixCache,
   writeAppState,
+  writeRefreshStatus,
   writeVixCache
 } from './lib/storage/index.mjs';
 import {
@@ -588,6 +590,14 @@ async function loadVixCache() {
 
 async function saveVixCache(payload) {
   await writeVixCache(payload);
+}
+
+async function loadRefreshStatus() {
+  return readRefreshStatus();
+}
+
+async function saveRefreshStatus(payload) {
+  await writeRefreshStatus(payload);
 }
 
 function isFreshTimestamp(timestamp, ttlMs) {
@@ -2593,7 +2603,9 @@ export async function refreshAppStateSnapshot(
     fetchQuoteBundleFn = fetchQuoteBundle,
     fetchCurrentOptionQuoteFn = fetchCurrentOptionQuote,
     refreshVixFn = computeVixSnapshot,
-    sleepFn = sleep
+    sleepFn = sleep,
+    onProgress = null,
+    source = 'system'
   } = {}
 ) {
   const normalizedSnapshot = coerceSnapshot(snapshot, now);
@@ -2602,19 +2614,70 @@ export async function refreshAppStateSnapshot(
   const nowMs = now.getTime();
   const nextTickerList = normalizedSnapshot.data.tickerList.map((entry) => ({ ...entry }));
   const nextPuts = normalizedSnapshot.data.puts.map((position) => ({ ...position }));
+  const staleTickerIndexes =
+    marketOpen || force
+      ? nextTickerList
+          .map((entry, index) => ({ entry, index }))
+          .filter(
+            ({ entry }) =>
+              typeof entry?.ticker === 'string' &&
+              entry.ticker.trim() !== '' &&
+              (force || isRefreshStale(entry.last_updated ?? null, AUTO_PRICE_REFRESH_CHECK_MS, nowMs))
+          )
+          .map(({ index }) => index)
+      : [];
+  const staleOptionIndexes =
+    marketOpen || force
+      ? nextPuts
+          .map((position, index) => ({ position, index }))
+          .filter(
+            ({ position }) =>
+              typeof position?.ticker === 'string' &&
+              position.ticker.trim() !== '' &&
+              !isExpiredDateInput(position.expiration_date ?? '', now) &&
+              (force || isRefreshStale(position.option_market_price_updated ?? null, AUTO_OPTION_REFRESH_CHECK_MS, nowMs))
+          )
+          .map(({ index }) => index)
+      : [];
+  const totalSteps = staleTickerIndexes.length + staleOptionIndexes.length + (includeVix ? 1 : 0);
   const tickerResults = [];
   const optionResults = [];
+  let completedSteps = 0;
+
+  async function emitProgress(overrides = {}) {
+    if (typeof onProgress !== 'function') {
+      return;
+    }
+
+    await onProgress({
+      status: 'running',
+      source,
+      started_at: nowIso,
+      finished_at: null,
+      updated_at: new Date().toISOString(),
+      market_open: marketOpen,
+      force,
+      include_vix: includeVix,
+      total_steps: totalSteps,
+      completed_steps: completedSteps,
+      refreshed_tickers: tickerResults.filter((item) => item.ok).length,
+      refreshed_options: optionResults.filter((item) => item.ok).length,
+      current_label: null,
+      message: marketOpen || force ? '后台刷新进行中' : '当前非盘中，跳过股票与期权刷新',
+      error: null,
+      ...overrides
+    });
+  }
+
+  await emitProgress();
 
   if (marketOpen || force) {
-    for (let index = 0; index < nextTickerList.length; index += 1) {
+    for (let listIndex = 0; listIndex < staleTickerIndexes.length; listIndex += 1) {
+      const index = staleTickerIndexes[listIndex];
       const entry = nextTickerList[index];
-      if (typeof entry?.ticker !== 'string' || entry.ticker.trim() === '') {
-        continue;
-      }
-
-      if (!force && !isRefreshStale(entry.last_updated ?? null, AUTO_PRICE_REFRESH_CHECK_MS, nowMs)) {
-        continue;
-      }
+      await emitProgress({
+        current_label: `正在刷新股票 ${entry.ticker}`
+      });
 
       try {
         const { quoteResult, rsiResult, rsi1hResult, ma21Result, ma200Result, currentIvResult, marketMetricsResult } =
@@ -2684,27 +2747,22 @@ export async function refreshAppStateSnapshot(
         });
       }
 
-      if (index < nextTickerList.length - 1) {
+      completedSteps += 1;
+      await emitProgress({
+        current_label: `股票 ${entry.ticker} 刷新完成`
+      });
+
+      if (listIndex < staleTickerIndexes.length - 1) {
         await sleepFn(REQUEST_GAP_MS);
       }
     }
 
-    for (let index = 0; index < nextPuts.length; index += 1) {
+    for (let listIndex = 0; listIndex < staleOptionIndexes.length; listIndex += 1) {
+      const index = staleOptionIndexes[listIndex];
       const position = nextPuts[index];
-      if (
-        typeof position?.ticker !== 'string' ||
-        position.ticker.trim() === '' ||
-        isExpiredDateInput(position.expiration_date ?? '', now)
-      ) {
-        continue;
-      }
-
-      if (
-        !force &&
-        !isRefreshStale(position.option_market_price_updated ?? null, AUTO_OPTION_REFRESH_CHECK_MS, nowMs)
-      ) {
-        continue;
-      }
+      await emitProgress({
+        current_label: `正在刷新期权 ${position.ticker}`
+      });
 
       try {
         const optionQuote = await fetchCurrentOptionQuoteFn(
@@ -2730,7 +2788,12 @@ export async function refreshAppStateSnapshot(
         });
       }
 
-      if (index < nextPuts.length - 1) {
+      completedSteps += 1;
+      await emitProgress({
+        current_label: `期权 ${position.ticker} 刷新完成`
+      });
+
+      if (listIndex < staleOptionIndexes.length - 1) {
         await sleepFn(REQUEST_GAP_MS);
       }
     }
@@ -2738,6 +2801,9 @@ export async function refreshAppStateSnapshot(
 
   let vixResult = null;
   if (includeVix) {
+    await emitProgress({
+      current_label: '正在刷新 VIX / Fear & Greed'
+    });
     try {
       vixResult = await refreshVixFn();
     } catch (error) {
@@ -2745,6 +2811,10 @@ export async function refreshAppStateSnapshot(
         error: error instanceof Error ? error.message : 'Failed to refresh VIX cache'
       };
     }
+    completedSteps += 1;
+    await emitProgress({
+      current_label: 'VIX / Fear & Greed 刷新完成'
+    });
   }
 
   const updatedSnapshot = {
@@ -2862,12 +2932,52 @@ export async function handleApiRequest(req, res) {
       const payload = req.method === 'POST' ? await readJsonBody(req) : {};
       const force = (url.searchParams.get('force') ?? payload.force ?? '') === 'true' || payload.force === true;
       const includeVix = !((url.searchParams.get('include_vix') ?? payload.include_vix ?? '') === 'false' || payload.include_vix === false);
+      const source = typeof payload.source === 'string' && payload.source.trim() !== '' ? payload.source.trim() : 'github-actions';
+      const startedAt = new Date().toISOString();
+      await saveRefreshStatus({
+        status: 'running',
+        source,
+        started_at: startedAt,
+        finished_at: null,
+        updated_at: startedAt,
+        market_open: null,
+        force,
+        include_vix: includeVix,
+        total_steps: 0,
+        completed_steps: 0,
+        refreshed_tickers: 0,
+        refreshed_options: 0,
+        current_label: '正在读取服务器快照',
+        message: '后台刷新已启动',
+        error: null
+      });
       const snapshot = await loadSavedSnapshot();
       const refreshResult = await refreshAppStateSnapshot(snapshot, {
         force,
-        includeVix
+        includeVix,
+        source,
+        onProgress: async (status) => {
+          await saveRefreshStatus(status);
+        }
       });
       await saveSnapshot(refreshResult.snapshot);
+      await saveRefreshStatus({
+        status: 'success',
+        source,
+        started_at: startedAt,
+        finished_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        market_open: refreshResult.marketOpen,
+        force,
+        include_vix: includeVix,
+        total_steps: refreshResult.tickerResults.length + refreshResult.optionResults.length + (includeVix ? 1 : 0),
+        completed_steps: refreshResult.tickerResults.length + refreshResult.optionResults.length + (includeVix ? 1 : 0),
+        refreshed_tickers: refreshResult.refreshedTickers,
+        refreshed_options: refreshResult.refreshedOptions,
+        current_label: null,
+        message: refreshResult.marketOpen || force ? '后台刷新完成' : '当前非盘中，仅刷新了 VIX / Fear & Greed',
+        error: null
+      });
 
       sendJson(res, 200, {
         ok: true,
@@ -2883,9 +2993,56 @@ export async function handleApiRequest(req, res) {
         storage: describeStorageTarget()
       });
     } catch (error) {
+      await saveRefreshStatus({
+        status: 'error',
+        source: 'github-actions',
+        started_at: null,
+        finished_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        market_open: null,
+        force: false,
+        include_vix: true,
+        total_steps: 0,
+        completed_steps: 0,
+        refreshed_tickers: 0,
+        refreshed_options: 0,
+        current_label: null,
+        message: '后台刷新失败',
+        error: error instanceof Error ? error.message : 'Failed to refresh market data'
+      }).catch(() => {});
       sendJson(res, 500, {
         ok: false,
         error: error instanceof Error ? error.message : 'Failed to refresh market data'
+      });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/refresh-status' && req.method === 'GET') {
+    try {
+      const status = await loadRefreshStatus();
+      sendJson(res, 200, {
+        status: status ?? {
+          status: 'idle',
+          source: null,
+          started_at: null,
+          finished_at: null,
+          updated_at: null,
+          market_open: null,
+          force: false,
+          include_vix: true,
+          total_steps: 0,
+          completed_steps: 0,
+          refreshed_tickers: 0,
+          refreshed_options: 0,
+          current_label: null,
+          message: '后台刷新尚未运行',
+          error: null
+        }
+      });
+    } catch (error) {
+      sendJson(res, 500, {
+        error: error instanceof Error ? error.message : 'Failed to load refresh status'
       });
     }
     return;

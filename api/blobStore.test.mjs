@@ -45,7 +45,8 @@ describe('blob storage adapter', () => {
       driver: 'blob-json',
       blobAccess: 'public',
       appStateTarget: 'risk-tool/app-state.json',
-      vixCacheTarget: 'risk-tool/vix-cache.json'
+      vixCacheTarget: 'risk-tool/vix-cache.json',
+      refreshStatusTarget: 'risk-tool/refresh-status.json'
     });
 
     globalThis.fetch = originalFetch;
