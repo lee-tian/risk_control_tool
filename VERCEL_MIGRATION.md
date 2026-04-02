@@ -8,16 +8,15 @@ This project now supports a storage adapter so Docker and Vercel can use differe
   - `APP_STORAGE_DRIVER=file`
   - Persists to `data/app-state.json` and `data/vix-cache.json`
 - Future Vercel deployment:
-  - `APP_STORAGE_DRIVER=kv`
-  - Persists to KV via REST
+  - `APP_STORAGE_DRIVER=blob-json`
+  - Persists the same JSON payloads to Vercel Blob
 
 ## Required Vercel environment variables
 
-- `APP_STORAGE_DRIVER=kv`
-- `KV_REST_API_URL`
-- `KV_REST_API_TOKEN`
-- `APP_STATE_KV_KEY` (optional, defaults to `risk-tool:app-state`)
-- `VIX_CACHE_KV_KEY` (optional, defaults to `risk-tool:vix-cache`)
+- `APP_STORAGE_DRIVER=blob-json`
+- `BLOB_READ_WRITE_TOKEN`
+- `APP_STATE_BLOB_PATH` (optional, defaults to `risk-tool/app-state.json`)
+- `VIX_CACHE_BLOB_PATH` (optional, defaults to `risk-tool/vix-cache.json`)
 - `GEMINI_API_KEY`
 - `TWELVE_DATA_API_KEY`
 - `MARKETDATA_TOKEN`

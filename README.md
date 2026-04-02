@@ -7,7 +7,7 @@
 - 前端：Vite + React + TypeScript
 - API：Node.js
 - 本地 / Docker 持久化：文件存储
-- Vercel 持久化：KV（通过 `APP_STORAGE_DRIVER=kv` 切换）
+- Vercel 持久化：Blob JSON（通过 `APP_STORAGE_DRIVER=blob-json` 切换）
 
 ## 股票价格刷新
 
@@ -37,12 +37,12 @@ API 持久化实现：
 
 - [index.mjs](/Users/emily/Documents/Code/risk_control_tool/api/lib/storage/index.mjs)
 - [fileStore.mjs](/Users/emily/Documents/Code/risk_control_tool/api/lib/storage/fileStore.mjs)
-- [kvStore.mjs](/Users/emily/Documents/Code/risk_control_tool/api/lib/storage/kvStore.mjs)
+- [blobStore.mjs](/Users/emily/Documents/Code/risk_control_tool/api/lib/storage/blobStore.mjs)
 
 说明：
 
 - 本地和 Docker 默认使用 `file` 驱动，数据保存在 [app-state.json](/Users/emily/Documents/Code/risk_control_tool/data/app-state.json) 和 [vix-cache.json](/Users/emily/Documents/Code/risk_control_tool/data/vix-cache.json)
-- Vercel 部署建议使用 `kv` 驱动，避免依赖函数运行时文件系统
+- Vercel 部署建议使用 `blob-json` 驱动，把 `app-state.json` 和 `vix-cache.json` 存到 Blob
 - 只要同一浏览器和同一站点不清空站点数据，浏览器本地状态会保留
 - 即使浏览器本地数据丢失，只要 API 快照还在，页面刷新后也能恢复大部分状态
 
@@ -127,8 +127,7 @@ http://localhost:60688
 
 1. 一个 GitHub 仓库
 2. 一个 Vercel 项目
-3. 一套 KV 存储
-   推荐 Upstash Redis / Vercel KV REST 兼容地址
+3. 一个 Vercel Blob 存储
 
 ### Vercel 控制台逐步配置
 
@@ -154,11 +153,10 @@ dist
 10. 添加下面这些变量，并至少勾选 `Production`
 
 ```text
-APP_STORAGE_DRIVER=kv
-KV_REST_API_URL=...
-KV_REST_API_TOKEN=...
-APP_STATE_KV_KEY=risk-tool:app-state
-VIX_CACHE_KV_KEY=risk-tool:vix-cache
+APP_STORAGE_DRIVER=blob-json
+BLOB_READ_WRITE_TOKEN=...
+APP_STATE_BLOB_PATH=risk-tool/app-state.json
+VIX_CACHE_BLOB_PATH=risk-tool/vix-cache.json
 GEMINI_API_KEY=...
 TWELVE_DATA_API_KEY=...
 MARKETDATA_TOKEN=...

@@ -1,4 +1,5 @@
 import * as fileStore from './fileStore.mjs';
+import * as blobStore from './blobStore.mjs';
 import * as kvStore from './kvStore.mjs';
 
 function selectStorageDriver() {
@@ -6,7 +7,16 @@ function selectStorageDriver() {
 }
 
 function getStore() {
-  return selectStorageDriver() === 'kv' ? kvStore : fileStore;
+  const driver = selectStorageDriver();
+  if (driver === 'kv') {
+    return kvStore;
+  }
+
+  if (driver === 'blob-json' || driver === 'blob') {
+    return blobStore;
+  }
+
+  return fileStore;
 }
 
 export async function readAppState() {

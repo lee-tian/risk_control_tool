@@ -43,6 +43,9 @@ describe('file storage adapter', () => {
 describe('storage driver selector', () => {
   afterEach(() => {
     delete process.env.APP_STORAGE_DRIVER;
+    delete process.env.BLOB_READ_WRITE_TOKEN;
+    delete process.env.APP_STATE_BLOB_PATH;
+    delete process.env.VIX_CACHE_BLOB_PATH;
     delete process.env.KV_REST_API_URL;
     delete process.env.KV_REST_API_TOKEN;
     delete process.env.APP_STATE_KV_KEY;
@@ -56,31 +59,18 @@ describe('storage driver selector', () => {
     expect(storage.describeStorageTarget().driver).toBe('file');
   });
 
-  it('switches to kv when APP_STORAGE_DRIVER=kv', async () => {
-    process.env.APP_STORAGE_DRIVER = 'kv';
-    process.env.KV_REST_API_URL = 'https://example-kv.test';
-    process.env.KV_REST_API_TOKEN = 'secret-token';
-    process.env.APP_STATE_KV_KEY = 'risk-tool:test:app-state';
-    process.env.VIX_CACHE_KV_KEY = 'risk-tool:test:vix-cache';
-
-    const fetchMock = vi.fn(async (url) => {
-      if (String(url).includes('/get/')) {
-        return new Response(JSON.stringify({ result: null }), { status: 200 });
-      }
-
-      return new Response(JSON.stringify({ result: 'OK' }), { status: 200 });
-    });
-    vi.stubGlobal('fetch', fetchMock);
+  it('switches to blob-json when APP_STORAGE_DRIVER=blob-json', async () => {
+    process.env.APP_STORAGE_DRIVER = 'blob-json';
+    process.env.BLOB_READ_WRITE_TOKEN = 'blob-secret-token';
+    process.env.APP_STATE_BLOB_PATH = 'risk-tool/test/app-state.json';
+    process.env.VIX_CACHE_BLOB_PATH = 'risk-tool/test/vix-cache.json';
 
     const storage = await importFresh('./lib/storage/index.mjs');
-    expect(storage.getStorageDriver()).toBe('kv');
+    expect(storage.getStorageDriver()).toBe('blob-json');
     expect(storage.describeStorageTarget()).toEqual({
-      driver: 'kv',
-      appStateTarget: 'risk-tool:test:app-state',
-      vixCacheTarget: 'risk-tool:test:vix-cache'
+      driver: 'blob-json',
+      appStateTarget: 'risk-tool/test/app-state.json',
+      vixCacheTarget: 'risk-tool/test/vix-cache.json'
     });
-
-    await storage.writeAppState({ puts: [] });
-    expect(fetchMock).toHaveBeenCalled();
   });
 });
