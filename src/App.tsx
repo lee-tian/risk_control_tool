@@ -4,6 +4,7 @@ import { formatCurrency, formatPercent } from './lib/formatters';
 import { compareOptionRowsByLossPct, isOptionLossAtTwoXCredit } from './lib/optionAlerts';
 import { parseJsonResponseText } from './lib/quoteRefresh';
 import { buildTopIvRankStocks } from './lib/dashboardSignals';
+import { buildCapitalAllocationChart, buildRiskCalculator, buildTickerAllocationItems } from './lib/dashboardPortfolio';
 import {
   buildAppStateSnapshot,
   applyPutPositionsImportPayload,
@@ -49,7 +50,9 @@ import {
   addTickerEntry,
   normalizeTickerSymbol,
   removeTickerEntry,
-  updateTickerEntry
+  sellTickerShares,
+  updateTickerEntry,
+  type TickerDraft
 } from './lib/tickerWorkflow';
 import { validateConfig, validatePut, type ValidationErrors } from './lib/validation';
 import type { ClosedPutTrade, Config, PutPosition, PutRiskRow, ScoreLevel, StressScenario, TickerEntry, VixHistoryPoint } from './types';
@@ -74,6 +77,18 @@ type VixSnapshot = {
   cacheWriteError: string | null;
 };
 
+type TickerEditDraftValues = Pick<TickerDraft, 'beta' | 'shares' | 'averageCostBasis' | 'downsideTolerancePct'>;
+
+function createTickerEditDraft(entry: TickerEntry): TickerEditDraftValues {
+  return {
+    beta: entry.beta == null ? '' : String(entry.beta),
+    shares: entry.shares == null ? '' : String(entry.shares),
+    averageCostBasis: entry.average_cost_basis == null ? '' : String(entry.average_cost_basis),
+    downsideTolerancePct:
+      entry.downside_tolerance_pct == null ? '' : (entry.downside_tolerance_pct * 100).toFixed(1).replace(/\.0$/, '')
+  };
+}
+
 type BackgroundRefreshStatus = {
   status: 'idle' | 'running' | 'success' | 'error';
   source: string | null;
@@ -92,7 +107,7 @@ type BackgroundRefreshStatus = {
   error: string | null;
 };
 
-type AppTab = 'dashboard' | 'sell' | 'positions' | 'history' | 'stocks';
+type AppTab = 'dashboard' | 'sell' | 'positions' | 'history' | 'stocks' | 'calculator';
 type HistoryFilter = 'all' | 'profit' | 'loss';
 
 const SEEDED_VIX_HISTORY_RAW = `
@@ -362,6 +377,31 @@ function formatSignedPercent(value: number | null): string {
   }
 
   return `${value >= 0 ? '+' : '-'}${formatPercent(Math.abs(value))}`;
+}
+
+function calculateHoldingStockRisk(entry: TickerEntry | undefined): number {
+  if (!entry) {
+    return 0;
+  }
+
+  const shares = entry.shares ?? 0;
+  const currentPrice = entry.current_price ?? 0;
+  if (shares <= 0 || currentPrice <= 0) {
+    return 0;
+  }
+
+  const rawBeta = typeof entry.beta === 'number' && Number.isFinite(entry.beta) ? entry.beta : 1;
+  const clampedBeta = Math.min(Math.max(rawBeta, 0.6), 2.5);
+  const rawTolerancePct =
+    typeof entry.downside_tolerance_pct === 'number' && Number.isFinite(entry.downside_tolerance_pct)
+      ? entry.downside_tolerance_pct
+      : 0;
+  const clampedTolerancePct = Math.min(Math.max(rawTolerancePct, 0), 0.2);
+  const toleranceFactor = Math.max(1 - clampedTolerancePct / 0.2, 0.3);
+  const stockValue = shares * currentPrice;
+  const stockRiskFloor = stockValue * 0.02;
+
+  return Math.max(stockValue * 0.1 * clampedBeta * toleranceFactor, stockRiskFloor);
 }
 
 function percentInputToDecimal(value: string): number {
@@ -1243,6 +1283,8 @@ function App() {
   const [newTickerTolerancePct, setNewTickerTolerancePct] = useState('');
   const [newTickerExchange, setNewTickerExchange] = useState('');
   const [newTickerMicCode, setNewTickerMicCode] = useState('');
+  const [editingTickers, setEditingTickers] = useState<Record<string, boolean>>({});
+  const [tickerDrafts, setTickerDrafts] = useState<Record<string, TickerEditDraftValues>>({});
   const [tickerMessage, setTickerMessage] = useState('');
   const [priceRefreshMessage, setPriceRefreshMessage] = useState('');
   const [refreshAllProgress, setRefreshAllProgress] = useState<{
@@ -1256,6 +1298,7 @@ function App() {
   const [vixSnapshot, setVixSnapshot] = useState<VixSnapshot | null>(null);
   const [backgroundRefreshStatus, setBackgroundRefreshStatus] = useState<BackgroundRefreshStatus | null>(null);
   const [pendingPositionScrollId, setPendingPositionScrollId] = useState<string | null>(null);
+  const [pendingStockScrollTicker, setPendingStockScrollTicker] = useState<string | null>(null);
   const [refreshingTicker, setRefreshingTicker] = useState<string | null>(null);
   const [isRefreshingAllTickers, setIsRefreshingAllTickers] = useState(false);
   const [isCheckingPut, setIsCheckingPut] = useState(false);
@@ -1283,6 +1326,7 @@ function App() {
   } | null>(null);
   const putsRef = useRef<PutPosition[]>(puts);
   const positionCardRefs = useRef<Record<string, HTMLElement | null>>({});
+  const stockRowRefs = useRef<Record<string, HTMLElement | null>>({});
   const refreshingOptionPriceIdRef = useRef<string | null>(refreshingOptionPriceId);
   const autoRefreshingOptionPriceIdRef = useRef<string | null>(autoRefreshingOptionPriceId);
   const isRefreshingAllOptionsRef = useRef(isRefreshingAllOptions);
@@ -1320,6 +1364,13 @@ function App() {
     closedAt: string;
     reflectionNotes: string;
   } | null>(null);
+  const [sellStockPreview, setSellStockPreview] = useState<{
+    ticker: string;
+    currentShares: number;
+    sharesToSell: string;
+    sellPricePerShare: string;
+    coveredCallShares: number;
+  } | null>(null);
   const [historyEditPreview, setHistoryEditPreview] = useState<{
     tradeId: string;
     ticker: string;
@@ -1339,6 +1390,7 @@ function App() {
   const [positionOptionTypeFilter, setPositionOptionTypeFilter] = useState<'ALL' | 'PUT' | 'CALL'>('ALL');
   const [moneynessFilter, setMoneynessFilter] = useState<'ALL' | 'ITM' | 'OTM'>('ALL');
   const [positionSort, setPositionSort] = useState<'DEFAULT' | 'EXPIRATION' | 'PUT_RISK' | 'LOSS_PCT' | 'ANNUALIZED_YIELD'>('DEFAULT');
+  const [riskCalculatorDropInput, setRiskCalculatorDropInput] = useState('10');
   const [vixHistory, setVixHistory] = useState<VixHistoryPoint[]>(() => mergeSeededVixHistory(loadVixHistory()));
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all');
   const [copyMessage, setCopyMessage] = useState('');
@@ -1351,7 +1403,14 @@ function App() {
     }
 
     const raw = window.localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
-    if (raw === 'dashboard' || raw === 'sell' || raw === 'positions' || raw === 'history' || raw === 'stocks') {
+    if (
+      raw === 'dashboard' ||
+      raw === 'sell' ||
+      raw === 'positions' ||
+      raw === 'history' ||
+      raw === 'stocks' ||
+      raw === 'calculator'
+    ) {
       return raw;
     }
 
@@ -1951,6 +2010,11 @@ function App() {
         const shares = stockEntry?.shares ?? 0;
         const currentPrice = stockEntry?.current_price ?? null;
         const marketValue = shares * (currentPrice ?? 0);
+        const stockRisk = calculateHoldingStockRisk(stockEntry);
+        const stockRiskFloor = marketValue * 0.02;
+        const coveredRatio = shares > 0 ? Math.min(coveredCallShares / shares, 1) : 0;
+        const callOffset = callPremiumIncome * coveredRatio;
+        const netStockRisk = shares > 0 ? Math.max(stockRisk - callOffset, stockRiskFloor) : 0;
         const strikeDistances = callRows
           .map((row) => getPercentDistanceToStrike(currentPrice, row.put_strike, 'call'))
           .filter((value): value is number => value !== null);
@@ -1960,9 +2024,26 @@ function App() {
           shares,
           averageCost: stockEntry?.average_cost_basis,
           currentPrice,
+          callRows: [...callRows]
+            .map((row) => ({
+              ...row,
+              premiumIncome: row.premium_per_share * row.contracts * 100,
+              unrealizedPnl:
+                typeof row.option_market_price_per_share === 'number'
+                  ? (row.premium_per_share - row.option_market_price_per_share) * row.contracts * 100
+                  : null
+            }))
+            .sort((a, b) => {
+              const aDistance = Math.abs(getPercentDistanceToStrike(currentPrice, a.put_strike, 'call') ?? Number.POSITIVE_INFINITY);
+              const bDistance = Math.abs(getPercentDistanceToStrike(currentPrice, b.put_strike, 'call') ?? Number.POSITIVE_INFINITY);
+              return aDistance - bDistance;
+            }),
           hasStockHolding: shares > 0,
           marketValue,
           summaryValue: shares > 0 ? marketValue : callPremiumIncome,
+          stockRisk,
+          callOffset,
+          netStockRisk,
           unrealizedPnlAmount:
             typeof stockEntry?.average_cost_basis === 'number' &&
             typeof currentPrice === 'number' &&
@@ -2036,7 +2117,9 @@ function App() {
   const topIvRankStocks = useMemo(() => buildTopIvRankStocks(tickerList, 5), [tickerList]);
   const insightLines = useMemo(() => {
     return [
-      `最高风险 ticker：${metrics.highestRiskTicker}`,
+      ...(metrics.missingStockBetaTickers.length > 0
+        ? [`Beta 忘记输入了：${metrics.missingStockBetaTickers.join('、')}`]
+        : []),
       mostOverboughtStocks.length > 0
         ? `最超买：${mostOverboughtStocks[0].ticker}（1D ${mostOverboughtStocks[0].rsiDaily?.toFixed(1) ?? '-'} / 1H ${mostOverboughtStocks[0].rsiHourly?.toFixed(1) ?? '-'}）`
         : '当前没有明显超买股票',
@@ -2046,7 +2129,8 @@ function App() {
       metrics.canAddMoreRisk
         ? `还可增加 Put 风险：${formatCurrency(metrics.remainingRiskBudget)}`
         : '当前已超过风险预算，建议暂停新增 Option 仓位',
-      `Risk % of Cash：${formatPercent(metrics.portfolioRiskPctOfCash)}`,
+      `Put Risk % of Cash：${formatPercent(metrics.portfolioRiskPctOfCash)}`,
+      `Total Risk % of Total Capital：${formatPercent(metrics.totalRiskPctOfTotalCapital)}`,
       `目前年化收益率（总资金）：${formatPercent(metrics.annualizedYieldOnTotalCash)}`,
       `Estimated theta income / day：${formatCurrency(metrics.estimatedThetaIncomePerDay)}`,
       `Estimated theta income / week：${formatCurrency(metrics.estimatedThetaIncomePerWeek)}`,
@@ -2115,6 +2199,77 @@ function App() {
       });
   }, [metrics.groupedTickerRisk, metrics.putRows, tickerList]);
   const stockLossAlertThreshold = (config?.cash ?? 0) * 0.01;
+
+  const combinedHoldings = useMemo(() => {
+    const putMap = new Map(riskTickersWithOptionLoss.map((item) => [item.ticker, item]));
+    const stockMap = new Map(stockHoldings.map((item) => [item.ticker, item]));
+    const tickers = [...new Set([...riskTickersWithOptionLoss.map((item) => item.ticker), ...stockHoldings.map((item) => item.ticker)])];
+
+    return tickers
+      .map((ticker) => {
+        const putHolding = putMap.get(ticker) ?? null;
+        const stockHolding = stockMap.get(ticker) ?? null;
+        const totalOptionPremiumIncome = (putHolding?.totalPremiumIncome ?? 0) + (stockHolding?.callPremiumIncome ?? 0);
+        const putPnl = putHolding?.totalOptionPnl ?? 0;
+        const callPnl = stockHolding?.callUnrealizedPnl ?? 0;
+        const stockPnl = stockHolding?.unrealizedPnlAmount ?? 0;
+        const stockCostBasis =
+          stockHolding && stockHolding.hasStockHolding && stockHolding.averageCost != null
+            ? stockHolding.averageCost * stockHolding.shares
+            : 0;
+        const totalPnl = stockPnl + putPnl + callPnl;
+        const totalPnlBasis = stockCostBasis + totalOptionPremiumIncome;
+        const totalPnlPct = totalPnlBasis > 0 ? totalPnl / totalPnlBasis : null;
+        const currentValue = (stockHolding?.marketValue ?? 0) + putPnl + callPnl;
+        const nearestStrikeCandidates = [putHolding?.nearestStrikeDistancePct ?? null, stockHolding?.nearestStrikeDistancePct ?? null]
+          .filter((value): value is number => value !== null);
+        const nearestStrikeDistancePct =
+          nearestStrikeCandidates.length > 0
+            ? nearestStrikeCandidates.reduce((best, current) =>
+                Math.abs(current) < Math.abs(best) ? current : best
+              )
+            : null;
+        const displayValue =
+          stockHolding?.hasStockHolding
+            ? stockHolding.summaryValue
+            : totalOptionPremiumIncome > 0
+              ? totalOptionPremiumIncome
+              : putHolding?.risk ?? 0;
+        const isAlert =
+          (putHolding !== null &&
+            putHolding.totalOptionLoss >= putHolding.totalPremiumIncome * 2 &&
+            putHolding.totalOptionLoss > 0) ||
+          (stockHolding !== null &&
+            stockHolding.unrealizedPnlAmount !== null &&
+            stockHolding.unrealizedPnlAmount < 0 &&
+            Math.abs(stockHolding.unrealizedPnlAmount) >= stockLossAlertThreshold);
+
+        return {
+          ticker,
+          putHolding,
+          stockHolding,
+          totalOptionPremiumIncome,
+          putPnl,
+          callPnl,
+          totalPnlPct,
+          currentValue,
+          displayValue,
+          nearestStrikeDistancePct,
+          isAlert
+        };
+      })
+      .sort((a, b) => {
+        const aPutRisk = a.putHolding?.risk ?? -1;
+        const bPutRisk = b.putHolding?.risk ?? -1;
+        if (aPutRisk !== bPutRisk) {
+          return bPutRisk - aPutRisk;
+        }
+        if (a.displayValue !== b.displayValue) {
+          return b.displayValue - a.displayValue;
+        }
+        return a.ticker.localeCompare(b.ticker);
+      });
+  }, [riskTickersWithOptionLoss, stockHoldings, stockLossAlertThreshold]);
   const sortedClosedTrades = useMemo(
     () => [...closedTrades].sort((a, b) => b.closed_at.localeCompare(a.closed_at)),
     [closedTrades]
@@ -2186,98 +2341,29 @@ function App() {
     () => visibleVixHistory.reduce<VixHistoryPoint | null>((peak, point) => (!peak || point.value > peak.value ? point : peak), null),
     [visibleVixHistory]
   );
-  const topExposureChart = useMemo(() => {
-    const colors = {
-      stock: '#7c9a92',
-      option: '#124e66',
-      cash: '#d9e6eb'
-    };
-    const stockHoldingsExposure = totalStockMarketValue;
-    const remainingCash = Math.max((config?.cash ?? 0) - metrics.totalNominalPutExposure, 0);
-    const cashBase = stockHoldingsExposure + metrics.totalNominalPutExposure + remainingCash;
-    const chartItems = [
-      ...(stockHoldingsExposure > 0 ? [{ ticker: '股票', exposure: stockHoldingsExposure, color: colors.stock }] : []),
-      ...(metrics.totalNominalPutExposure > 0
-        ? [{ ticker: '期权资金占用', exposure: metrics.totalNominalPutExposure, color: colors.option }]
-        : []),
-      ...(remainingCash > 0 ? [{ ticker: '现金', exposure: remainingCash, color: colors.cash }] : [])
-    ];
-    let cumulative = 0;
-    const radius = 54;
-    const circumference = 2 * Math.PI * radius;
-
-    const segments = chartItems.map((item) => {
-      const share = cashBase > 0 ? item.exposure / cashBase : 0;
-      const dash = share * circumference;
-      const gap = circumference - dash;
-      const offset = -cumulative * circumference;
-      cumulative += share;
-
-      return {
-        ...item,
-        share,
-        dash,
-        gap,
-        offset
-      };
-    });
-
-    return {
-      totalExposure: cashBase,
-      segments,
-      legendSegments: segments
-    };
-  }, [config?.cash, metrics.totalNominalPutExposure, totalStockMarketValue]);
-  const optionBreakdownItems = useMemo(() => {
-    const exposureMap = new Map<string, number>();
-
-    for (const row of metrics.putRows) {
-      exposureMap.set(row.ticker, (exposureMap.get(row.ticker) ?? 0) + row.nominalExposure);
-    }
-
-    const sorted = [...exposureMap.entries()]
-      .map(([ticker, exposure]) => ({ ticker, exposure }))
-      .sort((a, b) => b.exposure - a.exposure);
-
-    const topThree = sorted.slice(0, 3).map((item, index) => ({
-      ticker: `${item.ticker} Put`,
-      exposure: item.exposure,
-      share: metrics.totalNominalPutExposure > 0 ? item.exposure / metrics.totalNominalPutExposure : 0,
-      color: ['#124e66', '#1f7a8c', '#d6a300'][index] ?? '#124e66'
-    }));
-    const otherExposure = Math.max(
-      metrics.totalNominalPutExposure - topThree.reduce((sum, item) => sum + item.exposure, 0),
-      0
-    );
-
-    return [
-      ...topThree,
-      ...(otherExposure > 0
-        ? [
-            {
-              ticker: 'Other positions',
-              exposure: otherExposure,
-              share: metrics.totalNominalPutExposure > 0 ? otherExposure / metrics.totalNominalPutExposure : 0,
-              color: '#6f9aa8'
-            }
-          ]
-        : [])
-    ];
-  }, [metrics.putRows, metrics.totalNominalPutExposure]);
-  const capitalSummaryItems = useMemo(() => {
-    const totalCapital = totalStockMarketValue + metrics.totalNominalPutExposure + Math.max((config?.cash ?? 0) - metrics.totalNominalPutExposure, 0);
-    const stockExposure = totalStockMarketValue;
-    const remainingCash = Math.max((config?.cash ?? 0) - metrics.totalNominalPutExposure, 0);
-    const pct = (value: number) => (totalCapital > 0 ? value / totalCapital : 0);
-
-    return [
-      ...(stockExposure > 0 ? [{ label: '股票', value: stockExposure, share: pct(stockExposure) }] : []),
-      { label: '现金', value: remainingCash, share: pct(remainingCash) }
-    ].sort((a, b) => b.value - a.value);
-  }, [config?.cash, metrics.totalNominalPutExposure, totalStockMarketValue]);
   const remainingCashAmount = Math.max((config?.cash ?? 0) - metrics.totalNominalPutExposure, 0);
+  const capitalAllocationChart = useMemo(
+    () => buildCapitalAllocationChart(totalStockMarketValue, metrics.totalNominalPutExposure, remainingCashAmount),
+    [metrics.totalNominalPutExposure, remainingCashAmount, totalStockMarketValue]
+  );
+  const tickerAllocationItems = useMemo(
+    () => buildTickerAllocationItems(stockHoldings, metrics.putRows),
+    [metrics.putRows, stockHoldings]
+  );
   const overallCapitalAmount = remainingCashAmount + metrics.totalNominalPutExposure + totalStockMarketValue;
   const remainingCashPct = overallCapitalAmount > 0 ? remainingCashAmount / overallCapitalAmount : 0;
+  const riskCalculatorDropPct = useMemo(() => {
+    const raw = percentInputToDecimal(riskCalculatorDropInput);
+    if (!Number.isFinite(raw)) {
+      return 0;
+    }
+
+    return Math.min(Math.max(raw, 0), 1);
+  }, [riskCalculatorDropInput]);
+  const riskCalculator = useMemo(
+    () => buildRiskCalculator(puts, tickerList, riskCalculatorDropPct, metrics.totalCapitalBase > 0 ? metrics.totalCapitalBase : overallCapitalAmount),
+    [metrics.totalCapitalBase, overallCapitalAmount, puts, riskCalculatorDropPct, tickerList]
+  );
   const baseRiskScore = metrics.riskScore;
   const regimeAdjustment = getRegimeAdjustment(vixSnapshot?.fearGreedScore ?? null);
   const finalSellingScore = Math.max(0, baseRiskScore + regimeAdjustment);
@@ -2368,6 +2454,24 @@ function App() {
 
     return () => window.clearTimeout(timer);
   }, [activeTab, pendingPositionScrollId, visiblePutRows]);
+
+  useEffect(() => {
+    if (activeTab !== 'stocks' || pendingStockScrollTicker === null) {
+      return;
+    }
+
+    const target = stockRowRefs.current[pendingStockScrollTicker];
+    if (!target) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setPendingStockScrollTicker(null);
+    }, 80);
+
+    return () => window.clearTimeout(timer);
+  }, [activeTab, pendingStockScrollTicker, tickerList]);
   const putFormDaysToExpiration = getDaysToExpirationForPreview(putForm.date_sold, putForm.expiration_date);
   const putFormNominalExposure = putForm.put_strike * putForm.contracts * 100;
   const putFormPremiumIncome = putForm.premium_per_share * putForm.contracts * 100;
@@ -3081,28 +3185,57 @@ function App() {
     setTickerMessage(`已添加 ${normalized}`);
   }
 
-  function handleUpdateTickerBeta(ticker: string, betaValue: string) {
-    setTickerList((current) => updateTickerEntry(current, ticker, { beta: betaValue.trim() === '' ? null : Number(betaValue) }));
+  function handleStartTickerEdit(entry: TickerEntry) {
+    setEditingTickers((current) => ({ ...current, [entry.ticker]: true }));
+    setTickerDrafts((current) => ({ ...current, [entry.ticker]: createTickerEditDraft(entry) }));
   }
 
-  function handleUpdateTickerShares(ticker: string, sharesValue: string) {
-    setTickerList((current) => updateTickerEntry(current, ticker, { shares: sharesValue.trim() === '' ? null : Number(sharesValue) }));
+  function handleCancelTickerEdit(ticker: string) {
+    setEditingTickers((current) => {
+      const next = { ...current };
+      delete next[ticker];
+      return next;
+    });
+    setTickerDrafts((current) => {
+      const next = { ...current };
+      delete next[ticker];
+      return next;
+    });
   }
 
-  function handleUpdateTickerAverageCost(ticker: string, averageCostValue: string) {
-    setTickerList((current) =>
-      updateTickerEntry(current, ticker, {
-        average_cost_basis: averageCostValue.trim() === '' ? null : Number(averageCostValue)
-      })
-    );
+  function handleChangeTickerDraft(
+    ticker: string,
+    field: keyof TickerEditDraftValues,
+    value: string
+  ) {
+    setTickerDrafts((current) => ({
+      ...current,
+      [ticker]: {
+        ...(current[ticker] ?? { beta: '', shares: '', averageCostBasis: '', downsideTolerancePct: '' }),
+        [field]: value
+      }
+    }));
   }
 
-  function handleUpdateTickerTolerancePct(ticker: string, toleranceValue: string) {
-    setTickerList((current) =>
-      updateTickerEntry(current, ticker, {
-        downside_tolerance_pct: toleranceValue.trim() === '' ? null : Number(toleranceValue) / 100
-      })
-    );
+  function handleSaveTickerEdit(ticker: string) {
+    const draft = tickerDrafts[ticker];
+    if (!draft) {
+      return;
+    }
+
+    setTickerList((current) => {
+      const nextTickerList = updateTickerEntry(current, ticker, {
+        beta: draft.beta.trim() === '' ? null : Number(draft.beta),
+        shares: draft.shares.trim() === '' ? null : Number(draft.shares),
+        average_cost_basis: draft.averageCostBasis.trim() === '' ? null : Number(draft.averageCostBasis),
+        downside_tolerance_pct: draft.downsideTolerancePct.trim() === '' ? null : Number(draft.downsideTolerancePct) / 100
+      });
+      saveTickerList(nextTickerList);
+      return nextTickerList;
+    });
+
+    handleCancelTickerEdit(ticker);
+    setTickerMessage(`已保存 ${ticker}`);
   }
 
   function handleDeleteTicker(ticker: string) {
@@ -3118,6 +3251,76 @@ function App() {
       setPutForm((current) => ({ ...current, ticker: '' }));
     }
     setTickerMessage(`已删除 ${ticker}`);
+  }
+
+  function handleOpenSellStock(entry: TickerEntry) {
+    const currentShares = entry.shares ?? 0;
+    if (currentShares <= 0) {
+      setTickerMessage(`${entry.ticker} 当前没有可卖出的持股`);
+      return;
+    }
+
+    const coveredCallShares = puts
+      .filter((row) => row.ticker === entry.ticker && row.option_side === 'call')
+      .reduce((sum, row) => sum + row.contracts * 100, 0);
+
+    setSellStockPreview({
+      ticker: entry.ticker,
+      currentShares,
+      sharesToSell: String(currentShares),
+      sellPricePerShare:
+        typeof entry.current_price === 'number' && Number.isFinite(entry.current_price) ? entry.current_price.toFixed(2) : '',
+      coveredCallShares
+    });
+  }
+
+  function confirmSellStock() {
+    if (!sellStockPreview) {
+      return;
+    }
+
+    const sharesToSell = Number(sellStockPreview.sharesToSell);
+    const sellPricePerShare = Number(sellStockPreview.sellPricePerShare);
+    const maxSharesToSell = Math.max(sellStockPreview.currentShares - sellStockPreview.coveredCallShares, 0);
+
+    if (!Number.isFinite(sharesToSell) || sharesToSell <= 0 || sharesToSell > sellStockPreview.currentShares) {
+      setTickerMessage(`卖出股数请输入 1 到 ${sellStockPreview.currentShares} 之间的有效数字`);
+      return;
+    }
+    if (sellStockPreview.coveredCallShares > 0 && sharesToSell > maxSharesToSell) {
+      setTickerMessage(
+        `${sellStockPreview.ticker} 还有 ${sellStockPreview.coveredCallShares} 股被 Covered Call 覆盖，最多只能卖出 ${maxSharesToSell} 股`
+      );
+      return;
+    }
+    if (!Number.isFinite(sellPricePerShare) || sellPricePerShare < 0) {
+      setTickerMessage('卖出价格请输入有效数字');
+      return;
+    }
+
+    const sellResult = sellTickerShares(tickerList, sellStockPreview.ticker, sharesToSell, sellPricePerShare);
+    if (!sellResult) {
+      setTickerMessage(`无法卖出 ${sellStockPreview.ticker}，请检查卖出股数和价格`);
+      return;
+    }
+
+    saveTickerList(sellResult.nextEntries);
+    setTickerList(sellResult.nextEntries);
+
+    const cashBase = config ?? configForm ?? DEFAULT_CONFIG;
+    const nextConfig = {
+      ...cashBase,
+      cash: (cashBase.cash ?? 0) + sellResult.proceeds
+    };
+    saveConfig(nextConfig);
+    setConfig(nextConfig);
+    setConfigForm(nextConfig);
+    setConfigErrors({});
+
+    setSellStockPreview(null);
+    setTickerMessage(
+      `已卖出 ${sellStockPreview.ticker} ${sharesToSell} 股，回笼现金 ${formatCurrency(sellResult.proceeds)}`
+    );
   }
 
   function applyQuotesPayload(payload: QuotesPayload, requestedTickers: string[]) {
@@ -3533,6 +3736,24 @@ function App() {
     setPendingPositionScrollId(positionId);
   }
 
+  function handleOpenStockFromDashboard(ticker: string) {
+    setActiveTab('stocks');
+    setPendingStockScrollTicker(ticker);
+  }
+
+  function handleOpenCallFromDashboard(ticker: string) {
+    const candidate = metrics.putRows
+      .filter((row) => row.ticker === ticker && row.option_side === 'call')
+      .sort((a, b) => Math.abs(a.distance_pct) - Math.abs(b.distance_pct))[0];
+
+    if (candidate) {
+      handleOpenPositionFromDashboard(candidate.id);
+      return;
+    }
+
+    handleOpenStockFromDashboard(ticker);
+  }
+
   async function handleSaveAppState() {
     try {
       const snapshot = buildAppStateSnapshot({
@@ -3712,6 +3933,15 @@ function App() {
         >
           Stocks
         </button>
+        <button
+          className={`segment ${activeTab === 'calculator' ? 'active' : ''}`}
+          onClick={() => setActiveTab('calculator')}
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'calculator'}
+        >
+          Risk Calculator
+        </button>
       </div>
 
       <main className="layout">
@@ -3733,218 +3963,311 @@ function App() {
               ))}
             </div>
             <div className="dashboard-stack dashboard-stack-compact">
-              <div className="dashboard-subcard">
+              <div className="dashboard-subcard dashboard-subcard-wide">
                 <div className="section-subhead">
-                  <h3>风险 Ticker</h3>
+                  <h3>持仓总览</h3>
                 </div>
-                {riskTickersWithOptionLoss.length === 0 ? (
-                  <div className="empty-state compact-empty">当前没有 Sell Put 风险仓位。</div>
+                {combinedHoldings.length === 0 ? (
+                  <div className="empty-state compact-empty">当前还没有录入股票、Call 或 Sell Put 仓位。</div>
                 ) : (
                   <div className="ticker-risk-list">
-                    {riskTickersWithOptionLoss.map((item) => (
-                      <div
-                        key={item.ticker}
-                        className={`ticker-risk-item stock-holding-card ${item.totalOptionLoss >= item.totalPremiumIncome * 2 && item.totalOptionLoss > 0 ? 'ticker-risk-alert' : ''} ${item.nearestStrikeDistancePct !== null && item.nearestStrikeDistancePct <= 0.02 ? 'ticker-risk-warning' : ''}`}
-                      >
-                        <div className="ticker-risk-main">
-                          <div className="stock-holding-topline">
-                            <span>{item.ticker}</span>
-                            <small>{item.positions.length} 笔 Sell Put</small>
-                          </div>
-                          {item.nearestStrikeDistancePct !== null ? (
-                            <small className={item.nearestStrikeDistancePct <= 0.02 ? 'strike-warning-text' : ''}>
-                              {item.nearestStrikeDistancePct < 0
-                                ? `最近 Strike 已 ITM ${formatPercent(Math.abs(item.nearestStrikeDistancePct))}`
-                                : `距最近 Strike ${formatPercent(item.nearestStrikeDistancePct)}`}
-                              {item.nearestStrikeDistancePct < 0 ? ' · 已进入 ITM' : item.nearestStrikeDistancePct <= 0.02 ? ' · 接近 Strike' : ''}
-                            </small>
-                          ) : null}
-                          <div className="stock-holding-section">
-                            <small className="stock-section-label">风险概览</small>
-                            <div className="stock-holding-grid">
-                              <small>Sell Put 风险</small>
-                              <strong>{formatCurrency(item.risk)}</strong>
-                              <small>当前盈亏</small>
-                              <strong className={item.totalOptionPnl > 0 ? 'value-positive' : item.totalOptionPnl < 0 ? 'value-negative' : ''}>
-                                {formatSignedCurrency(item.totalOptionPnl)}
-                              </strong>
-                              <small>总权利金</small>
-                              <strong>{formatCurrency(item.totalPremiumIncome)}</strong>
-                            </div>
-                          </div>
-                          <div className="stock-holding-section risk-put-section">
-                            <small className="stock-section-label">Sell Put 明细</small>
-                            <div className="risk-put-details-list">
-                              {item.positions.map((row) => {
-                                const currentPrice = tickerList.find((entry) => entry.ticker === row.ticker)?.current_price;
-                                const strikeDistancePct = getPercentDistanceToStrike(currentPrice, row.put_strike, 'put');
-                                const isNearStrike = strikeDistancePct !== null && strikeDistancePct <= 0.02;
+                    {combinedHoldings.map((item) => {
+                      const holding = item.stockHolding;
+                      const putHolding = item.putHolding;
+                      const stockSectionAlert =
+                        !!holding?.hasStockHolding &&
+                        holding.unrealizedPnlAmount !== null &&
+                        holding.unrealizedPnlAmount < 0 &&
+                        Math.abs(holding.unrealizedPnlAmount) >= stockLossAlertThreshold;
+                      const callSectionWarning =
+                        !!holding?.callCount &&
+                        holding.nearestStrikeDistancePct !== null &&
+                        Math.abs(holding.nearestStrikeDistancePct) <= 0.02;
+                      const putSectionWarning =
+                        !!putHolding &&
+                        putHolding.nearestStrikeDistancePct !== null &&
+                        Math.abs(putHolding.nearestStrikeDistancePct) <= 0.02;
 
-                                return (
-                                  <button
-                                    key={row.id}
-                                    className={`risk-put-detail-row risk-put-detail-button ${isNearStrike ? 'risk-put-detail-row-warning' : ''}`}
-                                    type="button"
-                                    onClick={() => handleOpenPositionFromDashboard(row.id)}
-                                  >
-                                    <div className="risk-put-detail-main">
-                                      <strong>{`$${row.put_strike.toFixed(2)} strike`}</strong>
-                                      <small>{`${row.expiration_date} · ${row.contracts} 张`}</small>
-                                    </div>
-                                    <div className="risk-put-detail-grid">
-                                      <small>现价</small>
-                                      <strong>{currentPrice == null ? '-' : formatCurrency(currentPrice)}</strong>
-                                      <small>距 Strike</small>
-                                      <strong className={isNearStrike ? 'value-negative' : ''}>
-                                        {strikeDistancePct === null
-                                          ? '-'
-                                          : strikeDistancePct < 0
-                                            ? `ITM ${formatPercent(Math.abs(strikeDistancePct))}`
-                                            : formatPercent(strikeDistancePct)}
-                                      </strong>
-                                      <small>权利金</small>
-                                      <strong>{formatCurrency(row.premiumIncome)}</strong>
-                                      <small>当前盈亏</small>
-                                      <strong className={row.unrealizedPnl != null && row.unrealizedPnl > 0 ? 'value-positive' : row.unrealizedPnl != null && row.unrealizedPnl < 0 ? 'value-negative' : ''}>
-                                        {formatSignedCurrency(row.unrealizedPnl)}
-                                      </strong>
-                                    </div>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                          {item.totalOptionLoss >= item.totalPremiumIncome * 2 && item.totalOptionLoss > 0 ? (
-                            <small>2x 止损线：{formatCurrency(item.totalPremiumIncome * 2)}</small>
-                          ) : null}
-                        </div>
-                        <strong>{formatCurrency(item.risk)}</strong>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="dashboard-subcard">
-                <div className="section-subhead">
-                  <h3>股票持仓摘要</h3>
-                </div>
-                {stockHoldings.length === 0 ? (
-                  <div className="empty-state compact-empty">当前还没有录入股票持仓或 Call 仓位。</div>
-                ) : (
-                  <div className="ticker-risk-list">
-                    {stockHoldings.map((holding) => (
-                      <div
-                        key={`holding-${holding.ticker}`}
-                        className={`ticker-risk-item stock-holding-card ${holding.unrealizedPnlAmount !== null && holding.unrealizedPnlAmount < 0 && Math.abs(holding.unrealizedPnlAmount) >= stockLossAlertThreshold ? 'ticker-risk-alert' : ''} ${holding.nearestStrikeDistancePct !== null && holding.nearestStrikeDistancePct <= 0.02 ? 'ticker-risk-warning' : ''}`}
-                      >
-                        <div className="ticker-risk-main">
-                          <div className="stock-holding-topline">
-                            <span>{holding.ticker}</span>
-                            <small>{holding.hasStockHolding ? `${holding.shares} shares` : 'Call only'}</small>
-                          </div>
-                          {holding.nearestStrikeDistancePct !== null ? (
-                            <small className={holding.nearestStrikeDistancePct <= 0.02 ? 'strike-warning-text' : ''}>
-                              {holding.nearestStrikeDistancePct < 0
-                                ? `最近 Strike 已 ITM ${formatPercent(Math.abs(holding.nearestStrikeDistancePct))}`
-                                : `距最近 Strike ${formatPercent(holding.nearestStrikeDistancePct)}`}
-                              {holding.nearestStrikeDistancePct < 0 ? ' · 已进入 ITM' : holding.nearestStrikeDistancePct <= 0.02 ? ' · 接近 Strike' : ''}
-                            </small>
-                          ) : null}
-                          {holding.hasStockHolding ? (
-                            <div className="stock-holding-section">
-                              <small className="stock-section-label">股票持仓</small>
-                              <div className="stock-holding-grid">
-                                <small>现价</small>
-                                <strong>{holding.currentPrice == null ? '-' : formatCurrency(holding.currentPrice)}</strong>
-                                <small>股票盈亏</small>
-                                <strong
-                                  className={
-                                    holding.unrealizedPnlAmount == null
-                                      ? ''
-                                      : holding.unrealizedPnlAmount > 0
-                                        ? 'value-positive'
-                                        : holding.unrealizedPnlAmount < 0
-                                          ? 'value-negative'
-                                          : ''
-                                  }
-                                >
-                                  {formatSignedCurrency(holding.unrealizedPnlAmount)}
-                                </strong>
-                                <small>股票盈亏 %</small>
-                                <strong
-                                  className={
-                                    holding.unrealizedPnlPct == null
-                                      ? ''
-                                      : holding.unrealizedPnlPct > 0
-                                        ? 'value-positive'
-                                        : holding.unrealizedPnlPct < 0
-                                          ? 'value-negative'
-                                          : ''
-                                  }
-                                >
-                                  {formatSignedPercent(holding.unrealizedPnlPct)}
-                                </strong>
+                      return (
+                        <div
+                          key={`combined-${item.ticker}`}
+                          className={`ticker-risk-item stock-holding-card combined-holding-card ${item.isAlert ? 'ticker-risk-alert' : ''}`}
+                        >
+                          <div className="ticker-risk-main">
+                            <div className="stock-holding-topline">
+                              <div className="stock-holding-heading">
+                                <span>{item.ticker}</span>
+                                <small>
+                                  {holding?.hasStockHolding
+                                    ? `${holding.shares} shares`
+                                    : holding?.callCount
+                                      ? 'Call only'
+                                      : putHolding
+                                        ? `${putHolding.positions.length} 笔 Sell Put`
+                                        : ''}
+                                </small>
+                              </div>
+                              <div className="stock-holding-value-group">
+                                <small>目前价值</small>
+                                <strong className="stock-holding-value">{formatCurrency(item.currentValue)}</strong>
                               </div>
                             </div>
-                          ) : null}
-                          {holding.callCount > 0 ? (
-                            <div className="stock-holding-section stock-call-section">
-                              <small className="stock-section-label">{holding.callSectionLabel}</small>
-                              <div className="stock-holding-grid">
-                                <small>合约数</small>
-                                <strong>{holding.callCount} 张</strong>
-                                <small>覆盖股数</small>
-                                <strong>{holding.coveredCallShares} shares</strong>
-                                {holding.nearestStrikeDistancePct !== null ? (
-                                  <>
-                                    <small>距 Strike</small>
-                                    <strong className={holding.nearestStrikeDistancePct <= 0.02 ? 'value-negative' : ''}>
-                                      {holding.nearestStrikeDistancePct < 0
-                                        ? `ITM ${formatPercent(Math.abs(holding.nearestStrikeDistancePct))}`
-                                        : formatPercent(holding.nearestStrikeDistancePct)}
-                                    </strong>
-                                  </>
-                                ) : null}
-                                {holding.callStrikeLabel !== '' ? (
-                                  <>
-                                    <small>Strike</small>
-                                    <strong>{holding.callStrikeLabel}</strong>
-                                  </>
-                                ) : null}
-                              </div>
+                            <div className="stock-holding-summary-strip">
+                              <span>
+                                <small>Put 盈亏</small>
+                                <strong className={item.putPnl > 0 ? 'value-positive' : item.putPnl < 0 ? 'value-negative' : ''}>
+                                  {formatSignedCurrency(item.putPnl)}
+                                </strong>
+                              </span>
+                              <span>
+                                <small>Call 盈亏</small>
+                                <strong className={item.callPnl > 0 ? 'value-positive' : item.callPnl < 0 ? 'value-negative' : ''}>
+                                  {formatSignedCurrency(item.callPnl)}
+                                </strong>
+                              </span>
+                              <span>
+                                <small>总盈亏 %</small>
+                                <strong className={item.totalPnlPct != null && item.totalPnlPct > 0 ? 'value-positive' : item.totalPnlPct != null && item.totalPnlPct < 0 ? 'value-negative' : ''}>
+                                  {item.totalPnlPct == null ? '-' : formatSignedPercent(item.totalPnlPct)}
+                                </strong>
+                              </span>
                             </div>
-                          ) : null}
-                          {holding.callCount > 0 ? (
-                            <div className="stock-holding-grid stock-call-pnl-grid">
-                              <small>Call 权利金</small>
-                              <strong>{formatCurrency(holding.callPremiumIncome)}</strong>
-                              <small>Call 当前盈亏</small>
-                              <strong
-                                className={
-                                  holding.callUnrealizedPnl == null
-                                    ? ''
-                                    : holding.callUnrealizedPnl > 0
-                                      ? 'value-positive'
-                                      : holding.callUnrealizedPnl < 0
-                                        ? 'value-negative'
-                                        : ''
-                                }
+
+                            {holding?.hasStockHolding ? (
+                              <button
+                                className={`stock-holding-section dashboard-section-button ${stockSectionAlert ? 'dashboard-section-warning' : ''}`}
+                                type="button"
+                                onClick={() => handleOpenStockFromDashboard(item.ticker)}
                               >
-                                {formatSignedCurrency(holding.callUnrealizedPnl)}
-                              </strong>
-                            </div>
-                          ) : null}
-                          {holding.hasStockHolding &&
-                          holding.unrealizedPnlAmount !== null &&
-                          holding.unrealizedPnlAmount < 0 &&
-                          Math.abs(holding.unrealizedPnlAmount) >= stockLossAlertThreshold ? (
-                            <small>已达到总资金 1% 亏损线：{formatCurrency(stockLossAlertThreshold)}</small>
-                          ) : null}
+                                <small className="stock-section-label">股票持仓</small>
+                                <div className="stock-holding-grid">
+                                  <small>现价</small>
+                                  <strong>{holding.currentPrice == null ? '-' : formatCurrency(holding.currentPrice)}</strong>
+                                  <small>Stock Risk</small>
+                                  <strong>{formatCurrency(holding.stockRisk)}</strong>
+                                  <small>股票盈亏</small>
+                                  <strong
+                                    className={
+                                      holding.unrealizedPnlAmount == null
+                                        ? ''
+                                        : holding.unrealizedPnlAmount > 0
+                                          ? 'value-positive'
+                                          : holding.unrealizedPnlAmount < 0
+                                            ? 'value-negative'
+                                            : ''
+                                    }
+                                  >
+                                    {formatSignedCurrency(holding.unrealizedPnlAmount)}
+                                  </strong>
+                                  <small>股票盈亏 %</small>
+                                  <strong
+                                    className={
+                                      holding.unrealizedPnlPct == null
+                                        ? ''
+                                        : holding.unrealizedPnlPct > 0
+                                          ? 'value-positive'
+                                          : holding.unrealizedPnlPct < 0
+                                            ? 'value-negative'
+                                            : ''
+                                    }
+                                  >
+                                    {formatSignedPercent(holding.unrealizedPnlPct)}
+                                  </strong>
+                                </div>
+                              </button>
+                            ) : null}
+
+                            {(putHolding || holding?.callCount) ? (
+                              <div className={`holding-option-columns ${putHolding && holding?.callCount ? 'holding-option-columns-split' : ''}`}>
+                                {putHolding ? (
+                                  <div className="stock-holding-section risk-put-section holding-option-column holding-option-panel">
+                                    <button
+                                      className={`dashboard-section-button risk-section-button section-summary-card ${putSectionWarning ? 'dashboard-section-warning' : ''}`}
+                                      type="button"
+                                      onClick={() => handleOpenPositionFromDashboard(putHolding.positions[0].id)}
+                                    >
+                                      <small className="stock-section-label">Put 持仓</small>
+                                      {putHolding.nearestStrikeDistancePct !== null ? (
+                                        <small className={putSectionWarning ? 'strike-warning-text' : ''}>
+                                          {putHolding.nearestStrikeDistancePct < 0
+                                            ? `最近 Strike 已 ITM ${formatPercent(Math.abs(putHolding.nearestStrikeDistancePct))} · 已进入 ITM`
+                                            : `最近 Strike ${formatPercent(putHolding.nearestStrikeDistancePct)}${putSectionWarning ? ' · 接近 Strike' : ''}`}
+                                        </small>
+                                      ) : null}
+                                      <div className="stock-holding-grid">
+                                        <small>Sell Put 风险</small>
+                                        <strong>{formatCurrency(putHolding.risk)}</strong>
+                                        <small>当前盈亏</small>
+                                        <strong className={putHolding.totalOptionPnl > 0 ? 'value-positive' : putHolding.totalOptionPnl < 0 ? 'value-negative' : ''}>
+                                          {formatSignedCurrency(putHolding.totalOptionPnl)}
+                                        </strong>
+                                        <small>总权利金</small>
+                                        <strong>{formatCurrency(putHolding.totalPremiumIncome)}</strong>
+                                      </div>
+                                    </button>
+                                    <div className="risk-put-details-list">
+                                      {putHolding.positions.map((row) => {
+                                        const currentPrice = tickerList.find((entry) => entry.ticker === row.ticker)?.current_price;
+                                        const strikeDistancePct = getPercentDistanceToStrike(currentPrice, row.put_strike, 'put');
+                                        const isItm = strikeDistancePct !== null && strikeDistancePct < 0;
+                                        const isNearStrike = strikeDistancePct !== null && Math.abs(strikeDistancePct) <= 0.02;
+                                        const exceedsCloseThreshold =
+                                          row.unrealizedPnl != null &&
+                                          row.unrealizedPnl < 0 &&
+                                          Math.abs(row.unrealizedPnl) >= row.premiumIncome * 2;
+                                        const detailToneClass = exceedsCloseThreshold
+                                          ? 'risk-put-detail-row-danger'
+                                          : isItm || isNearStrike
+                                            ? 'risk-put-detail-row-warning'
+                                            : '';
+
+                                        return (
+                                          <button
+                                            key={row.id}
+                                            className={`risk-put-detail-row risk-put-detail-button ${detailToneClass}`}
+                                            type="button"
+                                            onClick={() => handleOpenPositionFromDashboard(row.id)}
+                                          >
+                                            <div className="risk-put-detail-main">
+                                              <strong>{`$${row.put_strike.toFixed(2)} strike`}</strong>
+                                              <small>{`${row.expiration_date} · ${row.contracts} 张`}</small>
+                                            </div>
+                                            <div className="risk-put-detail-grid">
+                                              <small>现价</small>
+                                              <strong>{currentPrice == null ? '-' : formatCurrency(currentPrice)}</strong>
+                                              <small>距 Strike</small>
+                                              <strong className={isItm || isNearStrike ? 'value-negative' : ''}>
+                                                {strikeDistancePct === null
+                                                  ? '-'
+                                                  : strikeDistancePct < 0
+                                                    ? `ITM ${formatPercent(Math.abs(strikeDistancePct))}`
+                                                    : formatPercent(strikeDistancePct)}
+                                              </strong>
+                                              <small>权利金</small>
+                                              <strong>{formatCurrency(row.premiumIncome)}</strong>
+                                              <small>当前盈亏</small>
+                                              <strong className={row.unrealizedPnl != null && row.unrealizedPnl > 0 ? 'value-positive' : row.unrealizedPnl != null && row.unrealizedPnl < 0 ? 'value-negative' : ''}>
+                                                {formatSignedCurrency(row.unrealizedPnl)}
+                                              </strong>
+                                            </div>
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                    {putHolding.totalOptionLoss >= putHolding.totalPremiumIncome * 2 && putHolding.totalOptionLoss > 0 ? (
+                                      <small>2x 止损线：{formatCurrency(putHolding.totalPremiumIncome * 2)}</small>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+
+                                {holding?.callCount ? (
+                                  <div className="stock-holding-section stock-call-section holding-option-column holding-option-panel">
+                                    <button
+                                      className={`dashboard-section-button risk-section-button section-summary-card ${callSectionWarning ? 'dashboard-section-warning' : ''}`}
+                                      type="button"
+                                      onClick={() => handleOpenCallFromDashboard(item.ticker)}
+                                    >
+                                      <small className="stock-section-label">{holding.callSectionLabel}</small>
+                                      {holding.nearestStrikeDistancePct !== null ? (
+                                        <small className={callSectionWarning ? 'strike-warning-text' : ''}>
+                                          {holding.nearestStrikeDistancePct < 0
+                                            ? `最近 Strike 已 ITM ${formatPercent(Math.abs(holding.nearestStrikeDistancePct))} · 已进入 ITM`
+                                            : `最近 Strike ${formatPercent(holding.nearestStrikeDistancePct)}${callSectionWarning ? ' · 接近 Strike' : ''}`}
+                                        </small>
+                                      ) : null}
+                                      <div className="stock-holding-grid">
+                                        <small>合约数</small>
+                                        <strong>{holding.callCount} 张</strong>
+                                        <small>{holding.hasStockHolding ? '覆盖股数' : '状态'}</small>
+                                        <strong>{holding.hasStockHolding ? `${holding.coveredCallShares} shares` : '未覆盖'}</strong>
+                                        {holding.hasStockHolding ? (
+                                          <>
+                                            <small>Call Offset</small>
+                                            <strong>{formatCurrency(holding.callOffset)}</strong>
+                                          </>
+                                        ) : null}
+                                        <small>总权利金</small>
+                                        <strong>{formatCurrency(holding.callPremiumIncome)}</strong>
+                                      </div>
+                                      <div className="stock-holding-grid stock-call-pnl-grid">
+                                        {holding.hasStockHolding ? (
+                                          <>
+                                            <small>Net Stock Risk</small>
+                                            <strong>{formatCurrency(holding.netStockRisk)}</strong>
+                                          </>
+                                        ) : null}
+                                        <small>当前盈亏</small>
+                                        <strong
+                                          className={
+                                            holding.callUnrealizedPnl == null
+                                              ? ''
+                                              : holding.callUnrealizedPnl > 0
+                                                ? 'value-positive'
+                                                : holding.callUnrealizedPnl < 0
+                                                  ? 'value-negative'
+                                                  : ''
+                                          }
+                                        >
+                                          {formatSignedCurrency(holding.callUnrealizedPnl)}
+                                        </strong>
+                                      </div>
+                                    </button>
+                                    <div className="risk-put-details-list">
+                                      {holding.callRows.map((row) => {
+                                        const strikeDistancePct = getPercentDistanceToStrike(holding.currentPrice, row.put_strike, 'call');
+                                        const isItm = strikeDistancePct !== null && strikeDistancePct < 0;
+                                        const isNearStrike = strikeDistancePct !== null && Math.abs(strikeDistancePct) <= 0.02;
+                                        const exceedsCloseThreshold =
+                                          row.unrealizedPnl != null &&
+                                          row.unrealizedPnl < 0 &&
+                                          Math.abs(row.unrealizedPnl) >= row.premiumIncome * 2;
+                                        const detailToneClass = exceedsCloseThreshold
+                                          ? 'risk-put-detail-row-danger'
+                                          : isItm || isNearStrike
+                                            ? 'risk-put-detail-row-warning'
+                                            : '';
+
+                                        return (
+                                          <button
+                                            key={row.id}
+                                            className={`risk-put-detail-row risk-put-detail-button ${detailToneClass}`}
+                                            type="button"
+                                            onClick={() => handleOpenPositionFromDashboard(row.id)}
+                                          >
+                                            <div className="risk-put-detail-main">
+                                              <strong>{`$${row.put_strike.toFixed(2)} strike`}</strong>
+                                              <small>{`${row.expiration_date} · ${row.contracts} 张`}</small>
+                                            </div>
+                                            <div className="risk-put-detail-grid">
+                                              <small>现价</small>
+                                              <strong>{holding.currentPrice == null ? '-' : formatCurrency(holding.currentPrice)}</strong>
+                                              <small>距 Strike</small>
+                                              <strong className={isItm || isNearStrike ? 'value-negative' : ''}>
+                                                {strikeDistancePct === null
+                                                  ? '-'
+                                                  : strikeDistancePct < 0
+                                                    ? `ITM ${formatPercent(Math.abs(strikeDistancePct))}`
+                                                    : formatPercent(strikeDistancePct)}
+                                              </strong>
+                                              <small>权利金</small>
+                                              <strong>{formatCurrency(row.premiumIncome)}</strong>
+                                              <small>当前盈亏</small>
+                                              <strong className={row.unrealizedPnl != null && row.unrealizedPnl > 0 ? 'value-positive' : row.unrealizedPnl != null && row.unrealizedPnl < 0 ? 'value-negative' : ''}>
+                                                {formatSignedCurrency(row.unrealizedPnl)}
+                                              </strong>
+                                            </div>
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : null}
+                          </div>
                         </div>
-                        <strong>{formatCurrency(holding.summaryValue)}</strong>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -4099,6 +4422,148 @@ function App() {
                 </div>
               )}
             </div>
+            <div className="dashboard-subcard">
+              <div className="section-subhead">
+                <h3>需要注意的股票</h3>
+              </div>
+              {mostOverboughtStocks.length === 0 && mostOversoldStocks.length === 0 ? (
+                <div className="empty-state compact-empty">当前没有足够的 RSI / 均线数据来判断超买或超卖。</div>
+              ) : (
+                <div className="dashboard-stack">
+                  <div>
+                    <div className="section-subhead">
+                      <h3>最超买</h3>
+                    </div>
+                    {mostOverboughtStocks.length === 0 ? (
+                      <div className="empty-state compact-empty dashboard-empty-state">
+                        <strong>当前没有明显超买股票</strong>
+                        <span>当 1D / 1H RSI 走高且价格明显高于均线时，会显示在这里。</span>
+                      </div>
+                    ) : (
+                      <div className="ticker-risk-list">
+                        {mostOverboughtStocks.map((item) => (
+                          <div key={`overbought-${item.ticker}`} className="ticker-risk-item">
+                            <div className="ticker-risk-main">
+                              <span>{item.ticker}</span>
+                              <small>{item.note}</small>
+                            </div>
+                            <div className="ticker-risk-main" style={{ justifyItems: 'end' }}>
+                              <span className={`pill-badge ${item.tone}`}>{item.label}</span>
+                              <small>现价 {formatCurrency(item.currentPrice)}</small>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <div className="section-subhead">
+                      <h3>最超卖</h3>
+                    </div>
+                    {mostOversoldStocks.length === 0 ? (
+                      <div className="empty-state compact-empty dashboard-empty-state">
+                        <strong>当前没有明显超卖股票</strong>
+                        <span>当 1D / 1H RSI 偏低且价格明显低于均线时，会显示在这里。</span>
+                      </div>
+                    ) : (
+                      <div className="ticker-risk-list">
+                        {mostOversoldStocks.map((item) => (
+                          <div key={`oversold-${item.ticker}`} className="ticker-risk-item">
+                            <div className="ticker-risk-main">
+                              <span>{item.ticker}</span>
+                              <small>{item.note}</small>
+                            </div>
+                            <div className="ticker-risk-main" style={{ justifyItems: 'end' }}>
+                              <span className={`pill-badge ${item.tone}`}>{item.label}</span>
+                              <small>现价 {formatCurrency(item.currentPrice)}</small>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="dashboard-subcard">
+              <div className="section-subhead">
+                <h3>需要注意的期权</h3>
+              </div>
+              {attentionRows.length === 0 ? (
+                <div className="empty-state compact-empty dashboard-empty-state">
+                  <strong>当前没有需要优先处理的期权</strong>
+                  <span>临近到期或盈利较高的仓位会显示在这里。</span>
+                </div>
+              ) : (
+                <div className="ticker-risk-list">
+                  {attentionRows.map(({ row }) => (
+                    <button
+                      key={`attention-${row.id}`}
+                      className="ticker-risk-item ticker-risk-button"
+                      type="button"
+                      onClick={() => handleOpenPositionFromDashboard(row.id)}
+                    >
+                      <div className="ticker-risk-main">
+                        <span>{row.ticker} · {getOptionSideBadge(row.option_side)} · ${row.put_strike.toFixed(2)} strike</span>
+                        <small>
+                          卖出价 {formatCurrency(row.premium_per_share)}
+                          {' · '}
+                          买回价 {row.option_market_price_per_share == null ? '-' : formatCurrency(row.option_market_price_per_share)}
+                          {' · '}
+                          盈利百分比 {row.premiumCapturedPct == null ? '-' : formatPercent(row.premiumCapturedPct)}
+                        </small>
+                        {row.daysToExpiration >= 0 && row.daysToExpiration <= 7 ? (
+                          <small>7 天内到期 · Breakeven {formatCurrency(row.breakevenPrice)}</small>
+                        ) : null}
+                      </div>
+                      <strong>{row.expiration_date}</strong>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="dashboard-subcard">
+              <div className="section-subhead">
+                <h3>ITM 期权摘要</h3>
+              </div>
+              {inTheMoneyRows.length === 0 ? (
+                <div className="empty-state compact-empty dashboard-empty-state">
+                  <strong>当前没有价内期权</strong>
+                  <span>已进入价内的 PUT / CALL 会集中显示在这里。</span>
+                </div>
+              ) : (
+                <div className="ticker-risk-list">
+                  {inTheMoneyRows.map((row) => (
+                    <button
+                      key={`itm-${row.id}`}
+                      className={`ticker-risk-item ticker-risk-button ${isOptionLossAtTwoXCredit(row) ? 'ticker-risk-alert' : ''}`}
+                      type="button"
+                      onClick={() => handleOpenPositionFromDashboard(row.id)}
+                    >
+                      <div className="ticker-risk-main">
+                        <span>{row.ticker} · {getOptionSideBadge(row.option_side)} · ${row.put_strike.toFixed(2)} strike</span>
+                        <small>
+                          卖出价 {formatCurrency(row.premium_per_share)}
+                          {' · '}
+                          买回价 {row.option_market_price_per_share == null ? '-' : formatCurrency(row.option_market_price_per_share)}
+                          {' · '}
+                          盈利百分比 {row.premiumCapturedPct == null ? '-' : formatPercent(row.premiumCapturedPct)}
+                        </small>
+                        <small>
+                          现价 {tickerMap.get(row.ticker)?.current_price == null ? '-' : formatCurrency(tickerMap.get(row.ticker)?.current_price ?? 0)}
+                          {' · '}
+                          Breakeven {formatCurrency(row.breakevenPrice)}
+                        </small>
+                        {isOptionLossAtTwoXCredit(row) ? (
+                          <small>已达到权利金 2x 止损线：{formatCurrency(row.premiumIncome * 2)}</small>
+                        ) : null}
+                      </div>
+                      <strong>{row.expiration_date}</strong>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <div className="dashboard-subcard stress-panel">
               <div className="section-subhead">
                 <h3>Stress Toggle</h3>
@@ -4159,156 +4624,16 @@ function App() {
 
           <div className="dashboard-subcard dashboard-full-width">
             <div className="section-subhead">
-              <h3>需要注意的股票</h3>
-            </div>
-            {mostOverboughtStocks.length === 0 && mostOversoldStocks.length === 0 ? (
-              <div className="empty-state compact-empty">当前没有足够的 RSI / 均线数据来判断超买或超卖。</div>
-            ) : (
-              <div className="dashboard-two-up dashboard-stock-signals">
-                <div>
-                  <div className="section-subhead">
-                    <h3>最超买</h3>
-                  </div>
-                  {mostOverboughtStocks.length === 0 ? (
-                    <div className="empty-state compact-empty dashboard-empty-state">
-                      <strong>当前没有明显超买股票</strong>
-                      <span>当 1D / 1H RSI 走高且价格明显高于均线时，会显示在这里。</span>
-                    </div>
-                  ) : (
-                    <div className="ticker-risk-list">
-                      {mostOverboughtStocks.map((item) => (
-                        <div key={`overbought-${item.ticker}`} className="ticker-risk-item">
-                          <div className="ticker-risk-main">
-                            <span>{item.ticker}</span>
-                            <small>{item.note}</small>
-                          </div>
-                          <div className="ticker-risk-main" style={{ justifyItems: 'end' }}>
-                            <span className={`pill-badge ${item.tone}`}>{item.label}</span>
-                            <small>现价 {formatCurrency(item.currentPrice)}</small>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div>
-                  <div className="section-subhead">
-                    <h3>最超卖</h3>
-                  </div>
-                  {mostOversoldStocks.length === 0 ? (
-                    <div className="empty-state compact-empty dashboard-empty-state">
-                      <strong>当前没有明显超卖股票</strong>
-                      <span>当 1D / 1H RSI 偏低且价格明显低于均线时，会显示在这里。</span>
-                    </div>
-                  ) : (
-                    <div className="ticker-risk-list">
-                      {mostOversoldStocks.map((item) => (
-                        <div key={`oversold-${item.ticker}`} className="ticker-risk-item">
-                          <div className="ticker-risk-main">
-                            <span>{item.ticker}</span>
-                            <small>{item.note}</small>
-                          </div>
-                          <div className="ticker-risk-main" style={{ justifyItems: 'end' }}>
-                            <span className={`pill-badge ${item.tone}`}>{item.label}</span>
-                            <small>现价 {formatCurrency(item.currentPrice)}</small>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="dashboard-two-up dashboard-full-width">
-            <div className="dashboard-subcard">
-              <div className="section-subhead">
-                <h3>需要注意的期权</h3>
-              </div>
-              {attentionRows.length === 0 ? (
-                <div className="empty-state compact-empty dashboard-empty-state">
-                  <strong>当前没有需要优先处理的期权</strong>
-                  <span>临近到期或盈利较高的仓位会显示在这里。</span>
-                </div>
-              ) : (
-                <div className="ticker-risk-list">
-                  {attentionRows.map(({ row }) => (
-                    <div key={`attention-${row.id}`} className="ticker-risk-item">
-                      <div className="ticker-risk-main">
-                        <span>{row.ticker} · {getOptionSideBadge(row.option_side)} · ${row.put_strike.toFixed(2)} strike</span>
-                        <small>
-                          卖出价 {formatCurrency(row.premium_per_share)}
-                          {' · '}
-                          买回价 {row.option_market_price_per_share == null ? '-' : formatCurrency(row.option_market_price_per_share)}
-                          {' · '}
-                          盈利百分比 {row.premiumCapturedPct == null ? '-' : formatPercent(row.premiumCapturedPct)}
-                        </small>
-                        {row.daysToExpiration >= 0 && row.daysToExpiration <= 7 ? (
-                          <small>7 天内到期 · Breakeven {formatCurrency(row.breakevenPrice)}</small>
-                        ) : null}
-                      </div>
-                      <strong>{row.expiration_date}</strong>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="dashboard-subcard">
-              <div className="section-subhead">
-                <h3>ITM 期权摘要</h3>
-              </div>
-              {inTheMoneyRows.length === 0 ? (
-                <div className="empty-state compact-empty dashboard-empty-state">
-                  <strong>当前没有价内期权</strong>
-                  <span>已进入价内的 PUT / CALL 会集中显示在这里。</span>
-                </div>
-              ) : (
-                <div className="ticker-risk-list">
-                  {inTheMoneyRows.map((row) => (
-                    <div
-                      key={`itm-${row.id}`}
-                      className={`ticker-risk-item ${isOptionLossAtTwoXCredit(row) ? 'ticker-risk-alert' : ''}`}
-                    >
-                      <div className="ticker-risk-main">
-                        <span>{row.ticker} · {getOptionSideBadge(row.option_side)} · ${row.put_strike.toFixed(2)} strike</span>
-                        <small>
-                          卖出价 {formatCurrency(row.premium_per_share)}
-                          {' · '}
-                          买回价 {row.option_market_price_per_share == null ? '-' : formatCurrency(row.option_market_price_per_share)}
-                          {' · '}
-                          盈利百分比 {row.premiumCapturedPct == null ? '-' : formatPercent(row.premiumCapturedPct)}
-                        </small>
-                        <small>
-                          现价 {tickerMap.get(row.ticker)?.current_price == null ? '-' : formatCurrency(tickerMap.get(row.ticker)?.current_price ?? 0)}
-                          {' · '}
-                          Breakeven {formatCurrency(row.breakevenPrice)}
-                        </small>
-                        {isOptionLossAtTwoXCredit(row) ? (
-                          <small>已达到权利金 2x 止损线：{formatCurrency(row.premiumIncome * 2)}</small>
-                        ) : null}
-                      </div>
-                      <strong>{row.expiration_date}</strong>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="dashboard-subcard dashboard-full-width">
-            <div className="section-subhead">
               <h3>总体资金分布</h3>
             </div>
-            {topExposureChart.legendSegments.length === 0 ? (
+            {capitalAllocationChart.legendSegments.length === 0 ? (
               <div className="empty-state compact-empty">暂无持仓可汇总。</div>
             ) : (
               <div className="exposure-donut-card">
                 <div className="exposure-donut-wrap">
                   <svg className="exposure-donut" viewBox="0 0 140 140" role="img" aria-label="Capital allocation pie chart">
                     <circle cx="70" cy="70" r="54" className="donut-track" />
-                    {topExposureChart.segments.map((segment) => (
+                    {capitalAllocationChart.segments.map((segment) => (
                       <circle
                         key={segment.ticker}
                         cx="70"
@@ -4337,8 +4662,8 @@ function App() {
                     ))}
                   </svg>
                   <div className="donut-center-label">
-                    <span>Total cash</span>
-                    <strong>{formatCurrency(topExposureChart.totalExposure)}</strong>
+                    <span>总资产</span>
+                    <strong>{formatCurrency(capitalAllocationChart.totalExposure)}</strong>
                   </div>
                   {hoveredExposureSegment && (
                     <div className="donut-tooltip" role="status" aria-live="polite">
@@ -4350,16 +4675,19 @@ function App() {
                 </div>
                 <div className="donut-legend-wrap">
                   <div className="capital-summary-grid">
-                    {capitalSummaryItems.map((item) => (
-                      <div key={item.label} className="capital-summary-item">
-                        <span>{item.label}</span>
-                        <strong>{formatCurrency(item.value)}</strong>
-                        <em>{formatPercent(item.share)}</em>
+                    {capitalAllocationChart.legendSegments.map((segment) => (
+                      <div key={`capital-${segment.ticker}`} className="capital-summary-item">
+                        <span>{segment.ticker}</span>
+                        <strong>{formatCurrency(segment.exposure)}</strong>
+                        <em>{formatPercent(segment.share)}</em>
                       </div>
                     ))}
                   </div>
+                  <div className="section-subhead section-subhead-inline">
+                    <h3>Ticker 资金占用</h3>
+                  </div>
                   <div className="donut-legend">
-                    {optionBreakdownItems.map((segment) => (
+                    {tickerAllocationItems.map((segment) => (
                       <div key={segment.ticker} className="donut-legend-item">
                         <i className="donut-color" style={{ backgroundColor: segment.color }} />
                         <span>{segment.ticker}</span>
@@ -4373,42 +4701,6 @@ function App() {
             )}
           </div>
 
-          <div className="dashboard-subcard dashboard-full-width">
-            <div className="section-subhead">
-              <h3>历史收益表</h3>
-            </div>
-            <div className="summary-grid history-summary-grid">
-              <article className="summary-card">
-                <span>历史总盈亏</span>
-                <strong>{formatCurrency(historySummary.totalRealizedPnl)}</strong>
-              </article>
-              <article className="summary-card">
-                <span>已平仓笔数</span>
-                <strong>{historySummary.totalClosed}</strong>
-              </article>
-              <article className="summary-card">
-                <span>胜率</span>
-                <strong>{formatPercent(historySummary.winRate)}</strong>
-              </article>
-            </div>
-            {sortedClosedTrades.length === 0 ? (
-              <div className="empty-state compact-empty">还没有平仓记录，平仓后这里会开始累计历史收益。</div>
-            ) : (
-              <div className="history-list">
-                {sortedClosedTrades.slice(0, 5).map((trade) => (
-                  <div key={trade.id} className="history-row">
-                    <div className="ticker-risk-main">
-                      <span>{trade.ticker} · {getOptionSideBadge(trade.option_side)} · ${trade.put_strike.toFixed(2)} strike</span>
-                      <small>
-                        {trade.closed_at} · {trade.close_reason === 'expired' ? 'Expired 到期' : `买回 ${formatCurrency(trade.premium_bought_back_per_share)}/share`}
-                      </small>
-                    </div>
-                    <strong>{formatCurrency(trade.realized_pnl)}</strong>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
         </section>
 
         <section className="card">
@@ -4468,6 +4760,10 @@ function App() {
             <article className="summary-card">
               <span>Put risk % of cash</span>
               <strong>{formatPercent(metrics.portfolioRiskPctOfCash)}</strong>
+            </article>
+            <article className="summary-card">
+              <span>Total risk % of total capital</span>
+              <strong>{formatPercent(metrics.totalRiskPctOfTotalCapital)}</strong>
             </article>
             <article className="summary-card">
               <span>Risk limit amount</span>
@@ -5897,6 +6193,76 @@ function App() {
           </div>
         )}
 
+        {sellStockPreview && (
+          <div className="modal-backdrop" role="presentation" onClick={() => setSellStockPreview(null)}>
+            <div
+              className="modal-card"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="sell-stock-title"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <p className="section-kicker">Sell Stock</p>
+              <h3 id="sell-stock-title">卖出 {sellStockPreview.ticker} 股票</h3>
+              <p className="modal-copy">
+                当前持股 <strong>{sellStockPreview.currentShares}</strong> 股
+                {sellStockPreview.coveredCallShares > 0
+                  ? `，其中 ${sellStockPreview.coveredCallShares} 股已被 Covered Call 覆盖`
+                  : ''}
+                。
+              </p>
+              <div className="form-grid compact">
+                <label>
+                  <span>卖出股数</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max={sellStockPreview.currentShares}
+                    step="1"
+                    value={sellStockPreview.sharesToSell}
+                    onChange={(event) =>
+                      setSellStockPreview((current) =>
+                        current ? { ...current, sharesToSell: event.target.value } : current
+                      )
+                    }
+                  />
+                </label>
+                <label>
+                  <span>卖出价格</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={sellStockPreview.sellPricePerShare}
+                    onChange={(event) =>
+                      setSellStockPreview((current) =>
+                        current ? { ...current, sellPricePerShare: event.target.value } : current
+                      )
+                    }
+                  />
+                </label>
+              </div>
+              <p className="modal-copy">
+                预计回笼现金：
+                <strong>
+                  {formatCurrency(
+                    Math.max(Number(sellStockPreview.sharesToSell) || 0, 0) *
+                      Math.max(Number(sellStockPreview.sellPricePerShare) || 0, 0)
+                  )}
+                </strong>
+              </p>
+              <div className="modal-actions">
+                <button className="ghost-button" onClick={() => setSellStockPreview(null)} type="button">
+                  Cancel
+                </button>
+                <button className="primary-button" onClick={confirmSellStock} type="button">
+                  Confirm Sell
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {activeTab === 'dashboard' && (
         <section className="card">
           <div className="section-header">
@@ -5987,7 +6353,7 @@ function App() {
           )}
           <div className="form-grid">
             <label>
-              <span>可用于卖期权的资金</span>
+              <span>当前现金余额</span>
               <input
                 type="number"
                 min="0"
@@ -6030,6 +6396,102 @@ function App() {
             </label>
           </div>
           {!config && <div className="empty-banner">尚未保存配置。请先填写可用于卖期权的资金和风险参数。</div>}
+        </section>
+        )}
+
+        {activeTab === 'calculator' && (
+        <section className="card">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">Section 1</p>
+              <h2>Risk Calculator</h2>
+            </div>
+          </div>
+          <div className="copy-message">
+            估算“如果整体下跌 X%”时的资金影响。口径按你定义的规则：股票直接下跌 X%；Put 按下跌后价格与行权价的差额减去权利金；Call 直接按全拿权利金抵减亏损。
+          </div>
+          <div className="form-grid compact risk-calculator-grid">
+            <label>
+              <span>整体下跌幅度 %</span>
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="1"
+                value={riskCalculatorDropInput}
+                onChange={(event) => setRiskCalculatorDropInput(event.target.value)}
+              />
+            </label>
+            <div className="risk-calculator-note">
+              <span>情景价格</span>
+              <strong>按当前股价 × {formatPercent(riskCalculator.shockMultiplier)}</strong>
+              <small>例如输入 10%，就按所有股票当前价格统一下跌 10% 来估算。</small>
+            </div>
+          </div>
+
+          <div className="summary-grid">
+            <article className="summary-card emphasized">
+              <span>整体下跌 {formatPercent(riskCalculatorDropPct)} 时的净亏损</span>
+              <strong>{formatCurrency(riskCalculator.totalNetLoss)}</strong>
+              <small className="summary-card-footnote">
+                占总资金量 {riskCalculator.totalNetLossPctOfCapital == null ? '-' : formatPercent(riskCalculator.totalNetLossPctOfCapital)}
+              </small>
+            </article>
+            <article className="summary-card">
+              <span>股票亏损</span>
+              <strong>{formatCurrency(riskCalculator.totalStockLoss)}</strong>
+            </article>
+            <article className="summary-card">
+              <span>Put 亏损</span>
+              <strong>{formatCurrency(riskCalculator.totalPutLoss)}</strong>
+            </article>
+            <article className="summary-card">
+              <span>Call 权利金抵减</span>
+              <strong>{formatCurrency(riskCalculator.totalCallOffset)}</strong>
+            </article>
+          </div>
+
+          {riskCalculator.rows.length === 0 ? (
+            <div className="empty-state">当前没有股票或期权仓位可供估算。</div>
+          ) : (
+            <div className="risk-calculator-results">
+              {riskCalculator.rows.map((row) => (
+                <article key={row.ticker} className="risk-calculator-row">
+                  <div className="risk-calculator-row-header">
+                    <div>
+                      <strong>{row.ticker}</strong>
+                      <small>
+                        {row.currentPrice && row.shockedPrice
+                          ? `现价 ${formatCurrency(row.currentPrice)} → 情景价 ${formatCurrency(row.shockedPrice)}`
+                          : '当前缺少现价，部分期权损益可能未计入'}
+                      </small>
+                    </div>
+                    <div className="risk-calculator-row-net">
+                      <span>净亏损</span>
+                      <strong>{formatCurrency(row.netLoss)}</strong>
+                      <small>
+                        占总资金量 {row.netLossPctOfCapital == null ? '-' : formatPercent(row.netLossPctOfCapital)}
+                      </small>
+                    </div>
+                  </div>
+                  <div className="risk-calculator-breakdown">
+                    <div className="risk-calculator-breakdown-item">
+                      <span>股票亏损</span>
+                      <strong>{formatCurrency(row.stockLoss)}</strong>
+                    </div>
+                    <div className="risk-calculator-breakdown-item">
+                      <span>Put 亏损</span>
+                      <strong>{formatCurrency(row.putLoss)}</strong>
+                    </div>
+                    <div className="risk-calculator-breakdown-item">
+                      <span>Call 权利金</span>
+                      <strong>{formatCurrency(row.callOffset)}</strong>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
         )}
 
@@ -6104,6 +6566,11 @@ function App() {
             </button>
           </div>
           <div className="copy-message">手动 Refresh 会刷新价格、技术指标，以及来自 Barchart 的 PCR、财报日、IV History、IV Rank、IV Percentage；仅在美股盘中自动刷新股价，每 20 分钟一次；期权价格仅在盘中每 30 分钟自动刷新一次，盘后不会自动刷新。全量刷新会慢速逐只进行。</div>
+          {metrics.missingStockBetaTickers.length > 0 && (
+            <div className="copy-message">
+              Beta 忘记输入了：{metrics.missingStockBetaTickers.join('、')}。当前股票风险先按 Beta 1.00 估算。
+            </div>
+          )}
           {tickerMessage && <div className="copy-message">{tickerMessage}</div>}
           {refreshAllProgress && (
             <div className="copy-message">
@@ -6117,27 +6584,34 @@ function App() {
             <div className="empty-state">当前还没有股票列表。先加几个 ticker，后面新增 Put 时可以直接下拉选择。</div>
           ) : (
             <div className="ticker-list-grid">
-              {tickerList.map((entry) => (
-                <div key={entry.ticker} className="ticker-list-row">
-                  {(() => {
-                    const averageCost = entry.average_cost_basis;
-                    const currentPrice = entry.current_price;
-                    const shares = entry.shares;
-                    const tolerancePct = entry.downside_tolerance_pct;
-                    const stopLossPrice =
-                      typeof averageCost === 'number' && typeof tolerancePct === 'number'
-                        ? averageCost * (1 - tolerancePct)
-                        : null;
-                    const unrealizedPnlAmount =
-                      typeof averageCost === 'number' && typeof currentPrice === 'number' && typeof shares === 'number'
-                        ? (currentPrice - averageCost) * shares
-                        : null;
-                    const unrealizedPnlPct =
-                      typeof averageCost === 'number' && averageCost > 0 && typeof currentPrice === 'number'
-                        ? (currentPrice - averageCost) / averageCost
-                        : null;
-                    return (
-                      <>
+              {tickerList.map((entry) => {
+                const isEditingTicker = editingTickers[entry.ticker] === true;
+                const tickerDraft = tickerDrafts[entry.ticker] ?? createTickerEditDraft(entry);
+                const averageCost = entry.average_cost_basis;
+                const currentPrice = entry.current_price;
+                const shares = entry.shares;
+                const tolerancePct = entry.downside_tolerance_pct;
+                const stopLossPrice =
+                  typeof averageCost === 'number' && typeof tolerancePct === 'number'
+                    ? averageCost * (1 - tolerancePct)
+                    : null;
+                const unrealizedPnlAmount =
+                  typeof averageCost === 'number' && typeof currentPrice === 'number' && typeof shares === 'number'
+                    ? (currentPrice - averageCost) * shares
+                    : null;
+                const unrealizedPnlPct =
+                  typeof averageCost === 'number' && averageCost > 0 && typeof currentPrice === 'number'
+                    ? (currentPrice - averageCost) / averageCost
+                    : null;
+
+                return (
+                <div
+                  key={entry.ticker}
+                  className="ticker-list-row"
+                  ref={(element) => {
+                    stockRowRefs.current[entry.ticker] = element;
+                  }}
+                >
                   <button
                     className={putForm.ticker === entry.ticker ? 'ticker-chip active' : 'ticker-chip'}
                     onClick={() => setPutForm((current) => ({ ...current, ticker: entry.ticker }))}
@@ -6147,12 +6621,40 @@ function App() {
                   </button>
                   <button
                     className="ghost-button ticker-refresh-button"
+                    onClick={() => (isEditingTicker ? handleSaveTickerEdit(entry.ticker) : handleStartTickerEdit(entry))}
+                    type="button"
+                    disabled={refreshingTicker !== null || isRefreshingAllTickers}
+                  >
+                    {isEditingTicker ? 'Save' : 'Edit'}
+                  </button>
+                  {isEditingTicker ? (
+                    <button
+                      className="ghost-button ticker-refresh-button"
+                      onClick={() => handleCancelTickerEdit(entry.ticker)}
+                      type="button"
+                      disabled={refreshingTicker !== null || isRefreshingAllTickers}
+                    >
+                      Cancel
+                    </button>
+                  ) : null}
+                  <button
+                    className="ghost-button ticker-refresh-button"
                     onClick={() => handleRefreshTicker(entry)}
                     type="button"
                     disabled={refreshingTicker !== null || isRefreshingAllTickers}
                   >
                     {refreshingTicker === entry.ticker ? 'Refreshing...' : 'Refresh'}
                   </button>
+                  {(entry.shares ?? 0) > 0 ? (
+                    <button
+                      className="ghost-button ticker-refresh-button"
+                      onClick={() => handleOpenSellStock(entry)}
+                      type="button"
+                      disabled={refreshingTicker !== null || isRefreshingAllTickers}
+                    >
+                      Sell
+                    </button>
+                  ) : null}
                   <button
                     className="ghost-button ticker-refresh-button"
                     onClick={() => handleDeleteTicker(entry.ticker)}
@@ -6166,9 +6668,13 @@ function App() {
                     <input
                       type="number"
                       step="0.01"
-                      value={entry.beta ?? ''}
-                      onChange={(event) => handleUpdateTickerBeta(entry.ticker, event.target.value)}
+                      value={tickerDraft.beta}
+                      onChange={(event) => handleChangeTickerDraft(entry.ticker, 'beta', event.target.value)}
+                      disabled={!isEditingTicker}
                     />
+                    {(entry.shares ?? 0) > 0 && entry.beta == null ? (
+                      <small className="field-warning-text">Beta 忘记输入了</small>
+                    ) : null}
                   </label>
                   <label className="beta-field">
                     <span>Shares</span>
@@ -6176,8 +6682,9 @@ function App() {
                       type="number"
                       step="1"
                       min="0"
-                      value={entry.shares ?? ''}
-                      onChange={(event) => handleUpdateTickerShares(entry.ticker, event.target.value)}
+                      value={tickerDraft.shares}
+                      onChange={(event) => handleChangeTickerDraft(entry.ticker, 'shares', event.target.value)}
+                      disabled={!isEditingTicker}
                     />
                   </label>
                   <label className="beta-field">
@@ -6186,8 +6693,9 @@ function App() {
                       type="number"
                       step="0.01"
                       min="0"
-                      value={entry.average_cost_basis ?? ''}
-                      onChange={(event) => handleUpdateTickerAverageCost(entry.ticker, event.target.value)}
+                      value={tickerDraft.averageCostBasis}
+                      onChange={(event) => handleChangeTickerDraft(entry.ticker, 'averageCostBasis', event.target.value)}
+                      disabled={!isEditingTicker}
                     />
                   </label>
                   <label className="beta-field">
@@ -6196,8 +6704,9 @@ function App() {
                       type="number"
                       step="0.1"
                       min="0"
-                      value={entry.downside_tolerance_pct == null ? '' : (entry.downside_tolerance_pct * 100).toFixed(1).replace(/\.0$/, '')}
-                      onChange={(event) => handleUpdateTickerTolerancePct(entry.ticker, event.target.value)}
+                      value={tickerDraft.downsideTolerancePct}
+                      onChange={(event) => handleChangeTickerDraft(entry.ticker, 'downsideTolerancePct', event.target.value)}
+                      disabled={!isEditingTicker}
                     />
                   </label>
                   <label className="beta-field">
@@ -6284,11 +6793,9 @@ function App() {
                     <span>Last updated</span>
                     <strong className="field-value">{entry.last_updated ? new Date(entry.last_updated).toLocaleString() : '-'}</strong>
                   </div>
-                      </>
-                    );
-                  })()}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>
