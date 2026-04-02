@@ -421,6 +421,22 @@ function getPercentDistanceFromAverage(price: number | null, average: number | n
   return ((price - average) / average) * 100;
 }
 
+function getPercentDistanceToStrike(price: number | null | undefined, strike: number | null | undefined): number | null {
+  if (
+    price === null ||
+    price === undefined ||
+    strike === null ||
+    strike === undefined ||
+    !Number.isFinite(price) ||
+    !Number.isFinite(strike) ||
+    price <= 0
+  ) {
+    return null;
+  }
+
+  return Math.abs(price - strike) / price;
+}
+
 function buildStockExtremeSignal(entry: TickerEntry): StockExtremeSignal | null {
   if (entry.current_price === null || (entry.rsi_14 === null && entry.rsi_14_1h === null)) {
     return null;
@@ -1892,6 +1908,9 @@ function App() {
         const shares = stockEntry?.shares ?? 0;
         const currentPrice = stockEntry?.current_price ?? null;
         const marketValue = shares * (currentPrice ?? 0);
+        const strikeDistances = callRows
+          .map((row) => getPercentDistanceToStrike(currentPrice, row.put_strike))
+          .filter((value): value is number => value !== null);
 
         return {
           ticker,
@@ -1917,6 +1936,7 @@ function App() {
           callCount: callContracts,
           coveredCallShares,
           callPremiumIncome,
+          nearestStrikeDistancePct: strikeDistances.length > 0 ? Math.min(...strikeDistances) : null,
           callUnrealizedPnl: callRows.some((row) => typeof row.option_market_price_per_share === 'number')
             ? callUnrealizedPnl
             : null,
@@ -1930,6 +1950,14 @@ function App() {
         };
       })
       .sort((a, b) => {
+        const aNearStrike = a.nearestStrikeDistancePct !== null && a.nearestStrikeDistancePct <= 0.02;
+        const bNearStrike = b.nearestStrikeDistancePct !== null && b.nearestStrikeDistancePct <= 0.02;
+        if (aNearStrike !== bNearStrike) {
+          return aNearStrike ? -1 : 1;
+        }
+        if ((a.nearestStrikeDistancePct ?? Number.POSITIVE_INFINITY) !== (b.nearestStrikeDistancePct ?? Number.POSITIVE_INFINITY)) {
+          return (a.nearestStrikeDistancePct ?? Number.POSITIVE_INFINITY) - (b.nearestStrikeDistancePct ?? Number.POSITIVE_INFINITY);
+        }
         if (b.summaryValue !== a.summaryValue) {
           return b.summaryValue - a.summaryValue;
         }
@@ -2002,12 +2030,26 @@ function App() {
       .map((item) => ({
         ticker: item.ticker,
         risk: item.risk,
+        nearestStrikeDistancePct: (() => {
+          const positions = putRowsByTicker.get(item.ticker) ?? [];
+          const distances = positions
+            .map((row) => getPercentDistanceToStrike(tickerList.find((entry) => entry.ticker === item.ticker)?.current_price, row.put_strike))
+            .filter((value): value is number => value !== null);
+
+          return distances.length > 0 ? Math.min(...distances) : null;
+        })(),
         totalOptionPnl: putRows
           .filter((row) => row.ticker === item.ticker)
           .reduce((sum, row) => sum + (row.unrealizedPnl ?? 0), 0),
         totalOptionLoss: optionLossByTicker.get(item.ticker) ?? 0,
         totalPremiumIncome: premiumIncomeByTicker.get(item.ticker) ?? 0,
         positions: [...(putRowsByTicker.get(item.ticker) ?? [])].sort((a, b) => {
+          const distanceDiff =
+            (getPercentDistanceToStrike(tickerList.find((entry) => entry.ticker === item.ticker)?.current_price, a.put_strike) ?? Number.POSITIVE_INFINITY) -
+            (getPercentDistanceToStrike(tickerList.find((entry) => entry.ticker === item.ticker)?.current_price, b.put_strike) ?? Number.POSITIVE_INFINITY);
+          if (distanceDiff !== 0) {
+            return distanceDiff;
+          }
           if (b.putRisk !== a.putRisk) {
             return b.putRisk - a.putRisk;
           }
@@ -2017,8 +2059,18 @@ function App() {
           return a.expiration_date.localeCompare(b.expiration_date);
         })
       }))
-      .sort((a, b) => b.risk - a.risk);
-  }, [metrics.groupedTickerRisk, metrics.putRows]);
+      .sort((a, b) => {
+        const aNearStrike = a.nearestStrikeDistancePct !== null && a.nearestStrikeDistancePct <= 0.02;
+        const bNearStrike = b.nearestStrikeDistancePct !== null && b.nearestStrikeDistancePct <= 0.02;
+        if (aNearStrike !== bNearStrike) {
+          return aNearStrike ? -1 : 1;
+        }
+        if ((a.nearestStrikeDistancePct ?? Number.POSITIVE_INFINITY) !== (b.nearestStrikeDistancePct ?? Number.POSITIVE_INFINITY)) {
+          return (a.nearestStrikeDistancePct ?? Number.POSITIVE_INFINITY) - (b.nearestStrikeDistancePct ?? Number.POSITIVE_INFINITY);
+        }
+        return b.risk - a.risk;
+      });
+  }, [metrics.groupedTickerRisk, metrics.putRows, tickerList]);
   const stockLossAlertThreshold = (config?.cash ?? 0) * 0.01;
   const sortedClosedTrades = useMemo(
     () => [...closedTrades].sort((a, b) => b.closed_at.localeCompare(a.closed_at)),
@@ -3626,13 +3678,19 @@ function App() {
                     {riskTickersWithOptionLoss.map((item) => (
                       <div
                         key={item.ticker}
-                        className={`ticker-risk-item stock-holding-card ${item.totalOptionLoss >= item.totalPremiumIncome * 2 && item.totalOptionLoss > 0 ? 'ticker-risk-alert' : ''}`}
+                        className={`ticker-risk-item stock-holding-card ${item.totalOptionLoss >= item.totalPremiumIncome * 2 && item.totalOptionLoss > 0 ? 'ticker-risk-alert' : ''} ${item.nearestStrikeDistancePct !== null && item.nearestStrikeDistancePct <= 0.02 ? 'ticker-risk-warning' : ''}`}
                       >
                         <div className="ticker-risk-main">
                           <div className="stock-holding-topline">
                             <span>{item.ticker}</span>
                             <small>{item.positions.length} 笔 Sell Put</small>
                           </div>
+                          {item.nearestStrikeDistancePct !== null ? (
+                            <small className={item.nearestStrikeDistancePct <= 0.02 ? 'strike-warning-text' : ''}>
+                              距最近 Strike {formatPercent(item.nearestStrikeDistancePct)}
+                              {item.nearestStrikeDistancePct <= 0.02 ? ' · 接近 Strike' : ''}
+                            </small>
+                          ) : null}
                           <div className="stock-holding-section">
                             <small className="stock-section-label">风险概览</small>
                             <div className="stock-holding-grid">
@@ -3649,22 +3707,35 @@ function App() {
                           <div className="stock-holding-section risk-put-section">
                             <small className="stock-section-label">Sell Put 明细</small>
                             <div className="risk-put-details-list">
-                              {item.positions.map((row) => (
-                                <div key={row.id} className="risk-put-detail-row">
-                                  <div className="risk-put-detail-main">
-                                    <strong>{`$${row.put_strike.toFixed(2)} strike`}</strong>
-                                    <small>{`${row.expiration_date} · ${row.contracts} 张`}</small>
+                              {item.positions.map((row) => {
+                                const currentPrice = tickerList.find((entry) => entry.ticker === row.ticker)?.current_price;
+                                const strikeDistancePct = getPercentDistanceToStrike(currentPrice, row.put_strike);
+                                const isNearStrike = strikeDistancePct !== null && strikeDistancePct <= 0.02;
+
+                                return (
+                                  <div
+                                    key={row.id}
+                                    className={`risk-put-detail-row ${isNearStrike ? 'risk-put-detail-row-warning' : ''}`}
+                                  >
+                                    <div className="risk-put-detail-main">
+                                      <strong>{`$${row.put_strike.toFixed(2)} strike`}</strong>
+                                      <small>{`${row.expiration_date} · ${row.contracts} 张`}</small>
+                                    </div>
+                                    <div className="risk-put-detail-grid">
+                                      <small>距 Strike</small>
+                                      <strong className={isNearStrike ? 'value-negative' : ''}>
+                                        {strikeDistancePct === null ? '-' : formatPercent(strikeDistancePct)}
+                                      </strong>
+                                      <small>权利金</small>
+                                      <strong>{formatCurrency(row.premiumIncome)}</strong>
+                                      <small>当前盈亏</small>
+                                      <strong className={row.unrealizedPnl != null && row.unrealizedPnl > 0 ? 'value-positive' : row.unrealizedPnl != null && row.unrealizedPnl < 0 ? 'value-negative' : ''}>
+                                        {formatSignedCurrency(row.unrealizedPnl)}
+                                      </strong>
+                                    </div>
                                   </div>
-                                  <div className="risk-put-detail-grid">
-                                    <small>权利金</small>
-                                    <strong>{formatCurrency(row.premiumIncome)}</strong>
-                                    <small>当前盈亏</small>
-                                    <strong className={row.unrealizedPnl != null && row.unrealizedPnl > 0 ? 'value-positive' : row.unrealizedPnl != null && row.unrealizedPnl < 0 ? 'value-negative' : ''}>
-                                      {formatSignedCurrency(row.unrealizedPnl)}
-                                    </strong>
-                                  </div>
-                                </div>
-                              ))}
+                                );
+                              })}
                             </div>
                           </div>
                           {item.totalOptionLoss >= item.totalPremiumIncome * 2 && item.totalOptionLoss > 0 ? (
@@ -3689,13 +3760,19 @@ function App() {
                     {stockHoldings.map((holding) => (
                       <div
                         key={`holding-${holding.ticker}`}
-                        className={`ticker-risk-item stock-holding-card ${holding.unrealizedPnlAmount !== null && holding.unrealizedPnlAmount < 0 && Math.abs(holding.unrealizedPnlAmount) >= stockLossAlertThreshold ? 'ticker-risk-alert' : ''}`}
+                        className={`ticker-risk-item stock-holding-card ${holding.unrealizedPnlAmount !== null && holding.unrealizedPnlAmount < 0 && Math.abs(holding.unrealizedPnlAmount) >= stockLossAlertThreshold ? 'ticker-risk-alert' : ''} ${holding.nearestStrikeDistancePct !== null && holding.nearestStrikeDistancePct <= 0.02 ? 'ticker-risk-warning' : ''}`}
                       >
                         <div className="ticker-risk-main">
                           <div className="stock-holding-topline">
                             <span>{holding.ticker}</span>
                             <small>{holding.hasStockHolding ? `${holding.shares} shares` : 'Call only'}</small>
                           </div>
+                          {holding.nearestStrikeDistancePct !== null ? (
+                            <small className={holding.nearestStrikeDistancePct <= 0.02 ? 'strike-warning-text' : ''}>
+                              距最近 Strike {formatPercent(holding.nearestStrikeDistancePct)}
+                              {holding.nearestStrikeDistancePct <= 0.02 ? ' · 接近 Strike' : ''}
+                            </small>
+                          ) : null}
                           {holding.hasStockHolding ? (
                             <div className="stock-holding-section">
                               <small className="stock-section-label">股票持仓</small>
@@ -3741,6 +3818,14 @@ function App() {
                                 <strong>{holding.callCount} 张</strong>
                                 <small>覆盖股数</small>
                                 <strong>{holding.coveredCallShares} shares</strong>
+                                {holding.nearestStrikeDistancePct !== null ? (
+                                  <>
+                                    <small>距 Strike</small>
+                                    <strong className={holding.nearestStrikeDistancePct <= 0.02 ? 'value-negative' : ''}>
+                                      {formatPercent(holding.nearestStrikeDistancePct)}
+                                    </strong>
+                                  </>
+                                ) : null}
                                 {holding.callStrikeLabel !== '' ? (
                                   <>
                                     <small>Strike</small>
