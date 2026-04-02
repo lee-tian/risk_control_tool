@@ -1,0 +1,1017 @@
+{
+  "version": 1,
+  "exported_at": "2026-04-02T04:27:53.854Z",
+  "data": {
+    "config": {
+      "cash": 580000,
+      "risk_limit_pct": 0.04,
+      "warning_threshold_pct": 0.8
+    },
+    "puts": [
+      {
+        "id": "1773964297165-izg2gk",
+        "ticker": "AAPL",
+        "option_side": "put",
+        "put_strike": 245,
+        "premium_per_share": 7.98,
+        "contracts": 1,
+        "iv_rank": 0,
+        "date_sold": "2026-03-13",
+        "expiration_date": "2026-05-01",
+        "option_market_price_per_share": 5.425,
+        "option_market_price_updated": "2026-04-02T02:55:43.927Z",
+        "option_theta_per_share": -0.131,
+        "decision_rationale": "",
+        "decision_snapshot": null
+      },
+      {
+        "id": "1775076463100-m64woc",
+        "ticker": "AMZN",
+        "option_side": "call",
+        "put_strike": 220,
+        "premium_per_share": 3.22,
+        "contracts": 3,
+        "iv_rank": 39.5,
+        "date_sold": "2026-03-17",
+        "expiration_date": "2026-04-10",
+        "option_market_price_per_share": 0.77,
+        "option_market_price_updated": "2026-04-02T02:55:59.288Z",
+        "option_theta_per_share": -0.1224,
+        "decision_rationale": "",
+        "decision_snapshot": null
+      },
+      {
+        "id": "1775076880630-8uu4oa",
+        "ticker": "AMZN",
+        "option_side": "call",
+        "put_strike": 220,
+        "premium_per_share": 6.57,
+        "contracts": 2,
+        "iv_rank": 39.5,
+        "date_sold": "2026-03-11",
+        "expiration_date": "2026-04-24",
+        "option_market_price_per_share": 2.65,
+        "option_market_price_updated": "2026-04-02T02:56:14.619Z",
+        "option_theta_per_share": -0.1203,
+        "decision_rationale": "",
+        "decision_snapshot": null
+      },
+      {
+        "id": "1773964140789-so9wnj",
+        "ticker": "AXP",
+        "option_side": "put",
+        "put_strike": 280,
+        "premium_per_share": 4.5,
+        "contracts": 1,
+        "iv_rank": 0,
+        "date_sold": "2026-03-10",
+        "expiration_date": "2026-04-10",
+        "option_market_price_per_share": 1.775,
+        "option_market_price_updated": "2026-04-02T02:56:30.007Z",
+        "option_theta_per_share": -0.2597,
+        "decision_rationale": "",
+        "decision_snapshot": null
+      },
+      {
+        "id": "1773963759892-ib6bi2",
+        "ticker": "BRKB",
+        "option_side": "put",
+        "put_strike": 470,
+        "premium_per_share": 5.3,
+        "contracts": 1,
+        "iv_rank": 0,
+        "date_sold": "2026-03-18",
+        "expiration_date": "2026-04-24",
+        "option_market_price_per_share": 5.925,
+        "option_market_price_updated": "2026-04-02T02:56:45.472Z",
+        "option_theta_per_share": -0.1811,
+        "decision_rationale": "",
+        "decision_snapshot": null
+      },
+      {
+        "id": "1773963866013-oyn85n",
+        "ticker": "GOOGL",
+        "option_side": "put",
+        "put_strike": 300,
+        "premium_per_share": 10.25,
+        "contracts": 1,
+        "iv_rank": 0,
+        "date_sold": "2026-03-18",
+        "expiration_date": "2026-05-01",
+        "option_market_price_per_share": 19.35,
+        "option_market_price_updated": "2026-04-02T02:57:00.828Z",
+        "option_theta_per_share": -0.1772,
+        "decision_rationale": "",
+        "decision_snapshot": null
+      },
+      {
+        "id": "1773964241494-yj1rkd",
+        "ticker": "GOOGL",
+        "option_side": "put",
+        "put_strike": 280,
+        "premium_per_share": 5.2,
+        "contracts": 1,
+        "iv_rank": 0,
+        "date_sold": "2026-03-18",
+        "expiration_date": "2026-05-01",
+        "option_market_price_per_share": 9.55,
+        "option_market_price_updated": "2026-04-02T02:57:16.291Z",
+        "option_theta_per_share": -0.1982,
+        "decision_rationale": "",
+        "decision_snapshot": null
+      },
+      {
+        "id": "1775077102477-nq2yaz",
+        "ticker": "GOOGL",
+        "option_side": "call",
+        "put_strike": 315,
+        "premium_per_share": 4.35,
+        "contracts": 2,
+        "iv_rank": 29.9,
+        "date_sold": "2026-03-31",
+        "expiration_date": "2026-05-15",
+        "option_market_price_per_share": 4.825,
+        "option_market_price_updated": "2026-04-02T02:57:31.858Z",
+        "option_theta_per_share": -0.1267,
+        "decision_rationale": "",
+        "decision_snapshot": null
+      },
+      {
+        "id": "1773964110780-n865rz",
+        "ticker": "MSFT",
+        "option_side": "put",
+        "put_strike": 390,
+        "premium_per_share": 12.57,
+        "contracts": 1,
+        "iv_rank": 0,
+        "date_sold": "2026-03-17",
+        "expiration_date": "2026-05-01",
+        "option_market_price_per_share": 26.4,
+        "option_market_price_updated": "2026-04-02T02:57:47.318Z",
+        "option_theta_per_share": -0.2003,
+        "decision_rationale": "",
+        "decision_snapshot": null
+      },
+      {
+        "id": "1775077174730-7i3hc4",
+        "ticker": "MSFT",
+        "option_side": "call",
+        "put_strike": 400,
+        "premium_per_share": 6.95,
+        "contracts": 1,
+        "iv_rank": 49.3,
+        "date_sold": "2026-03-31",
+        "expiration_date": "2026-05-15",
+        "option_market_price_per_share": 7.175,
+        "option_market_price_updated": "2026-04-02T02:58:02.784Z",
+        "option_theta_per_share": -0.1711,
+        "decision_rationale": "",
+        "decision_snapshot": null
+      },
+      {
+        "id": "1775076680572-1ktck0",
+        "ticker": "NFLX",
+        "option_side": "call",
+        "put_strike": 100,
+        "premium_per_share": 1.85,
+        "contracts": 1,
+        "iv_rank": 38.8,
+        "date_sold": "2026-03-20",
+        "expiration_date": "2026-05-01",
+        "option_market_price_per_share": 3.15,
+        "option_market_price_updated": "2026-04-02T02:58:18.350Z",
+        "option_theta_per_share": -0.0762,
+        "decision_rationale": "",
+        "decision_snapshot": null
+      },
+      {
+        "id": "1773963816132-1l78jt",
+        "ticker": "NVDA",
+        "option_side": "put",
+        "put_strike": 165,
+        "premium_per_share": 2.88,
+        "contracts": 1,
+        "iv_rank": 0,
+        "date_sold": "2026-03-20",
+        "expiration_date": "2026-04-24",
+        "option_market_price_per_share": 3.175,
+        "option_market_price_updated": "2026-04-02T02:58:33.909Z",
+        "option_theta_per_share": -0.1207,
+        "decision_rationale": "",
+        "decision_snapshot": null
+      },
+      {
+        "id": "1774389473456-8e3vba",
+        "ticker": "NVDA",
+        "option_side": "put",
+        "put_strike": 150,
+        "premium_per_share": 2.45,
+        "contracts": 1,
+        "iv_rank": 14.4,
+        "date_sold": "2026-03-24",
+        "expiration_date": "2026-05-01",
+        "option_market_price_per_share": 1.395,
+        "option_market_price_updated": "2026-04-02T02:58:49.271Z",
+        "option_theta_per_share": -0.0716,
+        "decision_rationale": "",
+        "decision_snapshot": null
+      },
+      {
+        "id": "1774899873426-3ibrtk",
+        "ticker": "NVDA",
+        "option_side": "put",
+        "put_strike": 145,
+        "premium_per_share": 3.35,
+        "contracts": 1,
+        "iv_rank": 24.2,
+        "date_sold": "2026-03-30",
+        "expiration_date": "2026-05-15",
+        "option_market_price_per_share": 1.65,
+        "option_market_price_updated": "2026-04-02T02:59:04.835Z",
+        "option_theta_per_share": -0.0584,
+        "decision_rationale": "",
+        "decision_snapshot": null
+      },
+      {
+        "id": "1775076940371-0bpm82",
+        "ticker": "NVDA",
+        "option_side": "call",
+        "put_strike": 195,
+        "premium_per_share": 3.07,
+        "contracts": 1,
+        "iv_rank": 11.6,
+        "date_sold": "2026-03-23",
+        "expiration_date": "2026-05-15",
+        "option_market_price_per_share": 2.225,
+        "option_market_price_updated": "2026-04-02T02:59:20.792Z",
+        "option_theta_per_share": -0.0681,
+        "decision_rationale": "",
+        "decision_snapshot": null
+      },
+      {
+        "id": "1775077004245-bxpb1q",
+        "ticker": "NVDA",
+        "option_side": "call",
+        "put_strike": 190,
+        "premium_per_share": 3.25,
+        "contracts": 2,
+        "iv_rank": 11.6,
+        "date_sold": "2026-03-31",
+        "expiration_date": "2026-05-15",
+        "option_market_price_per_share": 3.35,
+        "option_market_price_updated": "2026-04-02T02:59:36.862Z",
+        "option_theta_per_share": -0.0825,
+        "decision_rationale": "",
+        "decision_snapshot": null
+      },
+      {
+        "id": "1773963904196-2vvtc7",
+        "ticker": "QQQ",
+        "option_side": "put",
+        "put_strike": 560,
+        "premium_per_share": 10.4,
+        "contracts": 1,
+        "iv_rank": 0,
+        "date_sold": "2026-03-19",
+        "expiration_date": "2026-05-01",
+        "option_market_price_per_share": 10.275,
+        "option_market_price_updated": "2026-04-02T02:59:52.862Z",
+        "option_theta_per_share": -0.2499,
+        "decision_rationale": "",
+        "decision_snapshot": null
+      },
+      {
+        "id": "1775074061925-8lg9y2",
+        "ticker": "XLE",
+        "option_side": "put",
+        "put_strike": 52,
+        "premium_per_share": 0.48,
+        "contracts": 10,
+        "iv_rank": 36.1,
+        "date_sold": "2026-04-01",
+        "expiration_date": "2026-05-15",
+        "option_market_price_per_share": 0.295,
+        "option_market_price_updated": "2026-04-02T03:00:08.734Z",
+        "option_theta_per_share": -0.0125,
+        "decision_rationale": "",
+        "decision_snapshot": null
+      }
+    ],
+    "closedTrades": [
+      {
+        "id": "1775074136652-mtqf72",
+        "position_id": "1774898860207-hw9dl4",
+        "ticker": "NVDA",
+        "option_side": "put",
+        "put_strike": 145,
+        "premium_sold_per_share": 2.9,
+        "premium_bought_back_per_share": 1,
+        "contracts": 1,
+        "date_sold": "2026-03-30",
+        "expiration_date": "2026-05-08",
+        "closed_at": "2026-04-01",
+        "close_reason": "manual",
+        "realized_pnl": 190,
+        "reflection_notes": "减少风险，成功收钱"
+      },
+      {
+        "id": "1774986564885-j9ha0s",
+        "position_id": "1773963714224-sdkw9k",
+        "ticker": "MSFT",
+        "option_side": "put",
+        "put_strike": 365,
+        "premium_sold_per_share": 9.51,
+        "premium_bought_back_per_share": 12.1,
+        "contracts": 1,
+        "date_sold": "2026-03-20",
+        "expiration_date": "2026-05-01",
+        "closed_at": "2026-03-31",
+        "close_reason": "manual",
+        "realized_pnl": -259,
+        "reflection_notes": "美股反弹，我买了正股，这也算正常。我觉得这一笔还行，虽然亏损了，但是我觉得还是比较好的，因为我知道我要买的是正股。"
+      },
+      {
+        "id": "1774986496740-jp8qfy",
+        "position_id": "1774373231831-3769u6",
+        "ticker": "GOOGL",
+        "option_side": "put",
+        "put_strike": 260,
+        "premium_sold_per_share": 5.2,
+        "premium_bought_back_per_share": 5.2,
+        "contracts": 1,
+        "date_sold": "2026-03-24",
+        "expiration_date": "2026-05-15",
+        "closed_at": "2026-03-31",
+        "close_reason": "manual",
+        "realized_pnl": 0,
+        "reflection_notes": "美股反弹，然后买回正股，最后平仓。这笔交易还可以。"
+      },
+      {
+        "id": "1774899387819-um1sfz",
+        "position_id": "1773964493739-vu9d1t",
+        "ticker": "NFLX",
+        "option_side": "put",
+        "put_strike": 100,
+        "premium_sold_per_share": 4.8,
+        "premium_bought_back_per_share": 7.7,
+        "contracts": 1,
+        "date_sold": "2026-03-05",
+        "expiration_date": "2026-04-10",
+        "closed_at": "2026-03-30",
+        "close_reason": "manual",
+        "realized_pnl": -290.00000000000006,
+        "reflection_notes": "这笔交易的话，就是我卖在了 Netflix 已经涨上去的时候。比如我在 98 的时候已经清仓了，但是我却在高点（也就是在超买的时候）卖了 put。\n\n下次一定不能在超买的时候卖 put，这样子追涨追得有点过分了。"
+      },
+      {
+        "id": "1774457922608-f0w8sd",
+        "position_id": "1773963669519-egvvhd",
+        "ticker": "AMZN",
+        "option_side": "put",
+        "put_strike": 180,
+        "premium_sold_per_share": 4.6,
+        "premium_bought_back_per_share": 3.6,
+        "contracts": 1,
+        "date_sold": "2026-03-13",
+        "expiration_date": "2026-04-10",
+        "closed_at": "2026-03-25",
+        "close_reason": "manual",
+        "realized_pnl": 99.99999999999996,
+        "reflection_notes": ""
+      },
+      {
+        "id": "1774388698759-y37d9t",
+        "position_id": "1773964568205-4ras5k",
+        "ticker": "NVDA",
+        "option_side": "put",
+        "put_strike": 150,
+        "premium_sold_per_share": 2.32,
+        "premium_bought_back_per_share": 1.48,
+        "contracts": 1,
+        "date_sold": "2026-02-20",
+        "expiration_date": "2026-04-17",
+        "closed_at": "2026-03-20",
+        "close_reason": "manual",
+        "realized_pnl": 83.99999999999999,
+        "reflection_notes": ""
+      }
+    ],
+    "tickerList": [
+      {
+        "ticker": "AAPL",
+        "beta": 0.87,
+        "shares": null,
+        "average_cost_basis": null,
+        "downside_tolerance_pct": null,
+        "current_price": 255.63,
+        "last_updated": "2026-04-02T03:36:12.779Z",
+        "next_earnings_date": "2026-05-07",
+        "current_iv": 0.2852,
+        "current_iv_updated": "2026-04-02T02:55:54.096Z",
+        "historical_iv": 0.20850000000000002,
+        "iv_rank": 23.37,
+        "iv_percentile": 69,
+        "put_call_ratio": 0.69,
+        "put_call_ratio_updated": "2026-04-02T03:36:12.779Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 49.09526334979959,
+        "rsi_14_1h": 62.81599247455319,
+        "rsi_updated": "2026-04-02T03:36:12.779Z",
+        "ma_21": 254.02157619047622,
+        "ma_200": 248.51046550000004
+      },
+      {
+        "ticker": "AMZN",
+        "beta": 1.31,
+        "shares": 500,
+        "average_cost_basis": 136,
+        "downside_tolerance_pct": 0.2,
+        "current_price": 210.57,
+        "last_updated": "2026-04-02T03:36:34.578Z",
+        "next_earnings_date": "2026-05-07",
+        "current_iv": 0.29960000000000003,
+        "current_iv_updated": "2026-04-01T21:37:58.844Z",
+        "historical_iv": 0.29960000000000003,
+        "iv_rank": 39.54,
+        "iv_percentile": 77,
+        "put_call_ratio": 0.61,
+        "put_call_ratio_updated": "2026-04-02T03:36:34.578Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 49.72628609370717,
+        "rsi_14_1h": 64.20208622584698,
+        "rsi_updated": "2026-04-02T03:36:34.578Z",
+        "ma_21": 210.12507142857143,
+        "ma_200": 224.57768249999992
+      },
+      {
+        "ticker": "AXP",
+        "beta": 1.34,
+        "shares": null,
+        "average_cost_basis": null,
+        "downside_tolerance_pct": null,
+        "current_price": 301.45,
+        "last_updated": "2026-04-02T03:36:59.849Z",
+        "next_earnings_date": null,
+        "current_iv": 0.3667,
+        "current_iv_updated": "2026-04-02T02:56:40.392Z",
+        "historical_iv": 0.37070000000000003,
+        "iv_rank": 33.39,
+        "iv_percentile": 91,
+        "put_call_ratio": 0.53,
+        "put_call_ratio_updated": "2026-04-02T03:36:59.849Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 43.91780750622203,
+        "rsi_14_1h": 61.700921851452186,
+        "rsi_updated": "2026-04-02T03:36:59.849Z",
+        "ma_21": 300.8166666666666,
+        "ma_200": 334.41984999999994
+      },
+      {
+        "ticker": "BRKB",
+        "beta": 0.36,
+        "shares": null,
+        "average_cost_basis": null,
+        "downside_tolerance_pct": null,
+        "current_price": 478.5,
+        "last_updated": "2026-04-02T03:37:26.642Z",
+        "next_earnings_date": null,
+        "current_iv": 0.2416,
+        "current_iv_updated": "2026-04-02T02:57:09.272Z",
+        "historical_iv": null,
+        "iv_rank": null,
+        "iv_percentile": null,
+        "put_call_ratio": 0.5696193512762509,
+        "put_call_ratio_updated": "2026-04-02T03:37:26.642Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 42.61069870945258,
+        "rsi_14_1h": 54.91904298828289,
+        "rsi_updated": "2026-04-02T03:37:26.642Z",
+        "ma_21": 485.55520952380954,
+        "ma_200": 490.65864700000014
+      },
+      {
+        "ticker": "GOOGL",
+        "beta": 0.72,
+        "shares": 200,
+        "average_cost_basis": 315,
+        "downside_tolerance_pct": 0.2,
+        "current_price": 297.39,
+        "last_updated": "2026-04-02T03:37:53.814Z",
+        "next_earnings_date": null,
+        "current_iv": 0.3129,
+        "current_iv_updated": "2026-04-01T20:58:22.472Z",
+        "historical_iv": 0.3129,
+        "iv_rank": 29.91,
+        "iv_percentile": 64,
+        "put_call_ratio": 0.8,
+        "put_call_ratio_updated": "2026-04-02T03:37:53.814Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 49.08902342212969,
+        "rsi_14_1h": 71.66390659230481,
+        "rsi_updated": "2026-04-02T03:37:53.814Z",
+        "ma_21": 298.07571428571435,
+        "ma_200": 264.0942999999998
+      },
+      {
+        "ticker": "MSFO",
+        "beta": 1,
+        "shares": 3000,
+        "average_cost_basis": 11.54,
+        "downside_tolerance_pct": 0,
+        "current_price": 11.52,
+        "last_updated": "2026-04-02T03:38:15.823Z",
+        "next_earnings_date": null,
+        "current_iv": 0.5664,
+        "current_iv_updated": "2026-04-02T02:57:55.143Z",
+        "historical_iv": 0.222,
+        "iv_rank": 25.16,
+        "iv_percentile": 70,
+        "put_call_ratio": 2.05,
+        "put_call_ratio_updated": "2026-04-02T03:38:15.823Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 39.747379595025116,
+        "rsi_14_1h": 53.3346810327372,
+        "rsi_updated": "2026-04-02T03:38:15.823Z",
+        "ma_21": 12.040000000000001,
+        "ma_200": 14.174299999999995
+      },
+      {
+        "ticker": "MSFT",
+        "beta": 1.08,
+        "shares": null,
+        "average_cost_basis": null,
+        "downside_tolerance_pct": 0.05,
+        "current_price": 369.37,
+        "last_updated": "2026-04-02T03:38:37.777Z",
+        "next_earnings_date": "2026-04-29",
+        "current_iv": 0.2401,
+        "current_iv_updated": "2026-04-01T20:59:34.726Z",
+        "historical_iv": 0.2401,
+        "iv_rank": 49.26,
+        "iv_percentile": 92,
+        "put_call_ratio": 0.47,
+        "put_call_ratio_updated": "2026-04-02T03:38:37.777Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 36.004864846248424,
+        "rsi_14_1h": 60.59480620398687,
+        "rsi_updated": "2026-04-02T03:38:37.777Z",
+        "ma_21": 388.2333333333333,
+        "ma_200": 475.77915000000013
+      },
+      {
+        "ticker": "NFLX",
+        "beta": 1.71,
+        "shares": 100,
+        "average_cost_basis": 96,
+        "downside_tolerance_pct": 0.2,
+        "current_price": 95.55,
+        "last_updated": "2026-04-02T03:39:00.784Z",
+        "next_earnings_date": null,
+        "current_iv": 0.4698,
+        "current_iv_updated": "2026-04-01T20:51:20.567Z",
+        "historical_iv": 0.4698,
+        "iv_rank": 38.81,
+        "iv_percentile": 77,
+        "put_call_ratio": 0.97,
+        "put_call_ratio_updated": "2026-04-02T03:39:00.784Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 58.3207537706017,
+        "rsi_14_1h": 66.00775834983918,
+        "rsi_updated": "2026-04-02T03:39:00.784Z",
+        "ma_21": 94.86667142857142,
+        "ma_200": 107.24645049999998
+      },
+      {
+        "ticker": "NVDA",
+        "beta": 2.17,
+        "shares": 300,
+        "average_cost_basis": 179.3,
+        "downside_tolerance_pct": 0.2,
+        "current_price": 175.75,
+        "last_updated": "2026-04-02T03:39:22.177Z",
+        "next_earnings_date": "2026-05-27",
+        "current_iv": 0.3741,
+        "current_iv_updated": "2026-04-01T20:56:44.240Z",
+        "historical_iv": 0.3741,
+        "iv_rank": 11.57,
+        "iv_percentile": 32,
+        "put_call_ratio": 0.87,
+        "put_call_ratio_updated": "2026-04-02T03:39:22.177Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 47.60219077194955,
+        "rsi_14_1h": 66.90285008519662,
+        "rsi_updated": "2026-04-02T03:39:22.177Z",
+        "ma_21": 178.17714285714285,
+        "ma_200": 179.6379499999999
+      },
+      {
+        "ticker": "QQQ",
+        "beta": 1.12,
+        "shares": null,
+        "average_cost_basis": null,
+        "downside_tolerance_pct": 0.1,
+        "current_price": 584.31,
+        "last_updated": "2026-04-02T03:39:43.794Z",
+        "next_earnings_date": null,
+        "current_iv": 0.2047,
+        "current_iv_updated": "2026-04-01T20:17:03.108Z",
+        "historical_iv": 0.2041,
+        "iv_rank": 29.18,
+        "iv_percentile": 84,
+        "put_call_ratio": 1.35,
+        "put_call_ratio_updated": "2026-04-02T03:39:43.794Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 45.741295376219654,
+        "rsi_14_1h": 60.15890580456371,
+        "rsi_updated": "2026-04-02T03:39:43.794Z",
+        "ma_21": 592.3785714285715,
+        "ma_200": 593.007
+      },
+      {
+        "ticker": "QQQI",
+        "beta": 0.88,
+        "shares": 500,
+        "average_cost_basis": 52.6,
+        "downside_tolerance_pct": 0.2,
+        "current_price": 50.19,
+        "last_updated": "2026-04-02T03:40:06.497Z",
+        "next_earnings_date": null,
+        "current_iv": 0.19940000000000002,
+        "current_iv_updated": "2026-04-01T20:17:30.803Z",
+        "historical_iv": 0.19879999999999998,
+        "iv_rank": 20.68,
+        "iv_percentile": 69,
+        "put_call_ratio": 0.76,
+        "put_call_ratio_updated": "2026-04-02T03:40:06.497Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 47.077769909752064,
+        "rsi_14_1h": 62.36690208797354,
+        "rsi_updated": "2026-04-02T03:40:06.497Z",
+        "ma_21": 50.72095238095238,
+        "ma_200": 50.30735000000001
+      },
+      {
+        "ticker": "XLE",
+        "beta": 1,
+        "shares": null,
+        "average_cost_basis": null,
+        "downside_tolerance_pct": null,
+        "current_price": 58.97,
+        "last_updated": "2026-04-02T03:40:28.851Z",
+        "next_earnings_date": null,
+        "current_iv": 0.193,
+        "current_iv_updated": "2026-04-01T20:07:32.316Z",
+        "historical_iv": 0.1973,
+        "iv_rank": 36.95,
+        "iv_percentile": 87,
+        "put_call_ratio": 1.68,
+        "put_call_ratio_updated": "2026-04-02T03:40:28.851Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 53.617618877501165,
+        "rsi_14_1h": 34.938893621904896,
+        "rsi_updated": "2026-04-02T03:40:28.851Z",
+        "ma_21": 58.52619047619047,
+        "ma_200": 46.41449999999998
+      }
+    ],
+    "scenario": 0.1,
+    "vixHistory": [
+      {
+        "timestamp": "03/19/2026",
+        "value": 24.06,
+        "stress": 0.10071009420609237
+      },
+      {
+        "timestamp": "03/20/2026",
+        "value": 26.78,
+        "stress": 0.11209544151451181
+      },
+      {
+        "timestamp": "03/23/2026",
+        "value": 26.15,
+        "stress": 0.10945839415998818
+      },
+      {
+        "timestamp": "03/24/2026",
+        "value": 26.95,
+        "stress": 0.11280702572128802
+      },
+      {
+        "timestamp": "03/25/2026",
+        "value": 25.33,
+        "stress": 0.10602604680965583
+      },
+      {
+        "timestamp": "03/26/2026",
+        "value": 27.44,
+        "stress": 0.11485806255258416
+      },
+      {
+        "timestamp": "03/27/2026",
+        "value": 31.05,
+        "stress": 0.12996876247294964
+      },
+      {
+        "timestamp": "03/30/2026",
+        "value": 30.61,
+        "stress": 0.12812701511423472
+      },
+      {
+        "timestamp": "03/31/2026",
+        "value": 25.25,
+        "stress": 0.10569118365352587
+      },
+      {
+        "timestamp": "2026-01-02T16:00:00.000Z",
+        "value": 14.51,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-05T16:00:00.000Z",
+        "value": 14.9,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-06T16:00:00.000Z",
+        "value": 14.75,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-07T16:00:00.000Z",
+        "value": 15.38,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-08T16:00:00.000Z",
+        "value": 15.45,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-09T16:00:00.000Z",
+        "value": 14.49,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-12T16:00:00.000Z",
+        "value": 15.12,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-13T16:00:00.000Z",
+        "value": 15.98,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-14T16:00:00.000Z",
+        "value": 16.75,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-15T16:00:00.000Z",
+        "value": 15.84,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-16T16:00:00.000Z",
+        "value": 15.86,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-19T16:00:00.000Z",
+        "value": 18.84,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-20T16:00:00.000Z",
+        "value": 20.09,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-21T16:00:00.000Z",
+        "value": 16.9,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-22T16:00:00.000Z",
+        "value": 15.64,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-23T16:00:00.000Z",
+        "value": 16.09,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-26T16:00:00.000Z",
+        "value": 16.15,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-27T16:00:00.000Z",
+        "value": 16.35,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-28T16:00:00.000Z",
+        "value": 16.35,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-29T16:00:00.000Z",
+        "value": 16.88,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-30T16:00:00.000Z",
+        "value": 17.44,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-02T16:00:00.000Z",
+        "value": 16.34,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-03T16:00:00.000Z",
+        "value": 18,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-04T16:00:00.000Z",
+        "value": 18.64,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-05T16:00:00.000Z",
+        "value": 21.77,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-06T16:00:00.000Z",
+        "value": 17.76,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-09T16:00:00.000Z",
+        "value": 17.36,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-10T16:00:00.000Z",
+        "value": 17.79,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-11T16:00:00.000Z",
+        "value": 17.65,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-12T16:00:00.000Z",
+        "value": 20.82,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-13T16:00:00.000Z",
+        "value": 20.6,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-16T16:00:00.000Z",
+        "value": 21.2,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-17T16:00:00.000Z",
+        "value": 20.29,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-18T16:00:00.000Z",
+        "value": 19.62,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-19T16:00:00.000Z",
+        "value": 20.23,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-20T16:00:00.000Z",
+        "value": 19.09,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-23T16:00:00.000Z",
+        "value": 21.01,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-24T16:00:00.000Z",
+        "value": 19.55,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-25T16:00:00.000Z",
+        "value": 17.93,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-26T16:00:00.000Z",
+        "value": 18.63,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-27T16:00:00.000Z",
+        "value": 19.86,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-03-02T16:00:00.000Z",
+        "value": 21.44,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-03-03T16:00:00.000Z",
+        "value": 23.57,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-03-04T16:00:00.000Z",
+        "value": 21.15,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-03-05T16:00:00.000Z",
+        "value": 23.75,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-03-06T16:00:00.000Z",
+        "value": 29.49,
+        "stress": 0.12343893092841496
+      },
+      {
+        "timestamp": "2026-03-09T16:00:00.000Z",
+        "value": 25.5,
+        "stress": 0.10673763101643206
+      },
+      {
+        "timestamp": "2026-03-10T16:00:00.000Z",
+        "value": 24.93,
+        "stress": 0.10435173102900594
+      },
+      {
+        "timestamp": "2026-03-11T16:00:00.000Z",
+        "value": 24.23,
+        "stress": 0.10142167841286859
+      },
+      {
+        "timestamp": "2026-03-12T16:00:00.000Z",
+        "value": 27.29,
+        "stress": 0.11423019413484042
+      },
+      {
+        "timestamp": "2026-03-13T16:00:00.000Z",
+        "value": 27.19,
+        "stress": 0.11381161518967797
+      },
+      {
+        "timestamp": "2026-03-16T16:00:00.000Z",
+        "value": 23.51,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-03-17T16:00:00.000Z",
+        "value": 22.37,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-03-18T16:00:00.000Z",
+        "value": 25.09,
+        "stress": 0.1050214573412659
+      },
+      {
+        "timestamp": "2026-03-19T16:00:00.000Z",
+        "value": 24.06,
+        "stress": 0.10071009420609237
+      },
+      {
+        "timestamp": "2026-03-20T20:35:47.992Z",
+        "value": 26.78,
+        "stress": 0.11209544151451181
+      }
+    ]
+  }
+}

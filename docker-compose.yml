@@ -1,0 +1,33 @@
+services:
+  risk-exposure-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: risk-exposure-api
+    env_file:
+      - .env
+    environment:
+      APP_STORAGE_DRIVER: file
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  risk-exposure-tool:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: risk-exposure-tool
+    depends_on:
+      - risk-exposure-api
+    ports:
+      - "60688:80"
+    restart: unless-stopped
+
+  unit-tests:
+    profiles:
+      - test
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command: sh -lc "rm -rf node_modules && npm install --legacy-peer-deps && npm run test:unit"

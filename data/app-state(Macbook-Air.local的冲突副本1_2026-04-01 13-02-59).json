@@ -1,0 +1,1009 @@
+{
+  "version": 1,
+  "exported_at": "2026-04-01T20:00:54.343Z",
+  "data": {
+    "config": {
+      "cash": 500000,
+      "risk_limit_pct": 0.04,
+      "warning_threshold_pct": 0.8
+    },
+    "puts": [
+      {
+        "id": "1773963759892-ib6bi2",
+        "ticker": "BRKB",
+        "option_side": "put",
+        "put_strike": 470,
+        "premium_per_share": 5.3,
+        "contracts": 1,
+        "iv_rank": 0,
+        "date_sold": "2026-03-18",
+        "expiration_date": "2026-04-24",
+        "option_market_price_per_share": 8.3,
+        "option_market_price_updated": "2026-03-31T19:20:29.099Z",
+        "option_theta_per_share": -0.1961
+      },
+      {
+        "id": "1773963816132-1l78jt",
+        "ticker": "NVDA",
+        "option_side": "put",
+        "put_strike": 165,
+        "premium_per_share": 2.88,
+        "contracts": 1,
+        "iv_rank": 0,
+        "date_sold": "2026-03-20",
+        "expiration_date": "2026-04-24",
+        "option_market_price_per_share": 6.8,
+        "option_market_price_updated": "2026-03-31T19:20:44.567Z",
+        "option_theta_per_share": -0.1296
+      },
+      {
+        "id": "1773963866013-oyn85n",
+        "ticker": "GOOGL",
+        "option_side": "put",
+        "put_strike": 300,
+        "premium_per_share": 10.25,
+        "contracts": 1,
+        "iv_rank": 0,
+        "date_sold": "2026-03-18",
+        "expiration_date": "2026-05-01",
+        "option_market_price_per_share": 29.475,
+        "option_market_price_updated": "2026-03-31T19:21:00.085Z",
+        "option_theta_per_share": -0.1088
+      },
+      {
+        "id": "1773963904196-2vvtc7",
+        "ticker": "QQQ",
+        "option_side": "put",
+        "put_strike": 560,
+        "premium_per_share": 10.4,
+        "contracts": 1,
+        "iv_rank": 0,
+        "date_sold": "2026-03-19",
+        "expiration_date": "2026-05-01",
+        "option_market_price_per_share": 19.695,
+        "option_market_price_updated": "2026-03-31T21:21:33.799Z",
+        "option_theta_per_share": -0.2706
+      },
+      {
+        "id": "1773964110780-n865rz",
+        "ticker": "MSFT",
+        "option_side": "put",
+        "put_strike": 390,
+        "premium_per_share": 12.57,
+        "contracts": 1,
+        "iv_rank": 0,
+        "date_sold": "2026-03-17",
+        "expiration_date": "2026-05-01",
+        "option_market_price_per_share": 35.3,
+        "option_market_price_updated": "2026-03-31T19:21:32.053Z",
+        "option_theta_per_share": -0.1492
+      },
+      {
+        "id": "1773964140789-so9wnj",
+        "ticker": "AXP",
+        "option_side": "put",
+        "put_strike": 280,
+        "premium_per_share": 4.5,
+        "contracts": 1,
+        "iv_rank": 0,
+        "date_sold": "2026-03-10",
+        "expiration_date": "2026-04-10",
+        "option_market_price_per_share": 3.225,
+        "option_market_price_updated": "2026-03-31T19:21:48.774Z",
+        "option_theta_per_share": -0.3271
+      },
+      {
+        "id": "1773964241494-yj1rkd",
+        "ticker": "GOOGL",
+        "option_side": "put",
+        "put_strike": 280,
+        "premium_per_share": 5.2,
+        "contracts": 1,
+        "iv_rank": 0,
+        "date_sold": "2026-03-18",
+        "expiration_date": "2026-05-01",
+        "option_market_price_per_share": 9.55,
+        "option_market_price_updated": "2026-04-01T19:15:52.551Z",
+        "option_theta_per_share": -0.1982
+      },
+      {
+        "id": "1773964297165-izg2gk",
+        "ticker": "AAPL",
+        "option_side": "put",
+        "put_strike": 245,
+        "premium_per_share": 7.98,
+        "contracts": 1,
+        "iv_rank": 0,
+        "date_sold": "2026-03-13",
+        "expiration_date": "2026-05-01",
+        "option_market_price_per_share": 8.85,
+        "option_market_price_updated": "2026-03-31T19:22:19.884Z",
+        "option_theta_per_share": -0.1425
+      },
+      {
+        "id": "1774389473456-8e3vba",
+        "ticker": "NVDA",
+        "option_side": "put",
+        "put_strike": 150,
+        "premium_per_share": 2.45,
+        "contracts": 1,
+        "iv_rank": 14.4,
+        "date_sold": "2026-03-24",
+        "expiration_date": "2026-05-01",
+        "option_market_price_per_share": 3.1,
+        "option_market_price_updated": "2026-03-31T19:22:50.775Z",
+        "option_theta_per_share": -0.1019
+      },
+      {
+        "id": "1774898860207-hw9dl4",
+        "ticker": "NVDA",
+        "option_side": "put",
+        "put_strike": 145,
+        "premium_per_share": 2.9,
+        "contracts": 1,
+        "iv_rank": 23.9,
+        "date_sold": "2026-03-30",
+        "expiration_date": "2026-05-08",
+        "option_market_price_per_share": 2.73,
+        "option_market_price_updated": "2026-03-31T19:23:06.190Z",
+        "option_theta_per_share": -0.084
+      },
+      {
+        "id": "1774899873426-3ibrtk",
+        "ticker": "NVDA",
+        "option_side": "put",
+        "put_strike": 145,
+        "premium_per_share": 3.35,
+        "contracts": 1,
+        "iv_rank": 24.2,
+        "date_sold": "2026-03-30",
+        "expiration_date": "2026-05-15",
+        "option_market_price_per_share": 3.225,
+        "option_market_price_updated": "2026-03-31T19:23:21.574Z",
+        "option_theta_per_share": -0.0794
+      },
+      {
+        "id": "1775072758934-r4e8pr",
+        "ticker": "AMZN",
+        "option_side": "call",
+        "put_strike": 220,
+        "premium_per_share": 3.22,
+        "contracts": 3,
+        "iv_rank": 39.2,
+        "date_sold": "2026-03-17",
+        "expiration_date": "2026-04-10",
+        "option_market_price_per_share": 0.77,
+        "option_market_price_updated": "2026-04-01T19:46:08.240Z",
+        "option_theta_per_share": -0.1224
+      },
+      {
+        "id": "1775073002783-5klwqu",
+        "ticker": "NFLX",
+        "option_side": "call",
+        "put_strike": 100,
+        "premium_per_share": 2.94,
+        "contracts": 1,
+        "iv_rank": 38.3,
+        "date_sold": "2026-03-20",
+        "expiration_date": "2026-05-01",
+        "option_market_price_per_share": 3.15,
+        "option_market_price_updated": "2026-04-01T19:50:26.791Z",
+        "option_theta_per_share": -0.0762
+      },
+      {
+        "id": "1775073127973-us3y4e",
+        "ticker": "AMZN",
+        "option_side": "call",
+        "put_strike": 220,
+        "premium_per_share": 6.57,
+        "contracts": 2,
+        "iv_rank": 39.2,
+        "date_sold": "2026-03-11",
+        "expiration_date": "2026-04-24",
+        "option_market_price_per_share": 2.65,
+        "option_market_price_updated": "2026-04-01T19:52:19.632Z",
+        "option_theta_per_share": -0.1203,
+        "decision_rationale": "roll",
+        "decision_snapshot": {
+          "verdict": "可以考虑",
+          "summary": "高IVP提供较好权利金，但股价低于MA200，需关注技术面阻力。",
+          "rationale_check": "用户计划在突破行权价或止损时展期，但未明确止损价位，需细化执行标准。",
+          "worst_case": "股价大幅上涨突破Breakeven，导致股票被行权，损失潜在上涨收益。",
+          "fundamental_note": "AMZN基本面稳健，但需关注宏观经济对消费支出的影响。",
+          "fundamental_events": [],
+          "current_iv_rank": "39.2",
+          "iv_rank_note": "IV Rank 39.2 处于中等偏低，但 IV Percentile 76.0 较高，对卖出有利。",
+          "iv_rank_source": "Barchart quotes/get",
+          "iv_rank_time": "2026-04-01T19:51:44.000Z",
+          "iv_rank_link": "https://www.barchart.com/stocks/quotes/AMZN/overview",
+          "action": "考虑卖出，但需密切关注股价对MA200的反应。",
+          "key_risks": [
+            "股价低于MA200，面临技术面阻力。",
+            "Beta较高，股价波动性相对大。",
+            "Breakeven距离7.31%，仍有被行权风险。"
+          ],
+          "max_profit": "1314.00",
+          "risk_at_10pct_drop": "4268.60",
+          "analyzed_at": "2026-04-01T19:51:58.398Z"
+        }
+      },
+      {
+        "id": "1775073412152-qahnnl",
+        "ticker": "NVDA",
+        "option_side": "call",
+        "put_strike": 195,
+        "premium_per_share": 3.07,
+        "contracts": 1,
+        "iv_rank": 11.9,
+        "date_sold": "2026-03-23",
+        "expiration_date": "2026-05-15",
+        "option_market_price_per_share": null,
+        "option_market_price_updated": null,
+        "option_theta_per_share": null,
+        "decision_rationale": "卖出",
+        "decision_snapshot": {
+          "verdict": "需要谨慎",
+          "summary": "IV Rank低，溢价不高；股价在均线下方，但期权不跨财报，需谨慎。",
+          "rationale_check": "用户计划在突破行权价或止损边界后“卖出”，但未明确是卖出股票还是平仓期权，计划不够清晰。",
+          "worst_case": "股价大幅下跌，导致股票亏损远超权利金收益；或股价上涨但未达行权价，权利金被侵蚀。",
+          "fundamental_note": "公司基本面未提供具体信息，但高Beta显示其波动性较大。",
+          "fundamental_events": [],
+          "current_iv_rank": "11.9",
+          "iv_rank_note": "IV Rank 11.9，处于低位，卖出Covered Call获得的权利金较低。",
+          "iv_rank_source": "Barchart quotes/get",
+          "iv_rank_time": "2026-04-01T19:56:32.000Z",
+          "iv_rank_link": "https://www.barchart.com/stocks/quotes/NVDA/overview",
+          "action": "鉴于低IV和技术面偏弱，建议观望或寻找更高IV标的。",
+          "key_risks": [
+            "IV Rank低，权利金收益不佳",
+            "股价低于MA21和MA200，短期承压",
+            "高Beta股票，波动性大"
+          ],
+          "max_profit": "307.00",
+          "risk_at_10pct_drop": "1919.30",
+          "analyzed_at": "2026-04-01T19:56:43.117Z"
+        }
+      },
+      {
+        "id": "1775073473511-l6a5ur",
+        "ticker": "NVDA",
+        "option_side": "call",
+        "put_strike": 190,
+        "premium_per_share": 3.25,
+        "contracts": 2,
+        "iv_rank": 11.9,
+        "date_sold": "2026-03-31",
+        "expiration_date": "2026-05-15",
+        "option_market_price_per_share": null,
+        "option_market_price_updated": null,
+        "option_theta_per_share": null,
+        "decision_rationale": "卖出",
+        "decision_snapshot": {
+          "verdict": "需要谨慎",
+          "summary": "低 IV Rank，股价承压，但期权到期早于财报，行权价有一定缓冲。",
+          "rationale_check": "用户对接货、止损计划不清晰，未明确卖出何物及触发条件，计划不可执行。",
+          "worst_case": "股价下跌，股票价值损失，权利金补偿有限；股价上涨，收益上限为行权价。",
+          "fundamental_note": "NVDA 股票 Beta 较高，波动性大，需注意市场情绪变化。",
+          "fundamental_events": [],
+          "current_iv_rank": "11.9",
+          "iv_rank_note": "IV Rank 11.9 处于低位，权利金收益可能不理想。",
+          "iv_rank_source": "Barchart quotes/get",
+          "iv_rank_time": "2026-04-01T19:57:30.000Z",
+          "iv_rank_link": "https://www.barchart.com/stocks/quotes/NVDA/overview",
+          "action": "考虑到低 IV Rank，建议寻找更高 IV 的标的。",
+          "key_risks": [
+            "低 IV Rank 导致权利金收益不佳。",
+            "股价低于 MA21 和 MA200，短期承压。",
+            "Beta 2.17，股价波动性较高。"
+          ],
+          "max_profit": "650.00",
+          "risk_at_10pct_drop": "3735.00",
+          "analyzed_at": "2026-04-01T19:57:42.512Z"
+        }
+      },
+      {
+        "id": "1775073557695-px3dnz",
+        "ticker": "GOOGL",
+        "option_side": "call",
+        "put_strike": 315,
+        "premium_per_share": 4.35,
+        "contracts": 2,
+        "iv_rank": 30.3,
+        "date_sold": "2026-03-31",
+        "expiration_date": "2026-05-15",
+        "option_market_price_per_share": null,
+        "option_market_price_updated": null,
+        "option_theta_per_share": null,
+        "decision_rationale": "卖出",
+        "decision_snapshot": {
+          "verdict": "需要谨慎",
+          "summary": "GOOGL Covered Call，DTE 45，行权价315，IV Rank中等，需关注财报日风险。",
+          "rationale_check": "用户对接货、止损的计划不够清晰，未明确止损具体操作和最大亏损边界，需补充。",
+          "worst_case": "若股价大幅下跌，期权金不足以弥补股票损失；若股价大涨，股票将被行权，收益受限于行权价。",
+          "fundamental_note": "最需注意财报日未确认，可能面临突发业绩风险，影响股价波动。",
+          "fundamental_events": [],
+          "current_iv_rank": "30.3",
+          "iv_rank_note": "IV Rank 30.3 处于中等偏低水平，期权金吸引力一般。",
+          "iv_rank_source": "Barchart quotes/get",
+          "iv_rank_time": "2026-04-01T19:58:54.000Z",
+          "iv_rank_link": "https://www.barchart.com/stocks/quotes/GOOGL/overview",
+          "action": "建议在明确财报日后再考虑，或选择更短DTE。",
+          "key_risks": [
+            "财报日未确认，存在潜在业绩风险",
+            "股价可能上涨突破行权价，导致股票被行权",
+            "股价下跌，期权金不足以弥补股票损失"
+          ],
+          "max_profit": "870.00",
+          "risk_at_10pct_drop": "6213.00",
+          "analyzed_at": "2026-04-01T19:59:09.956Z"
+        }
+      },
+      {
+        "id": "1775073653515-frt7gs",
+        "ticker": "MSFT",
+        "option_side": "call",
+        "put_strike": 400,
+        "premium_per_share": 6.95,
+        "contracts": 1,
+        "iv_rank": 48.6,
+        "date_sold": "2026-03-31",
+        "expiration_date": "2026-05-15",
+        "option_market_price_per_share": null,
+        "option_market_price_updated": null,
+        "option_theta_per_share": null,
+        "decision_rationale": "卖出",
+        "decision_snapshot": {
+          "verdict": "需要谨慎",
+          "summary": "股价处于长期下跌趋势，期权跨越财报日，需警惕财报风险及股价持续下行。",
+          "rationale_check": "用户止损计划不明确，未说明股价突破行权价或止损线后是平仓期权还是卖出股票。",
+          "worst_case": "股价大幅下跌，股票亏损远超权利金收入，导致整体亏损扩大。",
+          "fundamental_note": "期权到期日晚于财报日，财报结果可能引发股价剧烈波动。",
+          "fundamental_events": [
+            "2026-04-29 财报发布"
+          ],
+          "current_iv_rank": "48.6",
+          "iv_rank_note": "IV Rank 48.6 处于中等水平，权利金收入尚可。",
+          "iv_rank_source": "Barchart quotes/get",
+          "iv_rank_time": "2026-04-01T19:59:59.000Z",
+          "iv_rank_link": "https://www.barchart.com/stocks/quotes/MSFT/overview",
+          "action": "鉴于财报风险和股价弱势，建议谨慎考虑或规避。",
+          "key_risks": [
+            "期权跨越财报日，股价波动大",
+            "股价远低于MA200，长期趋势向下",
+            "用户止损计划不清晰，执行风险"
+          ],
+          "max_profit": "695.00",
+          "risk_at_10pct_drop": "3930.50",
+          "analyzed_at": "2026-04-01T20:00:40.377Z"
+        }
+      }
+    ],
+    "closedTrades": [
+      {
+        "id": "1774986564885-j9ha0s",
+        "position_id": "1773963714224-sdkw9k",
+        "ticker": "MSFT",
+        "option_side": "put",
+        "put_strike": 365,
+        "premium_sold_per_share": 9.51,
+        "premium_bought_back_per_share": 12.1,
+        "contracts": 1,
+        "date_sold": "2026-03-20",
+        "expiration_date": "2026-05-01",
+        "closed_at": "2026-03-31",
+        "close_reason": "manual",
+        "realized_pnl": -259,
+        "reflection_notes": "美股反弹，我买了正股，这也算正常。我觉得这一笔还行，虽然亏损了，但是我觉得还是比较好的，因为我知道我要买的是正股。"
+      },
+      {
+        "id": "1774986496740-jp8qfy",
+        "position_id": "1774373231831-3769u6",
+        "ticker": "GOOGL",
+        "option_side": "put",
+        "put_strike": 260,
+        "premium_sold_per_share": 5.2,
+        "premium_bought_back_per_share": 5.2,
+        "contracts": 1,
+        "date_sold": "2026-03-24",
+        "expiration_date": "2026-05-15",
+        "closed_at": "2026-03-31",
+        "close_reason": "manual",
+        "realized_pnl": 0,
+        "reflection_notes": "美股反弹，然后买回正股，最后平仓。这笔交易还可以。"
+      },
+      {
+        "id": "1774899387819-um1sfz",
+        "position_id": "1773964493739-vu9d1t",
+        "ticker": "NFLX",
+        "option_side": "put",
+        "put_strike": 100,
+        "premium_sold_per_share": 4.8,
+        "premium_bought_back_per_share": 7.7,
+        "contracts": 1,
+        "date_sold": "2026-03-05",
+        "expiration_date": "2026-04-10",
+        "closed_at": "2026-03-30",
+        "close_reason": "manual",
+        "realized_pnl": -290.00000000000006,
+        "reflection_notes": "这笔交易的话，就是我卖在了 Netflix 已经涨上去的时候。比如我在 98 的时候已经清仓了，但是我却在高点（也就是在超买的时候）卖了 put。\n\n下次一定不能在超买的时候卖 put，这样子追涨追得有点过分了。"
+      },
+      {
+        "id": "1774457922608-f0w8sd",
+        "position_id": "1773963669519-egvvhd",
+        "ticker": "AMZN",
+        "option_side": "put",
+        "put_strike": 180,
+        "premium_sold_per_share": 4.6,
+        "premium_bought_back_per_share": 3.6,
+        "contracts": 1,
+        "date_sold": "2026-03-13",
+        "expiration_date": "2026-04-10",
+        "closed_at": "2026-03-25",
+        "close_reason": "manual",
+        "realized_pnl": 99.99999999999996,
+        "reflection_notes": ""
+      },
+      {
+        "id": "1774388698759-y37d9t",
+        "position_id": "1773964568205-4ras5k",
+        "ticker": "NVDA",
+        "option_side": "put",
+        "put_strike": 150,
+        "premium_sold_per_share": 2.32,
+        "premium_bought_back_per_share": 1.48,
+        "contracts": 1,
+        "date_sold": "2026-02-20",
+        "expiration_date": "2026-04-17",
+        "closed_at": "2026-03-20",
+        "close_reason": "manual",
+        "realized_pnl": 83.99999999999999,
+        "reflection_notes": ""
+      }
+    ],
+    "tickerList": [
+      {
+        "ticker": "AAPL",
+        "beta": 0.87,
+        "shares": null,
+        "average_cost_basis": null,
+        "downside_tolerance_pct": null,
+        "current_price": 255.98,
+        "last_updated": "2026-04-01T19:45:59.957Z",
+        "current_iv": 0.2073,
+        "current_iv_updated": "2026-03-31T21:18:01.069Z",
+        "put_call_ratio": 0.7,
+        "put_call_ratio_updated": "2026-03-31T21:18:03.146Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 46.74441830343519,
+        "rsi_14_1h": 62.81599247455319,
+        "rsi_updated": "2026-03-31T21:18:01.069Z",
+        "ma_21": 254.41571428571436,
+        "ma_200": 248.21235000000007
+      },
+      {
+        "ticker": "AMZN",
+        "beta": 1.31,
+        "shares": 500,
+        "average_cost_basis": 136,
+        "downside_tolerance_pct": 0.2,
+        "current_price": 211.11,
+        "last_updated": "2026-04-01T19:52:07.969Z",
+        "current_iv": 0.3,
+        "current_iv_updated": "2026-04-01T19:52:07.969Z",
+        "put_call_ratio": 0.61,
+        "put_call_ratio_updated": "2026-03-31T21:18:26.618Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 51.02598493932995,
+        "rsi_14_1h": 58.5234491236743,
+        "rsi_updated": "2026-04-01T19:52:07.969Z",
+        "ma_21": 210.0680952380952,
+        "ma_200": 224.5885499999999
+      },
+      {
+        "ticker": "AXP",
+        "beta": 1.34,
+        "shares": null,
+        "average_cost_basis": null,
+        "downside_tolerance_pct": null,
+        "current_price": 303.32,
+        "last_updated": "2026-04-01T19:46:01.148Z",
+        "current_iv": 0.3718,
+        "current_iv_updated": "2026-03-31T21:18:48.485Z",
+        "put_call_ratio": 0.52,
+        "put_call_ratio_updated": "2026-03-31T21:18:50.054Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 43.700829104485855,
+        "rsi_14_1h": 59.25007945018439,
+        "rsi_updated": "2026-03-31T21:18:48.485Z",
+        "ma_21": 301.0619047619047,
+        "ma_200": 334.33504999999997
+      },
+      {
+        "ticker": "BRKB",
+        "beta": 0.36,
+        "shares": null,
+        "average_cost_basis": null,
+        "downside_tolerance_pct": null,
+        "current_price": 480.0199,
+        "last_updated": "2026-04-01T19:46:02.887Z",
+        "current_iv": 0.2562,
+        "current_iv_updated": "2026-03-31T21:19:13.204Z",
+        "put_call_ratio": 0.580680958851051,
+        "put_call_ratio_updated": "2026-03-31T21:19:17.157Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 43.27311813087172,
+        "rsi_14_1h": 59.72655197343601,
+        "rsi_updated": "2026-03-31T21:19:13.204Z",
+        "ma_21": 485.6957142857143,
+        "ma_200": 490.7043000000001
+      },
+      {
+        "ticker": "GOOGL",
+        "beta": 0.72,
+        "shares": 200,
+        "average_cost_basis": 315,
+        "downside_tolerance_pct": 0.2,
+        "current_price": 297.51,
+        "last_updated": "2026-04-01T19:59:17.690Z",
+        "current_iv": 0.31329999999999997,
+        "current_iv_updated": "2026-04-01T19:59:17.690Z",
+        "put_call_ratio": 0.8,
+        "put_call_ratio_updated": "2026-03-31T21:19:42.404Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 48.80441252635221,
+        "rsi_14_1h": 63.843739776465874,
+        "rsi_updated": "2026-04-01T19:59:17.690Z",
+        "ma_21": 298.33523809523814,
+        "ma_200": 263.4760999999998
+      },
+      {
+        "ticker": "MSFO",
+        "beta": 1,
+        "shares": 3000,
+        "average_cost_basis": 11.54,
+        "downside_tolerance_pct": 0,
+        "current_price": 11.53,
+        "last_updated": "2026-04-01T19:47:16.677Z",
+        "current_iv": 0.2237,
+        "current_iv_updated": "2026-03-31T21:20:05.518Z",
+        "put_call_ratio": 2.05,
+        "put_call_ratio_updated": "2026-04-01T19:47:18.507Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 36.549819447215526,
+        "rsi_14_1h": 53.888446317776875,
+        "rsi_updated": "2026-04-01T19:47:16.677Z",
+        "ma_21": 12.034761904761908,
+        "ma_200": 14.173749999999998
+      },
+      {
+        "ticker": "MSFT",
+        "beta": 1.08,
+        "shares": null,
+        "average_cost_basis": null,
+        "downside_tolerance_pct": 0.05,
+        "current_price": 369.37,
+        "last_updated": "2026-04-01T20:00:53.509Z",
+        "current_iv": 0.2401,
+        "current_iv_updated": "2026-04-01T20:00:53.509Z",
+        "put_call_ratio": 0.46,
+        "put_call_ratio_updated": "2026-03-31T21:20:30.561Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 35.68515161935649,
+        "rsi_14_1h": 58.42734493435834,
+        "rsi_updated": "2026-04-01T20:00:53.509Z",
+        "ma_21": 389.89619047619044,
+        "ma_200": 476.2952000000002
+      },
+      {
+        "ticker": "NFLX",
+        "beta": 1.71,
+        "shares": 100,
+        "average_cost_basis": 96,
+        "downside_tolerance_pct": 0.2,
+        "current_price": 95.87,
+        "last_updated": "2026-04-01T19:50:02.778Z",
+        "current_iv": 0.4696,
+        "current_iv_updated": "2026-04-01T19:50:02.778Z",
+        "put_call_ratio": 0.98,
+        "put_call_ratio_updated": "2026-03-31T16:43:50.077Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 60.11052639133172,
+        "rsi_14_1h": 48.38222523851582,
+        "rsi_updated": "2026-04-01T19:50:02.778Z",
+        "ma_21": 94.96142857142857,
+        "ma_200": 107.37399999999998
+      },
+      {
+        "ticker": "NVDA",
+        "beta": 2.17,
+        "shares": 300,
+        "average_cost_basis": 179.3,
+        "downside_tolerance_pct": 0.2,
+        "current_price": 175.6,
+        "last_updated": "2026-04-01T19:57:53.506Z",
+        "current_iv": 0.37439999999999996,
+        "current_iv_updated": "2026-04-01T19:57:53.506Z",
+        "put_call_ratio": 0.88,
+        "put_call_ratio_updated": "2026-03-31T16:44:13.128Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 47.107225851999814,
+        "rsi_14_1h": 24.81937798651701,
+        "rsi_updated": "2026-04-01T19:57:53.506Z",
+        "ma_21": 178.29809523809521,
+        "ma_200": 179.4601999999999
+      },
+      {
+        "ticker": "QQQ",
+        "beta": 1.12,
+        "shares": null,
+        "average_cost_basis": null,
+        "downside_tolerance_pct": 0.1,
+        "current_price": 585.12,
+        "last_updated": "2026-04-01T19:46:09.921Z",
+        "current_iv": 0.175,
+        "current_iv_updated": "2026-03-30T20:12:51.169Z",
+        "put_call_ratio": 1.33,
+        "put_call_ratio_updated": "2026-03-31T16:44:38.840Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 40.69291137359804,
+        "rsi_14_1h": 23.521229778853012,
+        "rsi_updated": "2026-03-31T16:44:37.290Z",
+        "ma_21": 593.3852380952382,
+        "ma_200": 592.73155
+      },
+      {
+        "ticker": "QQQI",
+        "beta": 0.88,
+        "shares": 500,
+        "average_cost_basis": 52.6,
+        "downside_tolerance_pct": 0.2,
+        "current_price": 50.26,
+        "last_updated": "2026-04-01T19:46:11.236Z",
+        "current_iv": 0.1697,
+        "current_iv_updated": "2026-03-30T20:13:17.001Z",
+        "put_call_ratio": 0.81,
+        "put_call_ratio_updated": "2026-03-31T16:45:01.389Z",
+        "provider_exchange": null,
+        "provider_mic_code": null,
+        "rsi_14": 41.973285864043326,
+        "rsi_14_1h": 23.30033206249577,
+        "rsi_updated": "2026-03-31T16:44:59.421Z",
+        "ma_21": 50.76833333333333,
+        "ma_200": 50.281625000000005
+      }
+    ],
+    "scenario": 0.1,
+    "vixHistory": [
+      {
+        "timestamp": "03/19/2026",
+        "value": 24.06,
+        "stress": 0.10071009420609237
+      },
+      {
+        "timestamp": "03/20/2026",
+        "value": 26.78,
+        "stress": 0.11209544151451181
+      },
+      {
+        "timestamp": "03/23/2026",
+        "value": 26.15,
+        "stress": 0.10945839415998818
+      },
+      {
+        "timestamp": "03/24/2026",
+        "value": 26.95,
+        "stress": 0.11280702572128802
+      },
+      {
+        "timestamp": "03/25/2026",
+        "value": 25.33,
+        "stress": 0.10602604680965583
+      },
+      {
+        "timestamp": "03/26/2026",
+        "value": 27.44,
+        "stress": 0.11485806255258416
+      },
+      {
+        "timestamp": "03/27/2026",
+        "value": 31.05,
+        "stress": 0.12996876247294964
+      },
+      {
+        "timestamp": "03/30/2026",
+        "value": 30.61,
+        "stress": 0.12812701511423472
+      },
+      {
+        "timestamp": "2026-01-02T16:00:00.000Z",
+        "value": 14.51,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-05T16:00:00.000Z",
+        "value": 14.9,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-06T16:00:00.000Z",
+        "value": 14.75,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-07T16:00:00.000Z",
+        "value": 15.38,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-08T16:00:00.000Z",
+        "value": 15.45,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-09T16:00:00.000Z",
+        "value": 14.49,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-12T16:00:00.000Z",
+        "value": 15.12,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-13T16:00:00.000Z",
+        "value": 15.98,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-14T16:00:00.000Z",
+        "value": 16.75,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-15T16:00:00.000Z",
+        "value": 15.84,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-16T16:00:00.000Z",
+        "value": 15.86,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-19T16:00:00.000Z",
+        "value": 18.84,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-20T16:00:00.000Z",
+        "value": 20.09,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-21T16:00:00.000Z",
+        "value": 16.9,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-22T16:00:00.000Z",
+        "value": 15.64,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-23T16:00:00.000Z",
+        "value": 16.09,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-26T16:00:00.000Z",
+        "value": 16.15,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-27T16:00:00.000Z",
+        "value": 16.35,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-28T16:00:00.000Z",
+        "value": 16.35,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-29T16:00:00.000Z",
+        "value": 16.88,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-01-30T16:00:00.000Z",
+        "value": 17.44,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-02T16:00:00.000Z",
+        "value": 16.34,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-03T16:00:00.000Z",
+        "value": 18,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-04T16:00:00.000Z",
+        "value": 18.64,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-05T16:00:00.000Z",
+        "value": 21.77,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-06T16:00:00.000Z",
+        "value": 17.76,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-09T16:00:00.000Z",
+        "value": 17.36,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-10T16:00:00.000Z",
+        "value": 17.79,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-11T16:00:00.000Z",
+        "value": 17.65,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-12T16:00:00.000Z",
+        "value": 20.82,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-13T16:00:00.000Z",
+        "value": 20.6,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-16T16:00:00.000Z",
+        "value": 21.2,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-17T16:00:00.000Z",
+        "value": 20.29,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-18T16:00:00.000Z",
+        "value": 19.62,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-19T16:00:00.000Z",
+        "value": 20.23,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-20T16:00:00.000Z",
+        "value": 19.09,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-23T16:00:00.000Z",
+        "value": 21.01,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-24T16:00:00.000Z",
+        "value": 19.55,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-25T16:00:00.000Z",
+        "value": 17.93,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-26T16:00:00.000Z",
+        "value": 18.63,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-02-27T16:00:00.000Z",
+        "value": 19.86,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-03-02T16:00:00.000Z",
+        "value": 21.44,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-03-03T16:00:00.000Z",
+        "value": 23.57,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-03-04T16:00:00.000Z",
+        "value": 21.15,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-03-05T16:00:00.000Z",
+        "value": 23.75,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-03-06T16:00:00.000Z",
+        "value": 29.49,
+        "stress": 0.12343893092841496
+      },
+      {
+        "timestamp": "2026-03-09T16:00:00.000Z",
+        "value": 25.5,
+        "stress": 0.10673763101643206
+      },
+      {
+        "timestamp": "2026-03-10T16:00:00.000Z",
+        "value": 24.93,
+        "stress": 0.10435173102900594
+      },
+      {
+        "timestamp": "2026-03-11T16:00:00.000Z",
+        "value": 24.23,
+        "stress": 0.10142167841286859
+      },
+      {
+        "timestamp": "2026-03-12T16:00:00.000Z",
+        "value": 27.29,
+        "stress": 0.11423019413484042
+      },
+      {
+        "timestamp": "2026-03-13T16:00:00.000Z",
+        "value": 27.19,
+        "stress": 0.11381161518967797
+      },
+      {
+        "timestamp": "2026-03-16T16:00:00.000Z",
+        "value": 23.51,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-03-17T16:00:00.000Z",
+        "value": 22.37,
+        "stress": 0.1
+      },
+      {
+        "timestamp": "2026-03-18T16:00:00.000Z",
+        "value": 25.09,
+        "stress": 0.1050214573412659
+      },
+      {
+        "timestamp": "2026-03-19T16:00:00.000Z",
+        "value": 24.06,
+        "stress": 0.10071009420609237
+      },
+      {
+        "timestamp": "2026-03-20T20:35:47.992Z",
+        "value": 26.78,
+        "stress": 0.11209544151451181
+      }
+    ]
+  }
+}

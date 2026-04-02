@@ -1,0 +1,92 @@
+{
+  "key": "v2::2026-03-27::AAPL,AMZN,AXP,BRKB,GOOGL,GPIQ,MSFT,NFLX,NVDA,QQQ,QQQI",
+  "fetched_at": "2026-03-27T01:58:39.818Z",
+  "payload": {
+    "market_news": [
+      {
+        "title": "美伊停火希望破灭，油价飙升5%，美股下跌",
+        "url": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQFF0Fh50XQ5YRRu9EMmMmZzqH2L3XQ6N1DE4FjTFiDxK1CB1DqohHMgT04YceCNdaMGnnkXSgm-pE_mTOApzJWXQKPgY8iPJk5Q0-dqIX0Zixm1xkFWijyxSa42fmxe8vn66W21DuYLbJIxno4WZFi_vWq4UxzydfUD2zAGhXho1cAyl-YOCU6MJROf6Ol8q21ydWB99pP3OUUg1WsHmjyAjO_6kBjR-Q==",
+        "date": "2026-03-26",
+        "summary": "美伊停火希望破灭，油价飙升，美股下跌。"
+      },
+      {
+        "title": "Meta和Alphabet因平台危害青少年被判过失",
+        "url": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQFF0Fh50XQ5YRRu9EMmMmZzqH2L3XQ6N1DE4FjTFiDxK1CB1DqohHMgT04YceCNdaMGnnkXSgm-pE_mTOApzJWXQKPgY8iPJk5Q0-dqIX0Zixm1xkFWijyxSa42fmxe8vn66W21DuYLbJIxno4WZFi_vWq4UxzydPUD2zAGhXho1cAyl-YOCU6MJROf6Ol8q21ydWB99pP3OUUg1WsHmjyAjO_6kBjR-Q==",
+        "date": "2026-03-26",
+        "summary": "Meta和Alphabet因平台危害青少年被判过失。"
+      },
+      {
+        "title": "微软Azure云和北美销售部门暂停招聘",
+        "url": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQFF0Fh50XQ5YRRu9EMmMmZzqH2L3XQ6N1DE4FjTFiDxK1CB1DqohHMgT04YceCNdaMGnnkXSgm-pE_mTOApzJWXQKPgY8iPJk5Q0-dqIX0Zixm1xkFWijyxSa42fmxe8vn66W21DuYLbJIxno4WZFi_vWq4UxzydPUD2zAGhXho1cAyl-YOCU6MJROf6Ol8q21ydWB99pP3OUUg1WsHmjyAjO_6kBjR-Q==",
+        "date": "2026-03-26",
+        "summary": "微软Azure云和北美销售部门暂停招聘。"
+      }
+    ],
+    "stock_news": {
+      "AAPL": [],
+      "AMZN": [
+        {
+          "title": "摩根大通上调亚马逊AWS增长预测和目标价",
+          "url": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQE6FnIicbP02Am4pm-437lwh49e9ncNhOuUrZA3bvFg7BlyAUDIgFIDveTevSGCK7LInyT7D-dcwaO6f5Mbx9C08N71WD7Z05BlNV43tFdtHXICcWo9u-CFF4YLbu-RtHj4XAgVa2fK7v_v8SnBiZyUnZ-mI5Yb5ZS9eFZ2Jf6FgJSoXMW_eQ==",
+          "date": "2026-03-26",
+          "summary": "摩根大通上调亚马逊AWS增长预测和目标价。"
+        }
+      ],
+      "AXP": [],
+      "BRKB": [],
+      "GOOGL": [
+        {
+          "title": "Alphabet因平台危害青少年被判过失",
+          "url": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQFF0Fh50XQ5YRRu9EMmMmZzqH2L3XQ6N1DE4FjTFiDxK1CB1DqohHMgT04YceCNdaMGnnkXSgm-pE_mTOApzJWXQKPgY8iPJk5Q0-dqIX0Zixm1xkFWijyxSa42fmxe8vn66W21DuYLbJIxno4WZFi_vWq4UxzydPUD2zAGhXho1cAyl-YOCU6MJROf6Ol8q21ydWB99pP3OUUg1WsHmjyAjO_6kBjR-Q==",
+          "date": "2026-03-26",
+          "summary": "Alphabet因平台危害青少年被判过失。"
+        },
+        {
+          "title": "谷歌Gemini应用推出AI音乐创作Lyria 3 Pro",
+          "url": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQGHKNPglwha2LETFNvDEJZGlEZOcfEzxZJvcO413xK4BAwf4aLMnb2E0V-mBn0h4FZHkkSQSG1kaLI4GuJfXAZ3ZqdebsPxlqIQv_YS3G3gGdmyM8uOb22LK3DtCyYdRBsRCJfZpul1bJe5LBR6cVfJD_Me1GZS-4hoNOKlt3BgzS5Bfg4reTjnTaCPWi7gjps22NFwdr12GHX0jwtfSdlZXnOanIyLFR7S_EG8-qDn399veCo0zP-Fig==",
+          "date": "2026-03-26",
+          "summary": "谷歌Gemini应用推出AI音乐创作Lyria 3 Pro。"
+        }
+      ],
+      "GPIQ": [],
+      "MSFT": [
+        {
+          "title": "微软Azure云和北美销售部门暂停招聘",
+          "url": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQFF0Fh50XQ5YRRu9EMmMmZzqH2L3XQ6N1DE4FjTFiDxK1CB1DqohHMgT04YceCNdaMGnnkXSgm-pE_mTOApzJWXQKPgY8iPJk5Q0-dqIX0Zixm1xkFWijyxSa42fmxe8vn66W21DuYLbJIxno4WZFi_vWq4UxzydPUD2zAGhXho1cAyl-YOCU6MJROf6Ol8q21ydWB99pP3OUUg1WsHmjyAjO_6kBjR-Q==",
+          "date": "2026-03-26",
+          "summary": "微软Azure云和北美销售部门暂停招聘。"
+        }
+      ],
+      "NFLX": [
+        {
+          "title": "Netflix上调所有订阅套餐价格",
+          "url": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQF7HzVPWAcZn043SmIIr1JtoeFVAXpPkY2BAdzVCitv-OvB6HGjeIjgRO7WHUuJOst-A3Q607SbIR0X-yR-mhCRXaENAmduPg6QZOjFRhK-Y0sjqNXcSSJD-2MMDsYF_xBcgnbyIpezk5BWU7fDNupbtXmRgwHZJ6p5koaw_YSPceng_ECDPzAv16ZdxaxPzXllk0qRnA==",
+          "date": "2026-03-27",
+          "summary": "Netflix上调所有订阅套餐价格。"
+        },
+        {
+          "title": "Netflix 2026年内容预算达200亿美元",
+          "url": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQF7HzVPWAcZn043SmIIr1JtoeFVAXpPkY2BAdzVCitv-OvB6HGjeIjgRO7WHUuJOst-A3Q607SbIR0X-yR-mhCRXaENAmduPg6QZOjFRhK-Y0sjqNXcSSJD-2MMDsYF_xBcgnbyIpezk5BWU7fDNupbtXmRgwHZJ6p5koaw_YSPceng_ECDPzAv16ZdxaxPzXllk0qRnA==",
+          "date": "2026-03-27",
+          "summary": "Netflix 2026年内容预算达200亿美元。"
+        }
+      ],
+      "NVDA": [],
+      "QQQ": [
+        {
+          "title": "Invesco QQQ Trust宣布季度股息",
+          "url": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQEHql3YgLTjXHsFgT5iUUALHwVeaDN-TvmKhB4DRycvv42TEwcwqNBdNMVgukceKOQlesHz9DBrsihVaFmEGqbG3d_anJDfBltHF7ZY_lacT94lHF4fuP-bOYjsK5s=",
+          "date": "2026-03-22",
+          "summary": "Invesco QQQ Trust宣布季度股息。"
+        },
+        {
+          "title": "美伊停火希望破灭，QQQ下跌",
+          "url": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQFF0Fh50XQ5YRRu9EMmMmZzqH2L3XQ6N1DE4FjTFiDxK1CB1DqohHMgT04YceCNdaMGnnkXSgm-pE_mTOApzJWXQKPgY8iPJk5Q0-dqIX0Zixm1xkFWijyxSa42fmxe8vn66W21DuYLbJIxno4WZFi_vWq4UxzydPUD2zAGhXho1cAyl-YOCU6MJROf6Ol8q21ydWB99pP3OUUg1WsHmjyAjO_6kBjR-Q==",
+          "date": "2026-03-26",
+          "summary": "美伊停火希望破灭，QQQ下跌。"
+        }
+      ],
+      "QQQI": []
+    }
+  }
+}
