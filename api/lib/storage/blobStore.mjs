@@ -13,19 +13,27 @@ async function loadBlobSdk() {
 }
 
 async function readJsonBlob(pathname) {
-  const { get } = await loadBlobSdk();
+  const { head } = await loadBlobSdk();
 
   try {
-    const result = await get(pathname, {
-      access: 'private',
+    const result = await head(pathname, {
       token: process.env.BLOB_READ_WRITE_TOKEN
     });
 
-    if (!result?.body) {
+    if (!result?.url) {
       return null;
     }
 
-    const text = await new Response(result.body).text();
+    const response = await fetch(result.url);
+    if (response.status === 404) {
+      return null;
+    }
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch blob payload (${response.status})`);
+    }
+
+    const text = await response.text();
     return text.trim() === '' ? null : JSON.parse(text);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -40,7 +48,7 @@ async function readJsonBlob(pathname) {
 async function writeJsonBlob(pathname, payload) {
   const { put } = await loadBlobSdk();
   await put(pathname, JSON.stringify(payload, null, 2), {
-    access: 'private',
+    access: 'public',
     allowOverwrite: true,
     addRandomSuffix: false,
     contentType: 'application/json',
@@ -67,6 +75,7 @@ export async function writeVixCache(payload) {
 export function describeStorageTarget() {
   return {
     driver: 'blob-json',
+    blobAccess: 'public',
     appStateTarget: getAppStatePath(),
     vixCacheTarget: getVixCachePath()
   };

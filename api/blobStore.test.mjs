@@ -23,23 +23,30 @@ describe('blob storage adapter', () => {
         written = String(body);
         return { pathname: 'risk-tool/app-state.json' };
       },
-      get: async () => ({
-        body: new ReadableStream({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode(written));
-            controller.close();
-          }
-        })
+      head: async () => ({
+        url: 'https://example.test/risk-tool/app-state.json'
       })
     }));
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(written, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
 
     const payload = { puts: [{ id: 'call-1', option_side: 'call' }] };
     await writeAppState(payload);
     await expect(readAppState()).resolves.toEqual(payload);
     expect(describeStorageTarget()).toEqual({
       driver: 'blob-json',
+      blobAccess: 'public',
       appStateTarget: 'risk-tool/app-state.json',
       vixCacheTarget: 'risk-tool/vix-cache.json'
     });
+
+    globalThis.fetch = originalFetch;
   });
 });

@@ -7,7 +7,7 @@
 - 前端：Vite + React + TypeScript
 - API：Node.js
 - 本地 / Docker 持久化：文件存储
-- Vercel 持久化：Blob JSON（通过 `APP_STORAGE_DRIVER=blob-json` 切换）
+- Vercel 持久化：Blob JSON（通过 `APP_STORAGE_DRIVER=blob-json` 切换，当前使用 public blob）
 
 ## 股票价格刷新
 
@@ -43,6 +43,7 @@ API 持久化实现：
 
 - 本地和 Docker 默认使用 `file` 驱动，数据保存在 [app-state.json](/Users/emily/Documents/Code/risk_control_tool/data/app-state.json) 和 [vix-cache.json](/Users/emily/Documents/Code/risk_control_tool/data/vix-cache.json)
 - Vercel 部署建议使用 `blob-json` 驱动，把 `app-state.json` 和 `vix-cache.json` 存到 Blob
+- 当前实现基于 `@vercel/blob` 服务端 `put()` 的限制，使用 public blob pathname 存储这两个 JSON 文件
 - 只要同一浏览器和同一站点不清空站点数据，浏览器本地状态会保留
 - 即使浏览器本地数据丢失，只要 API 快照还在，页面刷新后也能恢复大部分状态
 

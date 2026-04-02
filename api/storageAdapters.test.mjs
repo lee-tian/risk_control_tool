@@ -69,6 +69,7 @@ describe('storage driver selector', () => {
     expect(storage.getStorageDriver()).toBe('blob-json');
     expect(storage.describeStorageTarget()).toEqual({
       driver: 'blob-json',
+      blobAccess: 'public',
       appStateTarget: 'risk-tool/test/app-state.json',
       vixCacheTarget: 'risk-tool/test/vix-cache.json'
     });

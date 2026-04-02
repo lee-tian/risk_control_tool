@@ -10,6 +10,7 @@ This project now supports a storage adapter so Docker and Vercel can use differe
 - Future Vercel deployment:
   - `APP_STORAGE_DRIVER=blob-json`
   - Persists the same JSON payloads to Vercel Blob
+  - Current implementation uses public blob access because the server-side SDK path in this project writes through `put()`
 
 ## Required Vercel environment variables
 
