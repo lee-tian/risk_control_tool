@@ -2344,7 +2344,7 @@ async function fetchQuoteBundle(requestItem) {
   };
 }
 
-const server = http.createServer(async (req, res) => {
+export async function handleApiRequest(req, res) {
   if (!req.url) {
     sendJson(res, 400, { error: 'Missing URL' });
     return;
@@ -2893,8 +2893,24 @@ const server = http.createServer(async (req, res) => {
       error: error instanceof Error ? error.message : 'Unknown upstream error'
     });
   }
-});
+}
 
-server.listen(PORT, () => {
-  console.log(`Quote API listening on ${PORT}`);
-});
+function shouldStartServer() {
+  if (!process.argv[1]) {
+    return false;
+  }
+
+  try {
+    return import.meta.url === new URL(`file://${process.argv[1]}`).href;
+  } catch {
+    return false;
+  }
+}
+
+if (shouldStartServer()) {
+  const server = http.createServer(handleApiRequest);
+
+  server.listen(PORT, () => {
+    console.log(`Quote API listening on ${PORT}`);
+  });
+}
