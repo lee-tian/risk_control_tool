@@ -4,7 +4,7 @@ import { formatCurrency, formatPercent } from './lib/formatters';
 import { compareOptionRowsByLossPct, isOptionLossAtTwoXCredit } from './lib/optionAlerts';
 import { parseJsonResponseText } from './lib/quoteRefresh';
 import { buildTopIvRankStocks } from './lib/dashboardSignals';
-import { buildCapitalAllocationChart, buildRiskCalculator, buildTickerAllocationItems } from './lib/dashboardPortfolio';
+import { buildCapitalAllocationChart, buildRiskCalculator, buildRiskCurvePoints, buildTickerAllocationItems } from './lib/dashboardPortfolio';
 import {
   buildAppStateSnapshot,
   applyPutPositionsImportPayload,
@@ -405,6 +405,27 @@ function calculateHoldingStockRisk(entry: TickerEntry | undefined): number {
 
 function percentInputToDecimal(value: string): number {
   return toInputNumber(value) / 100;
+}
+
+function buildSmoothLinePath(points: Array<{ x: number; y: number }>): string {
+  if (points.length === 0) {
+    return '';
+  }
+
+  if (points.length === 1) {
+    return `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`;
+  }
+
+  let path = `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`;
+
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const current = points[index];
+    const next = points[index + 1];
+    const controlX = ((current.x + next.x) / 2).toFixed(2);
+    path += ` Q ${controlX} ${current.y.toFixed(2)} ${next.x.toFixed(2)} ${next.y.toFixed(2)}`;
+  }
+
+  return path;
 }
 
 function FieldError({ message }: { message?: string }) {
@@ -1389,7 +1410,7 @@ function App() {
   const [positionOptionTypeFilter, setPositionOptionTypeFilter] = useState<'ALL' | 'PUT' | 'CALL'>('ALL');
   const [moneynessFilter, setMoneynessFilter] = useState<'ALL' | 'ITM' | 'OTM'>('ALL');
   const [positionSort, setPositionSort] = useState<'DEFAULT' | 'EXPIRATION' | 'PUT_RISK' | 'LOSS_PCT' | 'ANNUALIZED_YIELD'>('DEFAULT');
-  const [riskCalculatorDropInput, setRiskCalculatorDropInput] = useState('10');
+  const [riskCalculatorDropInput, setRiskCalculatorDropInput] = useState('0');
   const [vixHistory, setVixHistory] = useState<VixHistoryPoint[]>(() => mergeSeededVixHistory(loadVixHistory()));
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all');
   const [copyMessage, setCopyMessage] = useState('');
@@ -2350,11 +2371,15 @@ function App() {
       return 0;
     }
 
-    return Math.min(Math.max(raw, 0), 1);
+    return Math.min(Math.max(raw, -0.3), 0.3);
   }, [riskCalculatorDropInput]);
   const riskCalculator = useMemo(
     () => buildRiskCalculator(puts, tickerList, riskCalculatorDropPct, metrics.totalCapitalBase > 0 ? metrics.totalCapitalBase : overallCapitalAmount),
     [metrics.totalCapitalBase, overallCapitalAmount, puts, riskCalculatorDropPct, tickerList]
+  );
+  const riskCurvePoints = useMemo(
+    () => buildRiskCurvePoints(puts, tickerList, metrics.totalCapitalBase > 0 ? metrics.totalCapitalBase : overallCapitalAmount),
+    [metrics.totalCapitalBase, overallCapitalAmount, puts, tickerList]
   );
   const baseRiskScore = metrics.riskScore;
   const regimeAdjustment = getRegimeAdjustment(vixSnapshot?.fearGreedScore ?? null);
@@ -3834,9 +3859,7 @@ function App() {
     const y = chartTop + ((maxVix - point.value) / vixRange) * plotHeight;
     return { ...point, x, y };
   });
-  const linePath = chartPoints
-    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
-    .join(' ');
+  const linePath = buildSmoothLinePath(chartPoints);
   const areaPath =
     chartPoints.length === 0
       ? ''
@@ -3850,6 +3873,34 @@ function App() {
         chartPoints[Math.floor((chartPoints.length - 1) / 2)],
         chartPoints[chartPoints.length - 1]
       ].filter((point, index, list) => list.findIndex((candidate) => candidate.timestamp === point.timestamp) === index);
+  const riskCurveMinCapital = Math.min(...riskCurvePoints.map((point) => point.capital), metrics.totalCapitalBase || overallCapitalAmount || 0);
+  const riskCurveMaxCapital = Math.max(...riskCurvePoints.map((point) => point.capital), metrics.totalCapitalBase || overallCapitalAmount || 0);
+  const riskCurveRange = Math.max(riskCurveMaxCapital - riskCurveMinCapital, Math.max((metrics.totalCapitalBase || overallCapitalAmount || 0) * 0.05, 1));
+  const riskCurvePointsChart = riskCurvePoints.map((point, index) => {
+    const x = riskCurvePoints.length === 1 ? chartLeft + plotWidth / 2 : chartLeft + (index / (riskCurvePoints.length - 1)) * plotWidth;
+    const y = chartTop + ((riskCurveMaxCapital - point.capital) / riskCurveRange) * plotHeight;
+    return { ...point, x, y };
+  });
+  const riskCurveLinePath = buildSmoothLinePath(riskCurvePointsChart);
+  const riskCurveAreaPath =
+    riskCurvePointsChart.length === 0
+      ? ''
+      : `${riskCurveLinePath} L ${riskCurvePointsChart[riskCurvePointsChart.length - 1].x.toFixed(2)} ${(chartTop + plotHeight).toFixed(2)} L ${riskCurvePointsChart[0].x.toFixed(2)} ${(chartTop + plotHeight).toFixed(2)} Z`;
+  const riskCurveMinScenarioPct = riskCurvePoints[0]?.scenarioPct ?? -0.3;
+  const riskCurveMaxScenarioPct = riskCurvePoints[riskCurvePoints.length - 1]?.scenarioPct ?? 0.3;
+  const riskCurveAlarmCapital = Math.max(riskCalculator.capitalBase - metrics.riskLimitAmount, 0);
+  const riskCurveAlarmY =
+    riskCurveRange > 0
+      ? chartTop + ((riskCurveMaxCapital - riskCurveAlarmCapital) / riskCurveRange) * plotHeight
+      : chartTop + plotHeight / 2;
+  const currentRiskCurvePoint = (() => {
+    const capital = riskCalculator.scenarioCapital;
+    const clampedPct = Math.min(Math.max(riskCalculatorDropPct, -1), 1);
+    const scenarioSpan = Math.max(riskCurveMaxScenarioPct - riskCurveMinScenarioPct, 0.0001);
+    const x = chartLeft + ((clampedPct - riskCurveMinScenarioPct) / scenarioSpan) * plotWidth;
+    const y = chartTop + ((riskCurveMaxCapital - capital) / riskCurveRange) * plotHeight;
+    return { x: Math.min(chartLeft + plotWidth, Math.max(chartLeft, x)), y, capital };
+  })();
 
   return (
     <div className="app-shell">
@@ -4271,6 +4322,98 @@ function App() {
           <div className="dashboard-right">
             <div className="section-header">
               <div>
+                <p className="section-kicker">Scenario</p>
+                <h2>Risk Curve</h2>
+              </div>
+            </div>
+            <div className="trend-card risk-curve-card">
+              <div className="trend-summary">
+                <div className="trend-summary-item">
+                  <span>当前总资金</span>
+                  <strong>{formatCurrency(riskCalculator.capitalBase)}</strong>
+                </div>
+                <div className="trend-summary-item">
+                  <span>Risk limit 警戒线</span>
+                  <strong>{formatCurrency(riskCurveAlarmCapital)}</strong>
+                </div>
+                <div className="trend-summary-item">
+                  <span>当前情景总资金</span>
+                  <strong>{formatCurrency(riskCalculator.scenarioCapital)}</strong>
+                </div>
+              </div>
+              <svg className="trend-chart trend-chart-rich" viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none" role="img" aria-label="Risk curve">
+                <defs>
+                  <linearGradient id="riskCurveFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="rgba(37, 99, 235, 0.22)" />
+                    <stop offset="100%" stopColor="rgba(37, 99, 235, 0.02)" />
+                  </linearGradient>
+                </defs>
+                <rect x="0" y="0" width={chartWidth} height={chartHeight} className="trend-surface" />
+                {[0.25, 0.5, 0.75].map((step) => {
+                  const y = chartTop + plotHeight * step;
+                  return <line key={step} x1={chartLeft} y1={y} x2={chartLeft + plotWidth} y2={y} className="grid-line" />;
+                })}
+                {[-0.3, -0.2, -0.1, 0, 0.1, 0.2, 0.3].map((pct) => {
+                  const scenarioSpan = Math.max(riskCurvePoints[riskCurvePoints.length - 1].scenarioPct - riskCurvePoints[0].scenarioPct, 0.0001);
+                  const x = chartLeft + ((pct - riskCurvePoints[0].scenarioPct) / scenarioSpan) * plotWidth;
+                  return (
+                    <g key={pct}>
+                      <line x1={x} y1={chartTop} x2={x} y2={chartTop + plotHeight} className="grid-line vertical" />
+                      <text x={x} y={chartHeight - 10} textAnchor="middle" className="chart-axis-label">
+                        {formatSignedPercent(pct)}
+                      </text>
+                    </g>
+                  );
+                })}
+                <line x1={chartLeft} y1={riskCurveAlarmY} x2={chartLeft + plotWidth} y2={riskCurveAlarmY} className="risk-curve-alarm-line" />
+                <text x={chartLeft + plotWidth - 6} y={riskCurveAlarmY - 6} textAnchor="end" className="risk-curve-alarm-label">
+                  Risk limit line
+                </text>
+                {[riskCurveMaxCapital, riskCalculator.capitalBase, riskCurveMinCapital].map((capital, index) => {
+                  const y = chartTop + ((riskCurveMaxCapital - capital) / riskCurveRange) * plotHeight;
+                  return (
+                    <g key={`${capital}-${index}`}>
+                      <text x={chartLeft + 4} y={y - 6} className="chart-label">
+                        {formatCurrency(capital)}
+                      </text>
+                    </g>
+                  );
+                })}
+                {riskCurveAreaPath && <path d={riskCurveAreaPath} className="risk-curve-area" />}
+                {riskCurveLinePath && <path d={riskCurveLinePath} className="risk-curve-line" />}
+                <g>
+                  <line
+                    x1={currentRiskCurvePoint.x}
+                    y1={currentRiskCurvePoint.y}
+                    x2={currentRiskCurvePoint.x}
+                    y2={chartTop + plotHeight}
+                    className="latest-guide"
+                  />
+                  <circle cx={currentRiskCurvePoint.x} cy={currentRiskCurvePoint.y} r="6" className="trend-point yellow" />
+                  <text x={Math.max(chartLeft + 6, currentRiskCurvePoint.x - 10)} y={currentRiskCurvePoint.y - 12} className="latest-point-label">
+                    {formatCurrency(currentRiskCurvePoint.capital)}
+                  </text>
+                </g>
+                <text x={chartLeft + plotWidth / 2} y={chartHeight - 2} textAnchor="middle" className="chart-axis-title">
+                  涨跌幅情景（横轴）
+                </text>
+                <text
+                  x={10}
+                  y={chartTop + plotHeight / 2}
+                  textAnchor="middle"
+                  transform={`rotate(-90 10 ${chartTop + plotHeight / 2})`}
+                  className="chart-axis-title"
+                >
+                  总资金（纵轴）
+                </text>
+              </svg>
+              <div className="trend-footnote">
+                横轴范围固定为 -30% 到 +30%。红色虚线表示按当前 Risk limit 计算的资金警戒线；黄色圆点表示你当前输入情景对应的总资金。
+              </div>
+            </div>
+
+            <div className="section-header">
+              <div>
                 <p className="section-kicker">Trend</p>
                 <h2>VIX Trend</h2>
               </div>
@@ -4296,12 +4439,12 @@ function App() {
                   </div>
                 </div>
                 <svg className="trend-chart trend-chart-rich" viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none" role="img" aria-label="VIX trend">
-                  <defs>
-                    <linearGradient id="vixAreaFill" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="rgba(18, 78, 102, 0.28)" />
-                      <stop offset="100%" stopColor="rgba(18, 78, 102, 0.02)" />
-                    </linearGradient>
-                  </defs>
+                <defs>
+                  <linearGradient id="vixAreaFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="rgba(15, 118, 110, 0.24)" />
+                    <stop offset="100%" stopColor="rgba(15, 118, 110, 0.02)" />
+                  </linearGradient>
+                </defs>
                   <rect x="0" y="0" width={chartWidth} height={chartHeight} className="trend-surface" />
                   <rect
                     x={chartLeft}
@@ -6400,46 +6543,46 @@ function App() {
             </div>
           </div>
           <div className="copy-message">
-            估算“如果整体下跌 X%”时的资金影响。口径按你定义的规则：股票直接下跌 X%；Put 按下跌后价格与行权价的差额减去权利金；Call 直接按全拿权利金抵减亏损。
+            估算“如果整体上涨 / 下跌 X%”时的资金影响。输入正数表示上涨，输入负数表示下跌。口径按你定义的规则：股票按涨跌幅直接变化；Put 在下跌到行权价下方后按差额减去权利金；Call 直接按全拿权利金抵减。
           </div>
           <div className="form-grid compact risk-calculator-grid">
             <label>
-              <span>整体下跌幅度 %</span>
-              <input
-                type="number"
-                min="0"
-                max="100"
-                step="1"
-                value={riskCalculatorDropInput}
-                onChange={(event) => setRiskCalculatorDropInput(event.target.value)}
-              />
-            </label>
-            <div className="risk-calculator-note">
-              <span>情景价格</span>
-              <strong>按当前股价 × {formatPercent(riskCalculator.shockMultiplier)}</strong>
-              <small>例如输入 10%，就按所有股票当前价格统一下跌 10% 来估算。</small>
+              <span>整体涨跌幅度 %</span>
+                <input
+                  type="number"
+                  min="-30"
+                  max="30"
+                  step="1"
+                  value={riskCalculatorDropInput}
+                  onChange={(event) => setRiskCalculatorDropInput(event.target.value)}
+                />
+              </label>
+              <div className="risk-calculator-note">
+                <span>情景价格</span>
+                <strong>按当前股价 × {formatPercent(riskCalculator.shockMultiplier)}</strong>
+                <small>支持输入 -30% 到 +30%。正数表示上涨，负数表示下跌。</small>
+              </div>
             </div>
-          </div>
 
           <div className="summary-grid">
             <article className="summary-card emphasized">
-              <span>整体下跌 {formatPercent(riskCalculatorDropPct)} 时的净亏损</span>
-              <strong>{formatCurrency(riskCalculator.totalNetLoss)}</strong>
+              <span>{`${riskCalculator.scenarioPct >= 0 ? '整体上涨' : '整体下跌'} ${formatPercent(Math.abs(riskCalculator.scenarioPct))} 时的情景总资金`}</span>
+              <strong>{formatCurrency(riskCalculator.scenarioCapital)}</strong>
               <small className="summary-card-footnote">
-                占总资金量 {riskCalculator.totalNetLossPctOfCapital == null ? '-' : formatPercent(riskCalculator.totalNetLossPctOfCapital)}
+                净变化 {formatSignedCurrency(riskCalculator.totalNetChange)} · 占总资金量 {riskCalculator.totalNetChangePctOfCapital == null ? '-' : formatSignedPercent(riskCalculator.totalNetChangePctOfCapital)}
               </small>
             </article>
             <article className="summary-card">
-              <span>股票亏损</span>
-              <strong>{formatCurrency(riskCalculator.totalStockLoss)}</strong>
+              <span>股票变化</span>
+              <strong>{formatSignedCurrency(riskCalculator.totalStockChange)}</strong>
             </article>
             <article className="summary-card">
-              <span>Put 亏损</span>
-              <strong>{formatCurrency(riskCalculator.totalPutLoss)}</strong>
+              <span>Put 变化</span>
+              <strong>{formatSignedCurrency(riskCalculator.totalPutChange)}</strong>
             </article>
             <article className="summary-card">
-              <span>Call 权利金抵减</span>
-              <strong>{formatCurrency(riskCalculator.totalCallOffset)}</strong>
+              <span>Call 权利金</span>
+              <strong>{formatSignedCurrency(riskCalculator.totalCallChange)}</strong>
             </article>
           </div>
 
@@ -6459,25 +6602,25 @@ function App() {
                       </small>
                     </div>
                     <div className="risk-calculator-row-net">
-                      <span>净亏损</span>
-                      <strong>{formatCurrency(row.netLoss)}</strong>
+                      <span>情景总资金</span>
+                      <strong>{row.scenarioCapital == null ? '-' : formatCurrency(row.scenarioCapital)}</strong>
                       <small>
-                        占总资金量 {row.netLossPctOfCapital == null ? '-' : formatPercent(row.netLossPctOfCapital)}
+                        净变化 {formatSignedCurrency(row.netChange)} · 占总资金量 {row.netChangePctOfCapital == null ? '-' : formatSignedPercent(row.netChangePctOfCapital)}
                       </small>
                     </div>
                   </div>
                   <div className="risk-calculator-breakdown">
                     <div className="risk-calculator-breakdown-item">
-                      <span>股票亏损</span>
-                      <strong>{formatCurrency(row.stockLoss)}</strong>
+                      <span>股票变化</span>
+                      <strong>{formatSignedCurrency(row.stockChange)}</strong>
                     </div>
                     <div className="risk-calculator-breakdown-item">
-                      <span>Put 亏损</span>
-                      <strong>{formatCurrency(row.putLoss)}</strong>
+                      <span>Put 变化</span>
+                      <strong>{formatSignedCurrency(row.putChange)}</strong>
                     </div>
                     <div className="risk-calculator-breakdown-item">
                       <span>Call 权利金</span>
-                      <strong>{formatCurrency(row.callOffset)}</strong>
+                      <strong>{formatSignedCurrency(row.callChange)}</strong>
                     </div>
                   </div>
                 </article>

@@ -1878,6 +1878,10 @@ tbody tr:hover td {
   background: white;
 }
 
+.risk-curve-card {
+  margin-bottom: 18px;
+}
+
 .history-trade-row {
   align-items: start;
 }
@@ -1920,44 +1924,50 @@ tbody tr:hover td {
 
 .trend-card {
   display: grid;
-  gap: 10px;
-  padding: 14px;
-  border-radius: 18px;
-  border: 1px solid var(--line);
-  background: rgba(248, 251, 251, 0.72);
+  gap: 12px;
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid rgba(203, 213, 225, 0.72);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.96));
+  box-shadow: 0 16px 32px rgba(15, 23, 42, 0.06);
+  backdrop-filter: blur(12px);
 }
 
 .trend-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  gap: 12px;
 }
 
 .trend-summary-item {
   display: grid;
-  gap: 6px;
-  padding: 12px 14px;
-  border-radius: 16px;
-  background: rgba(248, 251, 251, 0.92);
-  border: 1px solid var(--line);
+  gap: 5px;
+  padding: 14px 15px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.95));
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
 }
 
 .trend-summary-item span {
-  font-size: 0.8rem;
-  color: var(--ink-soft);
+  font-size: 0.74rem;
+  color: #64748b;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 .trend-summary-item strong {
-  font-size: 1rem;
-  color: var(--ink-strong);
+  font-size: 1.08rem;
+  color: #0f172a;
+  letter-spacing: -0.02em;
 }
 
 .trend-chart {
   width: 100%;
   height: 220px;
-  border-radius: 18px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(234, 242, 241, 0.8));
-  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  border: 1px solid rgba(226, 232, 240, 0.92);
 }
 
 .trend-chart-rich {
@@ -1965,7 +1975,7 @@ tbody tr:hover td {
 }
 
 .trend-surface {
-  fill: rgba(251, 253, 252, 0.95);
+  fill: rgba(255, 255, 255, 0.96);
 }
 
 .trend-band {
@@ -1985,8 +1995,8 @@ tbody tr:hover td {
 }
 
 .grid-line {
-  stroke: #d9e2ec;
-  stroke-dasharray: 4 4;
+  stroke: rgba(203, 213, 225, 0.75);
+  stroke-dasharray: 2 6;
 }
 
 .threshold {
@@ -2007,14 +2017,37 @@ tbody tr:hover td {
 }
 
 .trend-line {
-  stroke: #124e66;
-  stroke-width: 3;
+  stroke: #0f766e;
+  stroke-width: 2.75;
   fill: none;
-  filter: drop-shadow(0 6px 10px rgba(18, 78, 102, 0.12));
+  filter: drop-shadow(0 8px 14px rgba(15, 118, 110, 0.12));
 }
 
 .trend-area {
   fill: url(#vixAreaFill);
+}
+
+.risk-curve-line {
+  stroke: #2563eb;
+  stroke-width: 2.75;
+  fill: none;
+  filter: drop-shadow(0 8px 14px rgba(37, 99, 235, 0.12));
+}
+
+.risk-curve-area {
+  fill: url(#riskCurveFill);
+}
+
+.risk-curve-alarm-line {
+  stroke: rgba(225, 29, 72, 0.9);
+  stroke-width: 1.75;
+  stroke-dasharray: 5 5;
+}
+
+.risk-curve-alarm-label {
+  fill: #be123c;
+  font-size: 10px;
+  font-weight: 700;
 }
 
 .trend-point.green,
@@ -2044,32 +2077,44 @@ tbody tr:hover td {
 }
 
 .chart-label {
-  fill: var(--ink-soft);
+  fill: #64748b;
   font-size: 10px;
   font-weight: 600;
 }
 
 .chart-axis-label {
-  fill: var(--ink-soft);
+  fill: #94a3b8;
   font-size: 10px;
   font-weight: 600;
 }
 
+.chart-axis-title {
+  fill: #475569;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .latest-guide {
-  stroke: rgba(18, 78, 102, 0.25);
-  stroke-dasharray: 3 3;
+  stroke: rgba(148, 163, 184, 0.9);
+  stroke-dasharray: 3 4;
 }
 
 .latest-point-label {
-  fill: var(--ink-strong);
+  fill: #0f172a;
   font-size: 11px;
   font-weight: 700;
 }
 
 .peak-point-label {
-  fill: #8b3030;
+  fill: #991b1b;
   font-size: 10px;
   font-weight: 700;
+}
+
+.trend-footnote {
+  color: #64748b;
+  font-size: 0.82rem;
+  line-height: 1.45;
 }
 
 .dot {

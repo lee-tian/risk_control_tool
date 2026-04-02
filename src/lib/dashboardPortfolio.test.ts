@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { PutPosition, PutRiskRow, TickerEntry } from '../types';
-import { buildCapitalAllocationChart, buildRiskCalculator, buildTickerAllocationItems } from './dashboardPortfolio';
+import { buildCapitalAllocationChart, buildRiskCalculator, buildRiskCurvePoints, buildTickerAllocationItems } from './dashboardPortfolio';
 
 function makeTicker(overrides: Partial<TickerEntry>): TickerEntry {
   return {
@@ -161,35 +161,98 @@ describe('buildRiskCalculator', () => {
   ];
 
   it('applies stock loss, put loss, and call premium offsets under a down scenario', () => {
-    const result = buildRiskCalculator(puts, tickers, 0.1, 100000);
+    const result = buildRiskCalculator(puts, tickers, -0.1, 100000);
 
     expect(result.shockMultiplier).toBe(0.9);
-    expect(result.totalStockLoss).toBe(2000);
-    expect(result.totalPutLoss).toBe(4000);
-    expect(result.totalCallOffset).toBe(200);
-    expect(result.totalNetLoss).toBe(5800);
-    expect(result.totalNetLossPctOfCapital).toBeCloseTo(0.058, 6);
+    expect(result.totalStockChange).toBe(-2000);
+    expect(result.totalPutChange).toBe(-4000);
+    expect(result.totalCallChange).toBe(200);
+    expect(result.totalNetChange).toBe(-5800);
+    expect(result.totalNetChangePctOfCapital).toBeCloseTo(-0.058, 6);
+    expect(result.scenarioCapital).toBe(94200);
 
     expect(result.rows[0]).toMatchObject({
       ticker: 'AMZN',
-      stockLoss: 0,
-      putLoss: 3400,
-      callOffset: 0,
-      netLoss: 3400
+      stockChange: 0,
+      putChange: -3400,
+      callChange: 0,
+      netChange: -3400
     });
     expect(result.rows[1]).toMatchObject({
       ticker: 'GOOGL',
-      stockLoss: 2000,
-      putLoss: 600,
-      callOffset: 200,
-      netLoss: 2400
+      stockChange: -2000,
+      putChange: -600,
+      callChange: 200,
+      netChange: -2400
     });
   });
 
   it('returns null capital percentages when capital base is zero', () => {
-    const result = buildRiskCalculator(puts, tickers, 0.1, 0);
+    const result = buildRiskCalculator(puts, tickers, -0.1, 0);
 
-    expect(result.totalNetLossPctOfCapital).toBeNull();
-    expect(result.rows.every((row) => row.netLossPctOfCapital === null)).toBe(true);
+    expect(result.totalNetChangePctOfCapital).toBeNull();
+    expect(result.rows.every((row) => row.netChangePctOfCapital === null)).toBe(true);
+  });
+
+  it('supports an up scenario with positive stock change and zero put loss', () => {
+    const result = buildRiskCalculator(puts, tickers, 0.1, 100000);
+
+    expect(result.shockMultiplier).toBe(1.1);
+    expect(result.totalStockChange).toBe(2000);
+    expect(result.totalPutChange).toBe(0);
+    expect(result.totalCallChange).toBe(200);
+    expect(result.totalNetChange).toBe(2200);
+    expect(result.scenarioCapital).toBe(102200);
+  });
+});
+
+describe('buildRiskCurvePoints', () => {
+  it('returns ordered curve points spanning down and up scenarios', () => {
+    const tickers: TickerEntry[] = [
+      makeTicker({ ticker: 'GOOGL', shares: 100, current_price: 200 }),
+      makeTicker({ ticker: 'AMZN', shares: null, current_price: 150 })
+    ];
+    const puts: PutPosition[] = [
+      {
+        id: 'put-1',
+        ticker: 'GOOGL',
+        option_side: 'put',
+        put_strike: 190,
+        premium_per_share: 4,
+        contracts: 1,
+        iv_rank: 30,
+        date_sold: '2026-03-01',
+        expiration_date: '2026-05-01'
+      },
+      {
+        id: 'call-1',
+        ticker: 'GOOGL',
+        option_side: 'call',
+        put_strike: 220,
+        premium_per_share: 2,
+        contracts: 1,
+        iv_rank: 25,
+        date_sold: '2026-03-01',
+        expiration_date: '2026-05-01'
+      },
+      {
+        id: 'put-2',
+        ticker: 'AMZN',
+        option_side: 'put',
+        put_strike: 170,
+        premium_per_share: 1,
+        contracts: 1,
+        iv_rank: 25,
+        date_sold: '2026-03-01',
+        expiration_date: '2026-05-01'
+      }
+    ];
+
+    const points = buildRiskCurvePoints(puts, tickers, 100000);
+
+    expect(points[0]?.scenarioPct).toBe(-0.3);
+    expect(points[points.length - 1]?.scenarioPct).toBe(0.3);
+    expect(points.find((point) => point.scenarioPct === 0)?.capital).toBe(98700);
+    expect(points.some((point) => Math.abs(point.scenarioPct + 0.1) < 1e-9 && point.capital === 94200)).toBe(true);
   });
 });

@@ -25,25 +25,51 @@ export type TickerAllocationItem = {
 
 export type RiskCalculatorRow = {
   ticker: string;
-  stockLoss: number;
-  putLoss: number;
-  callOffset: number;
-  netLoss: number;
-  netLossPctOfCapital: number | null;
+  stockChange: number;
+  putChange: number;
+  callChange: number;
+  netChange: number;
+  netChangePctOfCapital: number | null;
+  scenarioCapital: number | null;
   shockedPrice: number | null;
   currentPrice: number | null;
 };
 
 export type RiskCalculatorResult = {
   shockMultiplier: number;
+  scenarioPct: number;
   capitalBase: number;
-  totalStockLoss: number;
-  totalPutLoss: number;
-  totalCallOffset: number;
-  totalNetLoss: number;
-  totalNetLossPctOfCapital: number | null;
+  totalStockChange: number;
+  totalPutChange: number;
+  totalCallChange: number;
+  totalNetChange: number;
+  totalNetChangePctOfCapital: number | null;
+  scenarioCapital: number;
   rows: RiskCalculatorRow[];
 };
+
+export type RiskCurvePoint = {
+  scenarioPct: number;
+  capital: number;
+  netChange: number;
+};
+
+export function buildRiskCurvePoints(
+  puts: PutPosition[],
+  tickerList: TickerEntry[],
+  capitalBaseInput: number
+): RiskCurvePoint[] {
+  const scenarioPercents = Array.from({ length: 121 }, (_, index) => -0.3 + index * 0.005);
+
+  return scenarioPercents.map((scenarioPct) => {
+    const result = buildRiskCalculator(puts, tickerList, scenarioPct, capitalBaseInput);
+    return {
+      scenarioPct,
+      capital: result.scenarioCapital,
+      netChange: result.totalNetChange
+    };
+  });
+}
 
 const TICKER_ALLOCATION_PALETTE = ['#124e66', '#1f7a8c', '#d6a300', '#7c9a92', '#6f9aa8', '#c97a63'];
 
@@ -150,13 +176,24 @@ export function buildTickerAllocationItems(
 export function buildRiskCalculator(
   puts: PutPosition[],
   tickerList: TickerEntry[],
-  dropPct: number,
+  scenarioPct: number,
   capitalBaseInput: number
 ): RiskCalculatorResult {
-  const shockMultiplier = 1 - dropPct;
+  const shockMultiplier = 1 + scenarioPct;
   const capitalBase = capitalBaseInput > 0 ? capitalBaseInput : 0;
   const tickerMap = new Map(tickerList.map((entry) => [entry.ticker, entry]));
   const rowsByTicker = new Map<string, RiskCalculatorRow>();
+  const callPositionsByTicker = new Map<string, PutPosition[]>();
+
+  for (const position of puts) {
+    if (position.option_side !== 'call') {
+      continue;
+    }
+
+    const bucket = callPositionsByTicker.get(position.ticker) ?? [];
+    bucket.push(position);
+    callPositionsByTicker.set(position.ticker, bucket);
+  }
 
   const ensureRow = (ticker: string): RiskCalculatorRow => {
     const existing = rowsByTicker.get(ticker);
@@ -167,11 +204,12 @@ export function buildRiskCalculator(
     const tickerEntry = tickerMap.get(ticker);
     const nextRow: RiskCalculatorRow = {
       ticker,
-      stockLoss: 0,
-      putLoss: 0,
-      callOffset: 0,
-      netLoss: 0,
-      netLossPctOfCapital: null,
+      stockChange: 0,
+      putChange: 0,
+      callChange: 0,
+      netChange: 0,
+      netChangePctOfCapital: null,
+      scenarioCapital: null,
       currentPrice: tickerEntry?.current_price ?? null,
       shockedPrice:
         typeof tickerEntry?.current_price === 'number' && tickerEntry.current_price > 0
@@ -190,7 +228,26 @@ export function buildRiskCalculator(
     }
 
     const row = ensureRow(entry.ticker);
-    row.stockLoss += shares * currentPrice * dropPct;
+    const shockedPrice = currentPrice * shockMultiplier;
+    const callRows = [...(callPositionsByTicker.get(entry.ticker) ?? [])].sort((a, b) => a.put_strike - b.put_strike);
+    let remainingCoveredShares = shares;
+
+    if (scenarioPct >= 0 && callRows.length > 0) {
+      for (const callRow of callRows) {
+        if (remainingCoveredShares <= 0) {
+          break;
+        }
+
+        const coveredShares = Math.min(remainingCoveredShares, callRow.contracts * 100);
+        const cappedScenarioPrice = Math.min(shockedPrice, callRow.put_strike);
+        row.stockChange += coveredShares * (cappedScenarioPrice - currentPrice);
+        remainingCoveredShares -= coveredShares;
+      }
+    }
+
+    if (remainingCoveredShares > 0) {
+      row.stockChange += remainingCoveredShares * (shockedPrice - currentPrice);
+    }
   }
 
   for (const position of puts) {
@@ -199,7 +256,7 @@ export function buildRiskCalculator(
     const premiumIncome = position.premium_per_share * contractsShares;
 
     if (position.option_side === 'call') {
-      row.callOffset += premiumIncome;
+      row.callChange += premiumIncome;
       continue;
     }
 
@@ -210,33 +267,37 @@ export function buildRiskCalculator(
 
     const shockedPrice = currentPrice * shockMultiplier;
     const intrinsicLoss = Math.max(position.put_strike - shockedPrice, 0) * contractsShares;
-    row.putLoss += Math.max(intrinsicLoss - premiumIncome, 0);
+    row.putChange += premiumIncome - intrinsicLoss;
   }
 
   const rows = [...rowsByTicker.values()]
     .map((row) => {
-      const netLoss = row.stockLoss + row.putLoss - row.callOffset;
+      const netChange = row.stockChange + row.putChange + row.callChange;
       return {
         ...row,
-        netLoss,
-        netLossPctOfCapital: capitalBase > 0 ? netLoss / capitalBase : null
+        netChange,
+        netChangePctOfCapital: capitalBase > 0 ? netChange / capitalBase : null,
+        scenarioCapital: capitalBase > 0 ? capitalBase + netChange : null
       };
     })
-    .sort((a, b) => b.netLoss - a.netLoss || b.putLoss - a.putLoss || b.stockLoss - a.stockLoss || a.ticker.localeCompare(b.ticker));
+    .sort((a, b) => a.netChange - b.netChange || a.putChange - b.putChange || a.stockChange - b.stockChange || a.ticker.localeCompare(b.ticker));
 
-  const totalStockLoss = rows.reduce((sum, row) => sum + row.stockLoss, 0);
-  const totalPutLoss = rows.reduce((sum, row) => sum + row.putLoss, 0);
-  const totalCallOffset = rows.reduce((sum, row) => sum + row.callOffset, 0);
-  const totalNetLoss = rows.reduce((sum, row) => sum + row.netLoss, 0);
+  const totalStockChange = rows.reduce((sum, row) => sum + row.stockChange, 0);
+  const totalPutChange = rows.reduce((sum, row) => sum + row.putChange, 0);
+  const totalCallChange = rows.reduce((sum, row) => sum + row.callChange, 0);
+  const totalNetChange = rows.reduce((sum, row) => sum + row.netChange, 0);
+  const scenarioCapital = capitalBase + totalNetChange;
 
   return {
     shockMultiplier,
+    scenarioPct,
     capitalBase,
-    totalStockLoss,
-    totalPutLoss,
-    totalCallOffset,
-    totalNetLoss,
-    totalNetLossPctOfCapital: capitalBase > 0 ? totalNetLoss / capitalBase : null,
+    totalStockChange,
+    totalPutChange,
+    totalCallChange,
+    totalNetChange,
+    totalNetChangePctOfCapital: capitalBase > 0 ? totalNetChange / capitalBase : null,
+    scenarioCapital,
     rows
   };
 }
