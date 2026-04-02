@@ -3827,15 +3827,20 @@ function App() {
                 </article>
               </div>
               <div className="stress-caption-stack">
-                {vixSnapshot?.fearGreedScore !== null && vixSnapshot?.fearGreedScore !== undefined && (
-                  <div className="scenario-caption stress-caption">
-                    CNN Fear &amp; Greed: <strong>{vixSnapshot.fearGreedScore.toFixed(1)}</strong>
-                    {vixSnapshot.fearGreedRating ? ` (${vixSnapshot.fearGreedRating})` : ''}
-                    {fearGreedStressAdjustment < 0
-                      ? `，由于恐慌指数较低，额外减少 ${Math.abs(fearGreedStressAdjustment * 100).toFixed(1).replace(/\.0$/, '')}% stress。`
-                      : ''}
-                  </div>
-                )}
+                <div className="scenario-caption stress-caption">
+                  CNN Fear &amp; Greed:{' '}
+                  {vixSnapshot?.fearGreedScore !== null && vixSnapshot?.fearGreedScore !== undefined ? (
+                    <>
+                      <strong>{vixSnapshot.fearGreedScore.toFixed(1)}</strong>
+                      {vixSnapshot.fearGreedRating ? ` (${vixSnapshot.fearGreedRating})` : ''}
+                      {fearGreedStressAdjustment < 0
+                        ? `，由于恐慌指数较低，额外减少 ${Math.abs(fearGreedStressAdjustment * 100).toFixed(1).replace(/\.0$/, '')}% stress。`
+                        : ''}
+                    </>
+                  ) : (
+                    <strong>暂不可用</strong>
+                  )}
+                </div>
                 <div className="scenario-caption stress-caption">
                   <strong>{getFearGreedStatusLabel(vixSnapshot)}</strong>
                   {vixSnapshot?.storageDriver ? `；storage ${vixSnapshot.storageDriver}` : ''}
