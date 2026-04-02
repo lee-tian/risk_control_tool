@@ -95,3 +95,42 @@ export function removeTickerEntry(entries: TickerEntry[], ticker: string): Ticke
   const normalized = normalizeTickerSymbol(ticker);
   return entries.filter((entry) => entry.ticker !== normalized);
 }
+
+export function sellTickerShares(
+  entries: TickerEntry[],
+  ticker: string,
+  sharesToSell: number,
+  sellPricePerShare: number
+): { nextEntries: TickerEntry[]; proceeds: number; remainingShares: number } | null {
+  const normalized = normalizeTickerSymbol(ticker);
+  const currentEntry = entries.find((entry) => entry.ticker === normalized);
+  const currentShares = currentEntry?.shares ?? 0;
+
+  if (!currentEntry || !Number.isFinite(currentShares) || currentShares <= 0) {
+    return null;
+  }
+  if (!Number.isFinite(sharesToSell) || sharesToSell <= 0 || sharesToSell > currentShares) {
+    return null;
+  }
+  if (!Number.isFinite(sellPricePerShare) || sellPricePerShare < 0) {
+    return null;
+  }
+
+  const remainingShares = currentShares - sharesToSell;
+  const proceeds = sharesToSell * sellPricePerShare;
+  const nextEntries = entries.map((entry) =>
+    entry.ticker === normalized
+      ? {
+          ...entry,
+          shares: remainingShares,
+          average_cost_basis: remainingShares > 0 ? entry.average_cost_basis : null
+        }
+      : entry
+  );
+
+  return {
+    nextEntries,
+    proceeds,
+    remainingShares
+  };
+}

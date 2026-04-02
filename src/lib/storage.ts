@@ -456,10 +456,10 @@ export function mergeTickerListsPreservingManualFields(
 
       return {
         ...snapshotEntry,
-        beta: snapshotEntry.beta ?? localEntry.beta,
-        shares: snapshotEntry.shares ?? localEntry.shares,
-        average_cost_basis: snapshotEntry.average_cost_basis ?? localEntry.average_cost_basis,
-        downside_tolerance_pct: snapshotEntry.downside_tolerance_pct ?? localEntry.downside_tolerance_pct,
+        beta: localEntry.beta ?? snapshotEntry.beta,
+        shares: localEntry.shares ?? snapshotEntry.shares,
+        average_cost_basis: localEntry.average_cost_basis ?? snapshotEntry.average_cost_basis,
+        downside_tolerance_pct: localEntry.downside_tolerance_pct ?? snapshotEntry.downside_tolerance_pct,
         current_price: snapshotEntry.current_price ?? localEntry.current_price,
         last_updated: snapshotEntry.last_updated ?? localEntry.last_updated,
         next_earnings_date: snapshotEntry.next_earnings_date ?? localEntry.next_earnings_date,

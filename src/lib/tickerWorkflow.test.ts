@@ -6,6 +6,7 @@ import {
   createTickerEntryFromDraft,
   findTickerEntry,
   removeTickerEntry,
+  sellTickerShares,
   updateTickerEntry
 } from './tickerWorkflow';
 
@@ -128,6 +129,26 @@ describe('tickerWorkflow', () => {
     ]);
   });
 
+  it('allows clearing manual stock fields during save flow', () => {
+    const next = updateTickerEntry(baseEntries, 'AAPL', {
+      beta: null,
+      shares: null,
+      average_cost_basis: null,
+      downside_tolerance_pct: null
+    });
+
+    expect(next).toEqual([
+      expect.objectContaining({
+        ticker: 'AAPL',
+        beta: null,
+        shares: null,
+        average_cost_basis: null,
+        downside_tolerance_pct: null,
+        current_price: 195
+      })
+    ]);
+  });
+
   it('deletes the requested stock row during remove flow', () => {
     const next = removeTickerEntry(
       [
@@ -141,5 +162,37 @@ describe('tickerWorkflow', () => {
     );
 
     expect(next).toEqual([baseEntries[0]]);
+  });
+
+  it('sells part of a stock position and returns proceeds', () => {
+    const result = sellTickerShares(baseEntries, 'AAPL', 40, 210);
+
+    expect(result).toEqual({
+      nextEntries: [
+        expect.objectContaining({
+          ticker: 'AAPL',
+          shares: 60,
+          average_cost_basis: 180
+        })
+      ],
+      proceeds: 8400,
+      remainingShares: 60
+    });
+  });
+
+  it('clears average cost after selling the entire position', () => {
+    const result = sellTickerShares(baseEntries, 'AAPL', 100, 200);
+
+    expect(result).toEqual({
+      nextEntries: [
+        expect.objectContaining({
+          ticker: 'AAPL',
+          shares: 0,
+          average_cost_basis: null
+        })
+      ],
+      proceeds: 20000,
+      remainingShares: 0
+    });
   });
 });

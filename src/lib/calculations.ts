@@ -65,7 +65,45 @@ function getDistanceToStrikePct(
 }
 
 const MIN_PUT_STRESS_FLOOR_PCT = 0.02;
-const STOCK_RISK_HAIRCUT_PCT = 0.95;
+const STOCK_BASE_DRAWDOWN_PCT = 0.1;
+const STOCK_MIN_RISK_FLOOR_PCT = 0.02;
+const STOCK_BETA_FALLBACK = 1;
+const STOCK_BETA_MIN = 0.6;
+const STOCK_BETA_MAX = 2.5;
+const STOCK_TOLERANCE_MAX_PCT = 0.2;
+const STOCK_TOLERANCE_MIN_FACTOR = 0.3;
+
+function getStockRiskFloor(entry: TickerEntry): number {
+  const shares = entry.shares ?? 0;
+  const currentPrice = entry.current_price ?? 0;
+  if (shares <= 0 || currentPrice <= 0) {
+    return 0;
+  }
+
+  return shares * currentPrice * STOCK_MIN_RISK_FLOOR_PCT;
+}
+
+function getAdjustedStockRisk(entry: TickerEntry): number {
+  const shares = entry.shares ?? 0;
+  const currentPrice = entry.current_price ?? 0;
+  if (shares <= 0 || currentPrice <= 0) {
+    return 0;
+  }
+
+  const rawBeta = typeof entry.beta === 'number' && Number.isFinite(entry.beta) ? entry.beta : STOCK_BETA_FALLBACK;
+  const clampedBeta = Math.min(Math.max(rawBeta, STOCK_BETA_MIN), STOCK_BETA_MAX);
+  const stockValue = shares * currentPrice;
+  const baseStockRisk = stockValue * STOCK_BASE_DRAWDOWN_PCT * clampedBeta;
+  const rawTolerancePct =
+    typeof entry.downside_tolerance_pct === 'number' && Number.isFinite(entry.downside_tolerance_pct)
+      ? entry.downside_tolerance_pct
+      : 0;
+  const clampedTolerancePct = Math.min(Math.max(rawTolerancePct, 0), STOCK_TOLERANCE_MAX_PCT);
+  const toleranceFactor = Math.max(1 - clampedTolerancePct / STOCK_TOLERANCE_MAX_PCT, STOCK_TOLERANCE_MIN_FACTOR);
+  const stockRiskFloor = getStockRiskFloor(entry);
+
+  return Math.max(baseStockRisk * toleranceFactor, stockRiskFloor);
+}
 
 export function calculatePortfolioMetrics(
   config: Config | null,
@@ -172,27 +210,45 @@ export function calculatePortfolioMetrics(
       callOffsetByTicker.set(row.ticker, (callOffsetByTicker.get(row.ticker) ?? 0) + row.premiumIncome);
     }
   }
+  const missingStockBetaTickers = tickerList
+    .filter((entry) => (entry.shares ?? 0) > 0 && (entry.beta === null || !Number.isFinite(entry.beta)))
+    .map((entry) => entry.ticker)
+    .sort();
   const totalStockRisk = tickerList.reduce((sum, entry) => {
-    const shares = entry.shares ?? 0;
-    const averageCostBasis = entry.average_cost_basis ?? 0;
-    const currentPrice = entry.current_price ?? 0;
-    const stockRiskPerShare = Math.max(averageCostBasis - currentPrice * STOCK_RISK_HAIRCUT_PCT, 0);
-
-    return sum + stockRiskPerShare * shares;
+    return sum + getAdjustedStockRisk(entry);
   }, 0);
-  const totalCoveredCallOffset = [...callOffsetByTicker.values()].reduce((sum, value) => sum + value, 0);
+  const totalCoveredCallOffset = tickerList.reduce((sum, entry) => {
+    const shares = entry.shares ?? 0;
+    if (shares <= 0) {
+      return sum;
+    }
+
+    const totalCoveredShares = putRows
+      .filter((row) => row.ticker === entry.ticker && row.option_side === 'call')
+      .reduce((coveredShares, row) => coveredShares + row.contracts * 100, 0);
+    const coveredRatio = Math.min(totalCoveredShares / shares, 1);
+
+    return sum + (callOffsetByTicker.get(entry.ticker) ?? 0) * coveredRatio;
+  }, 0);
   const totalRisk = tickerList.reduce((sum, entry) => {
     const shares = entry.shares ?? 0;
-    const averageCostBasis = entry.average_cost_basis ?? 0;
-    const currentPrice = entry.current_price ?? 0;
-    const stockRiskPerShare = Math.max(averageCostBasis - currentPrice * STOCK_RISK_HAIRCUT_PCT, 0);
-    const stockRisk = stockRiskPerShare * shares;
-    const coveredCallOffset = callOffsetByTicker.get(entry.ticker) ?? 0;
+    if (shares <= 0) {
+      return sum;
+    }
 
-    return sum + Math.max(stockRisk - coveredCallOffset, 0);
+    const stockRisk = getAdjustedStockRisk(entry);
+    const stockRiskFloor = getStockRiskFloor(entry);
+    const totalCoveredShares = putRows
+      .filter((row) => row.ticker === entry.ticker && row.option_side === 'call')
+      .reduce((coveredShares, row) => coveredShares + row.contracts * 100, 0);
+    const coveredRatio = shares > 0 ? Math.min(totalCoveredShares / shares, 1) : 0;
+    const coveredCallOffset = (callOffsetByTicker.get(entry.ticker) ?? 0) * coveredRatio;
+
+    return sum + Math.max(stockRisk - coveredCallOffset, stockRiskFloor);
   }, totalPutRisk);
   const riskLimitAmount = cash * (config?.risk_limit_pct ?? 0);
   const portfolioRiskPctOfCash = safeDivide(totalPutRisk, cash);
+  const totalRiskPctOfTotalCapital = safeDivide(totalRisk, totalCapitalBase);
   const remainingRiskBudget = riskLimitAmount - totalPutRisk;
   const riskUsagePct =
     riskLimitAmount <= 0 ? (totalPutRisk > 0 ? 1.5 : 0) : totalPutRisk / riskLimitAmount;
@@ -227,7 +283,9 @@ export function calculatePortfolioMetrics(
     totalStockRisk,
     totalCoveredCallOffset,
     totalRisk,
+    missingStockBetaTickers,
     portfolioRiskPctOfCash,
+    totalRiskPctOfTotalCapital,
     riskLimitAmount,
     remainingRiskBudget,
     riskStatus,
@@ -260,7 +318,11 @@ export function buildSummaryText(
     `Total Stock Risk: ${metrics.totalStockRisk.toFixed(2)}`,
     `Covered Call Offset: ${metrics.totalCoveredCallOffset.toFixed(2)}`,
     `Total Risk: ${metrics.totalRisk.toFixed(2)}`,
+    ...(metrics.missingStockBetaTickers.length > 0
+      ? [`Missing stock beta: ${metrics.missingStockBetaTickers.join(', ')}`]
+      : []),
     `Put Risk % Of Cash: ${(metrics.portfolioRiskPctOfCash * 100).toFixed(2)}%`,
+    `Total Risk % Of Total Capital: ${(metrics.totalRiskPctOfTotalCapital * 100).toFixed(2)}%`,
     `Risk Limit Amount: ${metrics.riskLimitAmount.toFixed(2)}`,
     `Remaining Risk Budget: ${metrics.remainingRiskBudget.toFixed(2)}`,
     `Risk Status: ${metrics.riskStatus}`,

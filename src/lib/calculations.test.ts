@@ -101,9 +101,10 @@ describe('calculatePortfolioMetrics', () => {
     expect(metrics.totalPremiumIncome).toBe(1300);
     expect(metrics.totalCallPremiumIncome).toBe(200);
     expect(metrics.totalPutRisk).toBeCloseTo(2670, 6);
-    expect(metrics.totalStockRisk).toBe(0);
+    expect(metrics.totalStockRisk).toBe(1575);
     expect(metrics.totalCoveredCallOffset).toBe(200);
-    expect(metrics.totalRisk).toBeCloseTo(2670, 6);
+    expect(metrics.totalRisk).toBeCloseTo(4045, 6);
+    expect(metrics.missingStockBetaTickers).toEqual([]);
     expect(metrics.weightedAverageBeta).toBeCloseTo(1.571428, 5);
     expect(metrics.weightedAverageEffectiveStressPct).toBeCloseTo(0.048571, 5);
     expect(metrics.weightedAverageDaysToExpiration).toBeCloseTo(44.179487, 5);
@@ -116,6 +117,7 @@ describe('calculatePortfolioMetrics', () => {
     expect(metrics.riskLimitAmount).toBe(20000);
     expect(metrics.remainingRiskBudget).toBeCloseTo(17330, 6);
     expect(metrics.portfolioRiskPctOfCash).toBeCloseTo(0.0267, 6);
+    expect(metrics.totalRiskPctOfTotalCapital).toBeCloseTo(4045 / 133120, 6);
     expect(metrics.riskUsagePct).toBeCloseTo(0.1335, 6);
     expect(metrics.riskScore).toBe(13);
     expect(metrics.riskStatus).toBe('Safe');
@@ -255,9 +257,9 @@ describe('calculatePortfolioMetrics', () => {
     );
 
     expect(metrics.totalPutRisk).toBeCloseTo(7080, 6);
-    expect(metrics.totalStockRisk).toBe(7000);
+    expect(metrics.totalStockRisk).toBe(2000);
     expect(metrics.totalCoveredCallOffset).toBe(150);
-    expect(metrics.totalRisk).toBeCloseTo(13930, 6);
+    expect(metrics.totalRisk).toBeCloseTo(8930, 6);
     expect(metrics.groupedTickerRisk).toHaveLength(1);
     expect(metrics.groupedTickerRisk[0]?.ticker).toBe('TSLA');
     expect(metrics.groupedTickerRisk[0]?.risk).toBeCloseTo(7080, 6);
@@ -305,7 +307,132 @@ describe('calculatePortfolioMetrics', () => {
     );
 
     expect(metrics.totalCallPremiumIncome).toBe(966);
-    expect(metrics.totalCoveredCallOffset).toBe(966);
+    expect(metrics.totalCoveredCallOffset).toBeCloseTo(579.6, 6);
+  });
+
+  it('flags stock holdings with missing beta and falls back to beta 1', () => {
+    const metrics = calculatePortfolioMetrics(
+      config,
+      [],
+      [
+        {
+          ticker: 'IBM',
+          beta: null,
+          shares: 100,
+          average_cost_basis: 210,
+          downside_tolerance_pct: null,
+          current_price: 200,
+          last_updated: null,
+          current_iv: null,
+          current_iv_updated: null,
+          historical_iv: null,
+          iv_rank: null,
+          iv_percentile: null,
+          next_earnings_date: null,
+          put_call_ratio: null,
+          put_call_ratio_updated: null,
+          provider_exchange: null,
+          provider_mic_code: null,
+          rsi_14: null,
+          rsi_14_1h: null,
+          rsi_updated: null,
+          ma_21: null,
+          ma_200: null
+        }
+      ],
+      0.1
+    );
+
+    expect(metrics.totalStockRisk).toBeCloseTo(2000, 6);
+    expect(metrics.totalRisk).toBeCloseTo(2000, 6);
+    expect(metrics.missingStockBetaTickers).toEqual(['IBM']);
+  });
+
+  it('reduces stock risk when downside tolerance is higher', () => {
+    const metrics = calculatePortfolioMetrics(
+      config,
+      [],
+      [
+        {
+          ticker: 'AAPL',
+          beta: 1.5,
+          shares: 100,
+          average_cost_basis: 210,
+          downside_tolerance_pct: 0.1,
+          current_price: 200,
+          last_updated: null,
+          current_iv: null,
+          current_iv_updated: null,
+          historical_iv: null,
+          iv_rank: null,
+          iv_percentile: null,
+          next_earnings_date: null,
+          put_call_ratio: null,
+          put_call_ratio_updated: null,
+          provider_exchange: null,
+          provider_mic_code: null,
+          rsi_14: null,
+          rsi_14_1h: null,
+          rsi_updated: null,
+          ma_21: null,
+          ma_200: null
+        }
+      ],
+      0.1
+    );
+
+    expect(metrics.totalStockRisk).toBeCloseTo(1500, 6);
+    expect(metrics.totalRisk).toBeCloseTo(1500, 6);
+  });
+
+  it('keeps a minimum 2% stock risk floor even after covered call offset', () => {
+    const metrics = calculatePortfolioMetrics(
+      config,
+      [
+        {
+          id: 'call-floor',
+          ticker: 'AAPL',
+          option_side: 'call',
+          put_strike: 220,
+          premium_per_share: 5,
+          contracts: 1,
+          iv_rank: 35,
+          date_sold: '2026-03-01',
+          expiration_date: '2026-05-01'
+        }
+      ],
+      [
+        {
+          ticker: 'AAPL',
+          beta: 0.6,
+          shares: 100,
+          average_cost_basis: 98,
+          downside_tolerance_pct: 0.2,
+          current_price: 100,
+          last_updated: null,
+          current_iv: null,
+          current_iv_updated: null,
+          historical_iv: null,
+          iv_rank: null,
+          iv_percentile: null,
+          next_earnings_date: null,
+          put_call_ratio: null,
+          put_call_ratio_updated: null,
+          provider_exchange: null,
+          provider_mic_code: null,
+          rsi_14: null,
+          rsi_14_1h: null,
+          rsi_updated: null,
+          ma_21: null,
+          ma_200: null
+        }
+      ],
+      0.1
+    );
+
+    expect(metrics.totalStockRisk).toBeCloseTo(200, 6);
+    expect(metrics.totalCoveredCallOffset).toBeCloseTo(500, 6);
+    expect(metrics.totalRisk).toBeCloseTo(200, 6);
   });
 });
 
@@ -319,7 +446,8 @@ describe('buildSummaryText', () => {
     expect(summary).toContain('Weighted Average Beta: 1.57');
     expect(summary).toContain('Annualized Yield On Total Capital:');
     expect(summary).toContain('Covered Call Offset: 200.00');
-    expect(summary).toContain('Total Risk: 2670.00');
+    expect(summary).toContain('Total Risk: 4045.00');
+    expect(summary).toContain('Total Risk % Of Total Capital: 3.04%');
     expect(summary).toContain('Risk Status: Safe');
     expect(summary).toContain('Positioning Status: Light');
     expect(summary).toContain('Risk Score: 13');

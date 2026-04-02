@@ -907,7 +907,7 @@ describe('storage helpers', () => {
     ]);
   });
 
-  it('keeps snapshot manual fields when they are already populated and includes local-only tickers', () => {
+  it('keeps local manual fields when they are already populated and includes local-only tickers', () => {
     expect(
       mergeTickerListsPreservingManualFields(
         [
@@ -978,10 +978,10 @@ describe('storage helpers', () => {
     ).toEqual([
       expect.objectContaining({
         ticker: 'AMZN',
-        beta: 1.2,
-        shares: 300,
-        average_cost_basis: 190,
-        downside_tolerance_pct: 0.2
+        beta: 1.31,
+        shares: 500,
+        average_cost_basis: 207.5,
+        downside_tolerance_pct: 0.25
       }),
       expect.objectContaining({
         ticker: 'NVDA',

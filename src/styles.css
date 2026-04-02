@@ -929,6 +929,12 @@ textarea:focus {
   color: #486581;
 }
 
+.field-warning-text {
+  font-size: 0.76rem;
+  color: #a05400;
+  font-weight: 700;
+}
+
 .field-value {
   display: flex;
   align-items: center;
@@ -1279,6 +1285,13 @@ tbody tr:hover td {
   gap: 12px;
 }
 
+.ticker-risk-button {
+  width: 100%;
+  text-align: left;
+  appearance: none;
+  cursor: pointer;
+}
+
 .ticker-risk-alert {
   background: linear-gradient(180deg, rgba(255, 243, 227, 0.92), rgba(255, 248, 240, 0.98));
   border-color: rgba(191, 91, 37, 0.28);
@@ -1311,16 +1324,68 @@ tbody tr:hover td {
   align-items: start;
 }
 
+.combined-holding-card {
+  display: block;
+}
+
 .stock-holding-topline {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: 10px;
-  flex-wrap: wrap;
+}
+
+.stock-holding-heading {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
 }
 
 .stock-holding-topline small {
   font-size: 0.82rem;
   color: #5f7386;
+}
+
+.stock-holding-value {
+  font-size: 1.1rem;
+  line-height: 1.1;
+  color: var(--ink-strong);
+  white-space: nowrap;
+}
+
+.stock-holding-value-group {
+  display: grid;
+  gap: 2px;
+  justify-items: end;
+}
+
+.stock-holding-value-group small {
+  font-size: 0.74rem;
+  color: #6b7f92;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.stock-holding-summary-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.stock-holding-summary-strip span {
+  display: grid;
+  gap: 2px;
+}
+
+.stock-holding-summary-strip small {
+  font-size: 0.74rem;
+  color: #6b7f92;
+}
+
+.stock-holding-summary-strip strong {
+  font-size: 0.88rem;
+  line-height: 1.15;
 }
 
 .stock-holding-section {
@@ -1329,6 +1394,77 @@ tbody tr:hover td {
   margin-top: 4px;
   padding-top: 6px;
   border-top: 1px dashed rgba(147, 173, 194, 0.28);
+}
+
+.holding-option-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  position: relative;
+}
+
+.holding-option-column {
+  align-self: start;
+}
+
+.holding-option-panel {
+  padding: 0 12px 0 0;
+}
+
+.holding-option-columns-split::before {
+  content: '';
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 50%;
+  width: 0;
+  border-left: 1px dashed rgba(147, 173, 194, 0.48);
+  transform: translateX(-50%);
+}
+
+.holding-option-columns-split .holding-option-column:last-child {
+  padding-left: 10px;
+}
+
+.holding-option-columns-split .holding-option-column.holding-option-panel:last-child {
+  padding-left: 12px;
+  padding-right: 0;
+}
+
+.dashboard-section-button {
+  width: 100%;
+  appearance: none;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding-left: 0;
+  padding-right: 0;
+  cursor: pointer;
+}
+
+.dashboard-section-button:hover .stock-section-label,
+.dashboard-section-button:hover strong {
+  color: var(--accent-strong);
+}
+
+.dashboard-section-warning {
+  border-radius: 12px;
+  padding: 8px 10px;
+  background: linear-gradient(180deg, rgba(255, 250, 232, 0.96), rgba(255, 245, 214, 0.98));
+  border: 1px solid rgba(196, 149, 26, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(196, 149, 26, 0.05);
+}
+
+.risk-section-button {
+  display: grid;
+  gap: 6px;
+}
+
+.section-summary-card {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  border: 0;
 }
 
 .risk-put-section .stock-section-label {
@@ -1340,13 +1476,36 @@ tbody tr:hover td {
   gap: 6px;
 }
 
+@media (max-width: 900px) {
+  .holding-option-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .holding-option-columns-split::before {
+    display: none;
+  }
+
+  .holding-option-columns-split .holding-option-column:last-child {
+    padding-left: 0;
+  }
+
+  .holding-option-panel {
+    padding: 0;
+  }
+
+  .stock-holding-summary-strip {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+}
+
 .risk-put-detail-row {
   display: grid;
   gap: 4px;
   padding: 7px 9px;
   border-radius: 10px;
-  background: rgba(255, 248, 238, 0.75);
-  border: 1px solid rgba(211, 181, 127, 0.28);
+  background: rgba(239, 249, 242, 0.92);
+  border: 1px solid rgba(132, 181, 145, 0.34);
 }
 
 .risk-put-detail-button {
@@ -1359,6 +1518,12 @@ tbody tr:hover td {
 .risk-put-detail-row-warning {
   background: rgba(255, 244, 220, 0.92);
   border-color: rgba(196, 149, 26, 0.34);
+}
+
+.risk-put-detail-row-danger {
+  background: rgba(253, 237, 237, 0.96);
+  border-color: rgba(201, 77, 77, 0.38);
+  box-shadow: inset 0 0 0 1px rgba(201, 77, 77, 0.06);
 }
 
 .risk-put-detail-main {
@@ -1454,7 +1619,7 @@ tbody tr:hover td {
 .exposure-donut-card {
   display: grid;
   grid-template-columns: 170px minmax(0, 1fr);
-  gap: 20px;
+  gap: 14px;
   align-items: start;
   padding: 6px 0 2px;
 }
@@ -1554,6 +1719,10 @@ tbody tr:hover td {
   width: 100%;
 }
 
+.section-subhead-inline {
+  margin-bottom: -2px;
+}
+
 .capital-summary-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -1627,6 +1796,86 @@ tbody tr:hover td {
 
 .history-summary-grid {
   margin-bottom: 14px;
+}
+
+.risk-calculator-grid {
+  align-items: end;
+}
+
+.risk-calculator-note {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(248, 251, 251, 0.9);
+  min-height: 100%;
+}
+
+.risk-calculator-note span,
+.risk-calculator-breakdown-item span,
+.risk-calculator-row-net span {
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+}
+
+.risk-calculator-note strong,
+.risk-calculator-breakdown-item strong,
+.risk-calculator-row-net strong {
+  color: var(--ink-strong);
+}
+
+.risk-calculator-note small,
+.risk-calculator-row-header small {
+  color: var(--ink-soft);
+}
+
+.risk-calculator-results {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.risk-calculator-row {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(248, 251, 251, 0.92);
+}
+
+.risk-calculator-row-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.risk-calculator-row-header > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.risk-calculator-row-net {
+  display: grid;
+  gap: 4px;
+  text-align: right;
+}
+
+.risk-calculator-breakdown {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.risk-calculator-breakdown-item {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: white;
 }
 
 .history-trade-row {

@@ -136,7 +136,9 @@ export type PortfolioMetrics = {
   totalStockRisk: number;
   totalCoveredCallOffset: number;
   totalRisk: number;
+  missingStockBetaTickers: string[];
   portfolioRiskPctOfCash: number;
+  totalRiskPctOfTotalCapital: number;
   riskLimitAmount: number;
   remainingRiskBudget: number;
   riskStatus: RiskStatus;
