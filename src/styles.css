@@ -1349,6 +1349,13 @@ tbody tr:hover td {
   border: 1px solid rgba(211, 181, 127, 0.28);
 }
 
+.risk-put-detail-button {
+  width: 100%;
+  text-align: left;
+  appearance: none;
+  cursor: pointer;
+}
+
 .risk-put-detail-row-warning {
   background: rgba(255, 244, 220, 0.92);
   border-color: rgba(196, 149, 26, 0.34);

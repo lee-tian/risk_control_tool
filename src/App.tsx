@@ -1255,6 +1255,7 @@ function App() {
   const [vixMessage, setVixMessage] = useState('');
   const [vixSnapshot, setVixSnapshot] = useState<VixSnapshot | null>(null);
   const [backgroundRefreshStatus, setBackgroundRefreshStatus] = useState<BackgroundRefreshStatus | null>(null);
+  const [pendingPositionScrollId, setPendingPositionScrollId] = useState<string | null>(null);
   const [refreshingTicker, setRefreshingTicker] = useState<string | null>(null);
   const [isRefreshingAllTickers, setIsRefreshingAllTickers] = useState(false);
   const [isCheckingPut, setIsCheckingPut] = useState(false);
@@ -1281,6 +1282,7 @@ function App() {
     ticker: string;
   } | null>(null);
   const putsRef = useRef<PutPosition[]>(puts);
+  const positionCardRefs = useRef<Record<string, HTMLElement | null>>({});
   const refreshingOptionPriceIdRef = useRef<string | null>(refreshingOptionPriceId);
   const autoRefreshingOptionPriceIdRef = useRef<string | null>(autoRefreshingOptionPriceId);
   const isRefreshingAllOptionsRef = useRef(isRefreshingAllOptions);
@@ -2348,6 +2350,24 @@ function App() {
       }
       return a.expiration_date.localeCompare(b.expiration_date);
     });
+
+  useEffect(() => {
+    if (activeTab !== 'positions' || pendingPositionScrollId === null) {
+      return;
+    }
+
+    const target = positionCardRefs.current[pendingPositionScrollId];
+    if (!target) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setPendingPositionScrollId(null);
+    }, 80);
+
+    return () => window.clearTimeout(timer);
+  }, [activeTab, pendingPositionScrollId, visiblePutRows]);
   const putFormDaysToExpiration = getDaysToExpirationForPreview(putForm.date_sold, putForm.expiration_date);
   const putFormNominalExposure = putForm.put_strike * putForm.contracts * 100;
   const putFormPremiumIncome = putForm.premium_per_share * putForm.contracts * 100;
@@ -3508,6 +3528,11 @@ function App() {
     importInputRef.current?.click();
   }
 
+  function handleOpenPositionFromDashboard(positionId: string) {
+    setActiveTab('positions');
+    setPendingPositionScrollId(positionId);
+  }
+
   async function handleSaveAppState() {
     try {
       const snapshot = buildAppStateSnapshot({
@@ -3756,15 +3781,19 @@ function App() {
                                 const isNearStrike = strikeDistancePct !== null && strikeDistancePct <= 0.02;
 
                                 return (
-                                  <div
+                                  <button
                                     key={row.id}
-                                    className={`risk-put-detail-row ${isNearStrike ? 'risk-put-detail-row-warning' : ''}`}
+                                    className={`risk-put-detail-row risk-put-detail-button ${isNearStrike ? 'risk-put-detail-row-warning' : ''}`}
+                                    type="button"
+                                    onClick={() => handleOpenPositionFromDashboard(row.id)}
                                   >
                                     <div className="risk-put-detail-main">
                                       <strong>{`$${row.put_strike.toFixed(2)} strike`}</strong>
                                       <small>{`${row.expiration_date} · ${row.contracts} 张`}</small>
                                     </div>
                                     <div className="risk-put-detail-grid">
+                                      <small>现价</small>
+                                      <strong>{currentPrice == null ? '-' : formatCurrency(currentPrice)}</strong>
                                       <small>距 Strike</small>
                                       <strong className={isNearStrike ? 'value-negative' : ''}>
                                         {strikeDistancePct === null
@@ -3780,7 +3809,7 @@ function App() {
                                         {formatSignedCurrency(row.unrealizedPnl)}
                                       </strong>
                                     </div>
-                                  </div>
+                                  </button>
                                 );
                               })}
                             </div>
@@ -5196,7 +5225,13 @@ function App() {
           ) : (
             <div className="position-list">
               {visiblePutRows.map((row) => (
-                <article key={row.id} className="position-card">
+                <article
+                  key={row.id}
+                  className="position-card"
+                  ref={(element) => {
+                    positionCardRefs.current[row.id] = element;
+                  }}
+                >
                   {(() => {
                     const optionPriceOverride = optionPriceOverrides[row.id];
                     const displayedOptionPrice = optionPriceOverride?.price ?? row.option_market_price_per_share ?? null;
