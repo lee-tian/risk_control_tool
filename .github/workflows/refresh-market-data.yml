@@ -1,0 +1,32 @@
+name: Refresh Market Data
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger background refresh endpoint
+        env:
+          CRON_REFRESH_URL: ${{ secrets.CRON_REFRESH_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_REFRESH_URL" ]; then
+            echo "Missing CRON_REFRESH_URL secret"
+            exit 1
+          fi
+
+          if [ -z "$CRON_SECRET" ]; then
+            echo "Missing CRON_SECRET secret"
+            exit 1
+          fi
+
+          curl --fail --show-error --silent \
+            -X POST \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            "$CRON_REFRESH_URL" \
+            -d '{"source":"github-actions","include_vix":true}'

@@ -26,6 +26,8 @@ const CURRENT_IV_TARGET_DELTA = Number(process.env.CURRENT_IV_TARGET_DELTA ?? 0.
 const CURRENT_IV_STRIKE_LIMIT = Number(process.env.CURRENT_IV_STRIKE_LIMIT ?? 8);
 const FEAR_GREED_CACHE_MS = Number(process.env.FEAR_GREED_CACHE_MS ?? 10 * 60 * 1000);
 const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS ?? 12000);
+const AUTO_PRICE_REFRESH_CHECK_MS = Number(process.env.AUTO_PRICE_REFRESH_CHECK_MS ?? 20 * 60 * 1000);
+const AUTO_OPTION_REFRESH_CHECK_MS = Number(process.env.AUTO_OPTION_REFRESH_CHECK_MS ?? 30 * 60 * 1000);
 const BARCHART_BASE_URL = 'https://www.barchart.com';
 const BARCHART_DEFAULT_PAGE = 'put-call-ratios';
 const BARCHART_BROWSER_HEADERS = {
@@ -595,6 +597,85 @@ function isFreshTimestamp(timestamp, ttlMs) {
 
   const value = new Date(timestamp).getTime();
   return Number.isFinite(value) && Date.now() - value < ttlMs;
+}
+
+function getLocalDateInput(date = new Date()) {
+  const offsetMs = date.getTimezoneOffset() * 60 * 1000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 10);
+}
+
+function isExpiredDateInput(expirationDate, now = new Date()) {
+  return typeof expirationDate === 'string' && expirationDate !== '' && expirationDate < getLocalDateInput(now);
+}
+
+function getNewYorkTimeParts(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  });
+
+  const parts = formatter.formatToParts(date);
+  const weekday = parts.find((part) => part.type === 'weekday')?.value ?? 'Mon';
+  const hour = Number(parts.find((part) => part.type === 'hour')?.value ?? '0');
+  const minute = Number(parts.find((part) => part.type === 'minute')?.value ?? '0');
+
+  return { weekday, hour, minute };
+}
+
+export function isUsMarketOpenEastern(date = new Date()) {
+  const { weekday, hour, minute } = getNewYorkTimeParts(date);
+
+  if (weekday === 'Sat' || weekday === 'Sun') {
+    return false;
+  }
+
+  const minutes = hour * 60 + minute;
+  const marketOpen = 9 * 60 + 30;
+  const marketClose = 16 * 60;
+  return minutes >= marketOpen && minutes < marketClose;
+}
+
+export function isRefreshStale(timestamp, ttlMs, now = Date.now()) {
+  if (typeof timestamp !== 'string' || timestamp === '') {
+    return true;
+  }
+
+  const value = new Date(timestamp).getTime();
+  return !Number.isFinite(value) || now - value >= ttlMs;
+}
+
+function getAuthorizationHeader(req) {
+  if (!req?.headers) {
+    return '';
+  }
+
+  if (typeof req.headers.get === 'function') {
+    return req.headers.get('authorization') ?? '';
+  }
+
+  const headerValue = req.headers.authorization;
+  if (Array.isArray(headerValue)) {
+    return headerValue[0] ?? '';
+  }
+
+  return typeof headerValue === 'string' ? headerValue : '';
+}
+
+function requireCronAuthorization(req) {
+  const secret = (process.env.CRON_SECRET ?? '').trim();
+  if (secret === '') {
+    return { ok: false, status: 500, error: 'CRON_SECRET is not configured' };
+  }
+
+  const authorization = getAuthorizationHeader(req);
+  if (authorization !== `Bearer ${secret}`) {
+    return { ok: false, status: 401, error: 'Unauthorized' };
+  }
+
+  return { ok: true };
 }
 
 async function readJsonBody(req) {
@@ -2414,6 +2495,281 @@ async function fetchQuoteBundle(requestItem) {
   };
 }
 
+async function computeVixSnapshot() {
+  const todayKey = getDateKey();
+  const cached = await loadVixCache();
+  const storageTarget = describeStorageTarget();
+  let vixValue = cached && cached.fetched_on === todayKey && typeof cached.value === 'number' ? cached.value : null;
+  let vixAsOf = cached && typeof cached.as_of === 'string' ? cached.as_of : null;
+
+  if (vixValue === null || vixAsOf === null || cached?.fetched_on !== todayKey) {
+    const dailyClose = await fetchLatestOfficialVixDailyClose();
+    vixValue = dailyClose.value;
+    vixAsOf = dailyClose.asOf;
+  }
+
+  let fearGreedScore =
+    cached && typeof cached.fear_greed_score === 'number' ? cached.fear_greed_score : null;
+  let fearGreedRating =
+    cached && typeof cached.fear_greed_rating === 'string' ? cached.fear_greed_rating : null;
+  let fearGreedFetchedAt =
+    cached && typeof cached.fear_greed_fetched_at === 'string' ? cached.fear_greed_fetched_at : null;
+  let fearGreedStatus =
+    fearGreedScore !== null && fearGreedFetchedAt && isFreshTimestamp(fearGreedFetchedAt, FEAR_GREED_CACHE_MS)
+      ? 'cached'
+      : fearGreedScore !== null
+        ? 'stale-cache'
+        : 'no-cache';
+  let fearGreedError = null;
+
+  if (!isFreshTimestamp(fearGreedFetchedAt, FEAR_GREED_CACHE_MS)) {
+    try {
+      const fetchedFearGreed = await fetchFearGreedIndex();
+      fearGreedScore = fetchedFearGreed.score;
+      fearGreedRating = fetchedFearGreed.rating;
+      fearGreedFetchedAt = new Date().toISOString();
+      fearGreedStatus = 'fetched-live';
+    } catch (error) {
+      fearGreedError = error instanceof Error ? error.message : 'Failed to fetch CNN Fear & Greed Index';
+      fearGreedStatus = fearGreedScore !== null ? 'fetch-failed-used-cache' : 'fetch-failed-no-cache';
+    }
+  }
+
+  let cacheWriteOk = true;
+  let cacheWriteError = null;
+  try {
+    await saveVixCache({
+      fetched_on: todayKey,
+      value: vixValue,
+      as_of: vixAsOf,
+      fear_greed_score: fearGreedScore,
+      fear_greed_rating: fearGreedRating,
+      fear_greed_fetched_at: fearGreedFetchedAt
+    });
+  } catch (error) {
+    cacheWriteOk = false;
+    cacheWriteError = error instanceof Error ? error.message : 'Failed to save VIX cache';
+  }
+
+  return {
+    value: vixValue,
+    as_of: vixAsOf,
+    source: 'Cboe official daily close',
+    cached: true,
+    fear_greed_score: fearGreedScore,
+    fear_greed_rating: fearGreedRating,
+    fear_greed_status: fearGreedStatus,
+    fear_greed_error: fearGreedError,
+    storage_driver: storageTarget.driver,
+    cache_write_ok: cacheWriteOk,
+    cache_write_error: cacheWriteError
+  };
+}
+
+function coerceSnapshot(snapshot, now = new Date()) {
+  const exportedAt = now.toISOString();
+  const data = typeof snapshot?.data === 'object' && snapshot.data !== null ? snapshot.data : {};
+
+  return {
+    version: 1,
+    exported_at: typeof snapshot?.exported_at === 'string' ? snapshot.exported_at : exportedAt,
+    data: {
+      config: data.config ?? null,
+      puts: Array.isArray(data.puts) ? data.puts : [],
+      closedTrades: Array.isArray(data.closedTrades) ? data.closedTrades : [],
+      tickerList: Array.isArray(data.tickerList) ? data.tickerList : [],
+      scenario: data.scenario ?? null,
+      vixHistory: Array.isArray(data.vixHistory) ? data.vixHistory : []
+    }
+  };
+}
+
+export async function refreshAppStateSnapshot(
+  snapshot,
+  {
+    now = new Date(),
+    force = false,
+    includeVix = true,
+    fetchQuoteBundleFn = fetchQuoteBundle,
+    fetchCurrentOptionQuoteFn = fetchCurrentOptionQuote,
+    refreshVixFn = computeVixSnapshot,
+    sleepFn = sleep
+  } = {}
+) {
+  const normalizedSnapshot = coerceSnapshot(snapshot, now);
+  const marketOpen = isUsMarketOpenEastern(now);
+  const nowIso = now.toISOString();
+  const nowMs = now.getTime();
+  const nextTickerList = normalizedSnapshot.data.tickerList.map((entry) => ({ ...entry }));
+  const nextPuts = normalizedSnapshot.data.puts.map((position) => ({ ...position }));
+  const tickerResults = [];
+  const optionResults = [];
+
+  if (marketOpen || force) {
+    for (let index = 0; index < nextTickerList.length; index += 1) {
+      const entry = nextTickerList[index];
+      if (typeof entry?.ticker !== 'string' || entry.ticker.trim() === '') {
+        continue;
+      }
+
+      if (!force && !isRefreshStale(entry.last_updated ?? null, AUTO_PRICE_REFRESH_CHECK_MS, nowMs)) {
+        continue;
+      }
+
+      try {
+        const { quoteResult, rsiResult, rsi1hResult, ma21Result, ma200Result, currentIvResult, marketMetricsResult } =
+          await fetchQuoteBundleFn({
+            symbol: entry.ticker,
+            exchange: entry.provider_exchange ?? null,
+            mic_code: entry.provider_mic_code ?? null,
+            include_market_metrics: true
+          });
+
+        const updatedAt =
+          quoteResult.ok && typeof quoteResult.as_of === 'string' && quoteResult.as_of !== ''
+            ? quoteResult.as_of
+            : nowIso;
+
+        if (quoteResult.ok) {
+          entry.current_price = quoteResult.price;
+          entry.last_updated = updatedAt;
+        }
+        if (rsiResult.ok) {
+          entry.rsi_14 = rsiResult.rsi;
+          entry.rsi_updated = updatedAt;
+        }
+        if (rsi1hResult.ok) {
+          entry.rsi_14_1h = rsi1hResult.rsi;
+          entry.rsi_updated = updatedAt;
+        }
+        if (ma21Result.ok) {
+          entry.ma_21 = ma21Result.sma;
+        }
+        if (ma200Result.ok) {
+          entry.ma_200 = ma200Result.sma;
+        }
+        if (currentIvResult.ok && typeof currentIvResult.currentIv === 'number') {
+          entry.current_iv = currentIvResult.currentIv;
+          entry.current_iv_updated = updatedAt;
+        }
+        if (marketMetricsResult.ok && marketMetricsResult.marketMetrics) {
+          const marketMetrics = marketMetricsResult.marketMetrics;
+          if (typeof marketMetrics.next_earnings_date === 'string' && marketMetrics.next_earnings_date !== '') {
+            entry.next_earnings_date = marketMetrics.next_earnings_date;
+          }
+          if (typeof marketMetrics.historical_iv === 'number') {
+            entry.historical_iv = marketMetrics.historical_iv;
+          }
+          if (typeof marketMetrics.iv_rank === 'number') {
+            entry.iv_rank = marketMetrics.iv_rank;
+          }
+          if (typeof marketMetrics.iv_percentile === 'number') {
+            entry.iv_percentile = marketMetrics.iv_percentile;
+          }
+          if (typeof marketMetrics.put_call_ratio === 'number') {
+            entry.put_call_ratio = marketMetrics.put_call_ratio;
+            entry.put_call_ratio_updated = updatedAt;
+          }
+        }
+
+        tickerResults.push({
+          ticker: entry.ticker,
+          ok: true
+        });
+      } catch (error) {
+        tickerResults.push({
+          ticker: entry.ticker,
+          ok: false,
+          message: error instanceof Error ? error.message : 'Ticker refresh failed'
+        });
+      }
+
+      if (index < nextTickerList.length - 1) {
+        await sleepFn(REQUEST_GAP_MS);
+      }
+    }
+
+    for (let index = 0; index < nextPuts.length; index += 1) {
+      const position = nextPuts[index];
+      if (
+        typeof position?.ticker !== 'string' ||
+        position.ticker.trim() === '' ||
+        isExpiredDateInput(position.expiration_date ?? '', now)
+      ) {
+        continue;
+      }
+
+      if (
+        !force &&
+        !isRefreshStale(position.option_market_price_updated ?? null, AUTO_OPTION_REFRESH_CHECK_MS, nowMs)
+      ) {
+        continue;
+      }
+
+      try {
+        const optionQuote = await fetchCurrentOptionQuoteFn(
+          position.ticker,
+          position.expiration_date,
+          position.put_strike,
+          position.option_side === 'call' ? 'call' : 'put'
+        );
+        position.option_market_price_per_share = optionQuote.price;
+        position.option_market_price_updated = nowIso;
+        position.option_theta_per_share = optionQuote.theta;
+        optionResults.push({
+          id: position.id,
+          ticker: position.ticker,
+          ok: true
+        });
+      } catch (error) {
+        optionResults.push({
+          id: position.id,
+          ticker: position.ticker,
+          ok: false,
+          message: error instanceof Error ? error.message : 'Option refresh failed'
+        });
+      }
+
+      if (index < nextPuts.length - 1) {
+        await sleepFn(REQUEST_GAP_MS);
+      }
+    }
+  }
+
+  let vixResult = null;
+  if (includeVix) {
+    try {
+      vixResult = await refreshVixFn();
+    } catch (error) {
+      vixResult = {
+        error: error instanceof Error ? error.message : 'Failed to refresh VIX cache'
+      };
+    }
+  }
+
+  const updatedSnapshot = {
+    ...normalizedSnapshot,
+    exported_at: nowIso,
+    data: {
+      ...normalizedSnapshot.data,
+      tickerList: nextTickerList,
+      puts: nextPuts
+    }
+  };
+
+  return {
+    snapshot: updatedSnapshot,
+    marketOpen,
+    force,
+    includeVix,
+    tickerResults,
+    optionResults,
+    vixResult,
+    refreshedTickers: tickerResults.filter((item) => item.ok).length,
+    refreshedOptions: optionResults.filter((item) => item.ok).length
+  };
+}
+
 export async function handleApiRequest(req, res) {
   if (!req.url) {
     sendJson(res, 400, { error: 'Missing URL' });
@@ -2485,76 +2841,51 @@ export async function handleApiRequest(req, res) {
 
   if (url.pathname === '/api/vix' && req.method === 'GET') {
     try {
-      const todayKey = getDateKey();
-      const cached = await loadVixCache();
-      const storageTarget = describeStorageTarget();
-      let vixValue = cached && cached.fetched_on === todayKey && typeof cached.value === 'number' ? cached.value : null;
-      let vixAsOf = cached && typeof cached.as_of === 'string' ? cached.as_of : null;
-
-      if (vixValue === null || vixAsOf === null || cached?.fetched_on !== todayKey) {
-        const dailyClose = await fetchLatestOfficialVixDailyClose();
-        vixValue = dailyClose.value;
-        vixAsOf = dailyClose.asOf;
-      }
-
-      let fearGreedScore =
-        cached && typeof cached.fear_greed_score === 'number' ? cached.fear_greed_score : null;
-      let fearGreedRating =
-        cached && typeof cached.fear_greed_rating === 'string' ? cached.fear_greed_rating : null;
-      let fearGreedFetchedAt =
-        cached && typeof cached.fear_greed_fetched_at === 'string' ? cached.fear_greed_fetched_at : null;
-      let fearGreedStatus =
-        fearGreedScore !== null && fearGreedFetchedAt && isFreshTimestamp(fearGreedFetchedAt, FEAR_GREED_CACHE_MS)
-          ? 'cached'
-          : fearGreedScore !== null
-            ? 'stale-cache'
-            : 'no-cache';
-      let fearGreedError = null;
-
-      if (!isFreshTimestamp(fearGreedFetchedAt, FEAR_GREED_CACHE_MS)) {
-        try {
-          const fetchedFearGreed = await fetchFearGreedIndex();
-          fearGreedScore = fetchedFearGreed.score;
-          fearGreedRating = fetchedFearGreed.rating;
-          fearGreedFetchedAt = new Date().toISOString();
-          fearGreedStatus = 'fetched-live';
-        } catch (error) {
-          fearGreedError = error instanceof Error ? error.message : 'Failed to fetch CNN Fear & Greed Index';
-          fearGreedStatus = fearGreedScore !== null ? 'fetch-failed-used-cache' : 'fetch-failed-no-cache';
-        }
-      }
-
-      let cacheWriteOk = true;
-      let cacheWriteError = null;
-      try {
-        await saveVixCache({
-          fetched_on: todayKey,
-          value: vixValue,
-          as_of: vixAsOf,
-          fear_greed_score: fearGreedScore,
-          fear_greed_rating: fearGreedRating,
-          fear_greed_fetched_at: fearGreedFetchedAt
-        });
-      } catch (error) {
-        cacheWriteOk = false;
-        cacheWriteError = error instanceof Error ? error.message : 'Failed to save VIX cache';
-      }
-      sendJson(res, 200, {
-        value: vixValue,
-        as_of: vixAsOf,
-        source: 'Cboe official daily close',
-        cached: true,
-        fear_greed_score: fearGreedScore,
-        fear_greed_rating: fearGreedRating,
-        fear_greed_status: fearGreedStatus,
-        fear_greed_error: fearGreedError,
-        storage_driver: storageTarget.driver,
-        cache_write_ok: cacheWriteOk,
-        cache_write_error: cacheWriteError
-      });
+      const snapshot = await computeVixSnapshot();
+      sendJson(res, 200, snapshot);
     } catch (error) {
       sendJson(res, 502, {
         error: error instanceof Error ? error.message : 'Failed to fetch VIX'
+      });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/cron/refresh-market-data' && (req.method === 'GET' || req.method === 'POST')) {
+    const auth = requireCronAuthorization(req);
+    if (!auth.ok) {
+      sendJson(res, auth.status, { error: auth.error });
+      return;
+    }
+
+    try {
+      const payload = req.method === 'POST' ? await readJsonBody(req) : {};
+      const force = (url.searchParams.get('force') ?? payload.force ?? '') === 'true' || payload.force === true;
+      const includeVix = !((url.searchParams.get('include_vix') ?? payload.include_vix ?? '') === 'false' || payload.include_vix === false);
+      const snapshot = await loadSavedSnapshot();
+      const refreshResult = await refreshAppStateSnapshot(snapshot, {
+        force,
+        includeVix
+      });
+      await saveSnapshot(refreshResult.snapshot);
+
+      sendJson(res, 200, {
+        ok: true,
+        ran_at: new Date().toISOString(),
+        market_open: refreshResult.marketOpen,
+        force,
+        include_vix: includeVix,
+        refreshed_tickers: refreshResult.refreshedTickers,
+        refreshed_options: refreshResult.refreshedOptions,
+        ticker_failures: refreshResult.tickerResults.filter((item) => !item.ok),
+        option_failures: refreshResult.optionResults.filter((item) => !item.ok),
+        vix_result: refreshResult.vixResult,
+        storage: describeStorageTarget()
+      });
+    } catch (error) {
+      sendJson(res, 500, {
+        ok: false,
+        error: error instanceof Error ? error.message : 'Failed to refresh market data'
       });
     }
     return;
