@@ -1,0 +1,8 @@
+.env
+
+# Local dependencies and caches
+node_modules/
+.vite/
+
+# Local runtime data
+data/*.json
