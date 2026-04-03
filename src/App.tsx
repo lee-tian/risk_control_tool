@@ -3931,19 +3931,18 @@ function App() {
         const snapshot = parseAppStateSnapshot(raw);
         setConfig(snapshot.data.config);
         setConfigForm(snapshot.data.config ?? DEFAULT_CONFIG);
+        setConfigErrors({});
         setPuts(snapshot.data.puts);
         setClosedTrades(snapshot.data.closedTrades);
         setStockTrades(snapshot.data.stockTrades);
-        setTickerList(
-          filterDeletedTickers(
-            snapshot.data.tickerList,
-            deletedTickers.filter((item) => !snapshot.data.tickerList.some((entry) => entry.ticker === item))
-          )
-        );
-        setDeletedTickers((current) => current.filter((item) => !snapshot.data.tickerList.some((entry) => entry.ticker === item)));
+        setAccountValueHistory(snapshot.data.accountValueHistory);
+        setTickerList(snapshot.data.tickerList);
+        setDeletedTickers([]);
+        setDeletedPositionIds([]);
         setScenario(snapshot.data.scenario ?? DEFAULT_STRESS_SCENARIO);
         setVixHistory(mergeSeededVixHistory(snapshot.data.vixHistory));
-        setImportExportMessage('股票与期权数据导入成功');
+        hasLoadedRemoteSnapshotRef.current = true;
+        setImportExportMessage('股票、期权、现金配置与历史记录导入成功');
       } catch {
         const payload = parsePutPositionsImportPayload(raw);
         const imported = applyPutPositionsImportPayload(payload);
