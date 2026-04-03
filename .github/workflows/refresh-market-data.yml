@@ -1,8 +1,6 @@
 name: Refresh Market Data
 
 on:
-  schedule:
-    - cron: '30 16-22 * * 1-5'
   workflow_dispatch:
     inputs:
       force_refresh:
