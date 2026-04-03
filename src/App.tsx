@@ -3841,7 +3841,7 @@ function App() {
 
   function handleExportData() {
     const payload = buildAppStateSnapshot({
-      config,
+      config: configForm ?? config,
       puts,
       closedTrades,
       stockTrades,
