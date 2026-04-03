@@ -4458,6 +4458,19 @@ function App() {
                   <strong className={riskCalculator.totalNetChange > 0 ? 'value-positive' : riskCalculator.totalNetChange < 0 ? 'value-negative' : ''}>
                     {formatSignedCurrency(riskCalculator.totalNetChange)}
                   </strong>
+                  <small
+                    className={
+                      riskCalculator.capitalBase > 0 && riskCalculator.totalNetChange > 0
+                        ? 'value-positive'
+                        : riskCalculator.capitalBase > 0 && riskCalculator.totalNetChange < 0
+                          ? 'value-negative'
+                          : ''
+                    }
+                  >
+                    {riskCalculator.capitalBase > 0
+                      ? `${formatSignedPercent(riskCalculator.totalNetChange / riskCalculator.capitalBase)} vs total capital`
+                      : '总资金基线不足'}
+                  </small>
                 </div>
                 <div className="trend-summary-item">
                   <span>变化幅度 %</span>

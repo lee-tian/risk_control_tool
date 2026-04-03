@@ -1367,19 +1367,22 @@ tbody tr:hover td {
 }
 
 .stock-holding-summary-strip {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-top: 4px;
+  align-items: center;
 }
 
 .stock-holding-summary-strip span {
-  display: grid;
-  gap: 2px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  white-space: nowrap;
 }
 
 .stock-holding-summary-strip small {
-  font-size: 0.74rem;
+  font-size: 0.76rem;
   color: #6b7f92;
 }
 
@@ -1494,8 +1497,7 @@ tbody tr:hover td {
   }
 
   .stock-holding-summary-strip {
-    grid-template-columns: 1fr;
-    gap: 6px;
+    gap: 6px 12px;
   }
 }
 
@@ -1960,6 +1962,11 @@ tbody tr:hover td {
   font-size: 1.08rem;
   color: #0f172a;
   letter-spacing: -0.02em;
+}
+
+.trend-summary-item small {
+  font-size: 0.76rem;
+  color: #64748b;
 }
 
 .trend-chart {
