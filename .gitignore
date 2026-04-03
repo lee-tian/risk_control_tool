@@ -3,6 +3,8 @@
 # Local dependencies and caches
 node_modules/
 .vite/
+dist/
+*.tsbuildinfo
 
 # Local runtime data
 data/*.json

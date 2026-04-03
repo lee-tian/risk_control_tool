@@ -609,6 +609,30 @@ async function saveRefreshStatusSafely(payload) {
   }
 }
 
+function shouldPersistProgressStatus(status, lastCompletedSteps) {
+  if (!status || typeof status !== 'object') {
+    return false;
+  }
+
+  const completedSteps = Number.isFinite(status.completed_steps) ? status.completed_steps : 0;
+  const totalSteps = Number.isFinite(status.total_steps) ? status.total_steps : 0;
+  const label = typeof status.current_label === 'string' ? status.current_label : '';
+
+  if (completedSteps <= 0) {
+    return false;
+  }
+
+  if (completedSteps >= totalSteps && totalSteps > 0) {
+    return true;
+  }
+
+  if (completedSteps - lastCompletedSteps >= 10) {
+    return true;
+  }
+
+  return /VIX|Fear & Greed/iu.test(label);
+}
+
 function isFreshTimestamp(timestamp, ttlMs) {
   if (typeof timestamp !== 'string' || timestamp === '') {
     return false;
@@ -3049,11 +3073,17 @@ export async function handleApiRequest(req, res) {
         error: null
       });
       const snapshot = await loadSavedSnapshot();
+      let lastSavedProgressStep = 0;
       const refreshResult = await refreshAppStateSnapshot(snapshot, {
         force,
         includeVix,
         source,
         onProgress: async (status) => {
+          if (!shouldPersistProgressStatus(status, lastSavedProgressStep)) {
+            return;
+          }
+
+          lastSavedProgressStep = Number.isFinite(status.completed_steps) ? status.completed_steps : lastSavedProgressStep;
           await saveRefreshStatusSafely(status);
         }
       });
