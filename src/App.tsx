@@ -4202,6 +4202,8 @@ function App() {
                                 <div className="stock-holding-grid">
                                   <small>现价</small>
                                   <strong>{holding.currentPrice == null ? '-' : formatCurrency(holding.currentPrice)}</strong>
+                                  <small>持仓均价</small>
+                                  <strong>{holding.averageCost == null ? '-' : formatCurrency(holding.averageCost)}</strong>
                                   <small>Stock Risk</small>
                                   <strong>{formatCurrency(holding.stockRisk)}</strong>
                                   <small>股票盈亏</small>
@@ -4294,6 +4296,8 @@ function App() {
                                             <div className="risk-put-detail-grid">
                                               <small>现价</small>
                                               <strong>{currentPrice == null ? '-' : formatCurrency(currentPrice)}</strong>
+                                              <small>Break Even</small>
+                                              <strong>{formatCurrency(row.put_strike - row.premium_per_share)}</strong>
                                               <small>距 Strike</small>
                                               <strong className={isItm || isNearStrike ? 'value-negative' : ''}>
                                                 {strikeDistancePct === null
@@ -4398,6 +4402,8 @@ function App() {
                                             <div className="risk-put-detail-grid">
                                               <small>现价</small>
                                               <strong>{holding.currentPrice == null ? '-' : formatCurrency(holding.currentPrice)}</strong>
+                                              <small>Break Even</small>
+                                              <strong>{formatCurrency(row.put_strike + row.premium_per_share)}</strong>
                                               <small>距 Strike</small>
                                               <strong className={isItm || isNearStrike ? 'value-negative' : ''}>
                                                 {strikeDistancePct === null
