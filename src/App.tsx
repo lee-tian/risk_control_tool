@@ -3888,11 +3888,6 @@ function App() {
       : `${riskCurveLinePath} L ${riskCurvePointsChart[riskCurvePointsChart.length - 1].x.toFixed(2)} ${(chartTop + plotHeight).toFixed(2)} L ${riskCurvePointsChart[0].x.toFixed(2)} ${(chartTop + plotHeight).toFixed(2)} Z`;
   const riskCurveMinScenarioPct = riskCurvePoints[0]?.scenarioPct ?? -0.3;
   const riskCurveMaxScenarioPct = riskCurvePoints[riskCurvePoints.length - 1]?.scenarioPct ?? 0.3;
-  const riskCurveAlarmCapital = Math.max(riskCalculator.capitalBase - metrics.riskLimitAmount, 0);
-  const riskCurveAlarmY =
-    riskCurveRange > 0
-      ? chartTop + ((riskCurveMaxCapital - riskCurveAlarmCapital) / riskCurveRange) * plotHeight
-      : chartTop + plotHeight / 2;
   const currentRiskCurvePoint = (() => {
     const capital = riskCalculator.scenarioCapital;
     const clampedPct = Math.min(Math.max(riskCalculatorDropPct, -1), 1);
@@ -4329,15 +4324,25 @@ function App() {
             <div className="trend-card risk-curve-card">
               <div className="trend-summary">
                 <div className="trend-summary-item">
-                  <span>当前总资金</span>
-                  <strong>{formatCurrency(riskCalculator.capitalBase)}</strong>
+                  <span>情景盈亏</span>
+                  <strong className={riskCalculator.totalNetChange > 0 ? 'value-positive' : riskCalculator.totalNetChange < 0 ? 'value-negative' : ''}>
+                    {formatSignedCurrency(riskCalculator.totalNetChange)}
+                  </strong>
                 </div>
                 <div className="trend-summary-item">
-                  <span>Risk limit 警戒线</span>
-                  <strong>{formatCurrency(riskCurveAlarmCapital)}</strong>
+                  <span>变化幅度 %</span>
+                  <input
+                    className="trend-summary-input"
+                    type="number"
+                    min="-30"
+                    max="30"
+                    step="1"
+                    value={riskCalculatorDropInput}
+                    onChange={(event) => setRiskCalculatorDropInput(event.target.value)}
+                  />
                 </div>
                 <div className="trend-summary-item">
-                  <span>当前情景总资金</span>
+                  <span>{`变化${formatSignedPercent(riskCalculator.scenarioPct)} 情景总资金`}</span>
                   <strong>{formatCurrency(riskCalculator.scenarioCapital)}</strong>
                 </div>
               </div>
@@ -4365,10 +4370,6 @@ function App() {
                     </g>
                   );
                 })}
-                <line x1={chartLeft} y1={riskCurveAlarmY} x2={chartLeft + plotWidth} y2={riskCurveAlarmY} className="risk-curve-alarm-line" />
-                <text x={chartLeft + plotWidth - 6} y={riskCurveAlarmY - 6} textAnchor="end" className="risk-curve-alarm-label">
-                  Risk limit line
-                </text>
                 {[riskCurveMaxCapital, riskCalculator.capitalBase, riskCurveMinCapital].map((capital, index) => {
                   const y = chartTop + ((riskCurveMaxCapital - capital) / riskCurveRange) * plotHeight;
                   return (
@@ -4408,7 +4409,7 @@ function App() {
                 </text>
               </svg>
               <div className="trend-footnote">
-                横轴范围固定为 -30% 到 +30%。红色虚线表示按当前 Risk limit 计算的资金警戒线；黄色圆点表示你当前输入情景对应的总资金。
+                横轴范围固定为 -30% 到 +30%。黄色圆点表示你当前输入情景对应的总资金。
               </div>
             </div>
 

@@ -2038,16 +2038,20 @@ tbody tr:hover td {
   fill: url(#riskCurveFill);
 }
 
-.risk-curve-alarm-line {
-  stroke: rgba(225, 29, 72, 0.9);
-  stroke-width: 1.75;
-  stroke-dasharray: 5 5;
+.trend-summary-input {
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 12px;
+  padding: 0.55rem 0.75rem;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.94);
 }
 
-.risk-curve-alarm-label {
-  fill: #be123c;
-  font-size: 10px;
-  font-weight: 700;
+.trend-summary-input:focus {
+  outline: 2px solid rgba(37, 99, 235, 0.18);
+  border-color: rgba(37, 99, 235, 0.42);
 }
 
 .trend-point.green,
