@@ -31,8 +31,10 @@ describe('refreshAppStateSnapshot', () => {
         data: {
           config: null,
           closedTrades: [],
+          stockTrades: [],
           scenario: null,
           vixHistory: [],
+          accountValueHistory: [],
           tickerList: [
             {
               ticker: 'AAPL',
@@ -109,6 +111,7 @@ describe('refreshAppStateSnapshot', () => {
     expect(result.refreshedOptions).toBe(1);
     expect(result.snapshot.data.tickerList[0]).toMatchObject({
       current_price: 201.25,
+      last_updated: '2026-04-01T15:00:00.000Z',
       rsi_14: 48.5,
       rsi_14_1h: 61.2,
       ma_21: 198.4,
@@ -122,8 +125,15 @@ describe('refreshAppStateSnapshot', () => {
     });
     expect(result.snapshot.data.puts[0]).toMatchObject({
       option_market_price_per_share: 2.15,
+      option_market_price_updated: '2026-04-01T15:00:00.000Z',
       option_theta_per_share: -0.07
     });
+    expect(result.snapshot.data.accountValueHistory).toEqual([
+      expect.objectContaining({
+        date: '2026-04-01',
+        total_capital: 20340
+      })
+    ]);
   });
 
   it('skips ticker and option refresh when the market is closed unless forced', async () => {
@@ -137,8 +147,10 @@ describe('refreshAppStateSnapshot', () => {
         data: {
           config: null,
           closedTrades: [],
+          stockTrades: [],
           scenario: null,
           vixHistory: [],
+          accountValueHistory: [],
           tickerList: [
             {
               ticker: 'MSFT',

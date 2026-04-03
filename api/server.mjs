@@ -2587,11 +2587,65 @@ function coerceSnapshot(snapshot, now = new Date()) {
       config: data.config ?? null,
       puts: Array.isArray(data.puts) ? data.puts : [],
       closedTrades: Array.isArray(data.closedTrades) ? data.closedTrades : [],
+      stockTrades: Array.isArray(data.stockTrades) ? data.stockTrades : [],
       tickerList: Array.isArray(data.tickerList) ? data.tickerList : [],
       scenario: data.scenario ?? null,
-      vixHistory: Array.isArray(data.vixHistory) ? data.vixHistory : []
+      vixHistory: Array.isArray(data.vixHistory) ? data.vixHistory : [],
+      accountValueHistory: Array.isArray(data.accountValueHistory) ? data.accountValueHistory : []
     }
   };
+}
+
+function computeSnapshotTotalCapital(snapshotData) {
+  const cash = typeof snapshotData?.config?.cash === 'number' ? snapshotData.config.cash : 0;
+  const stockValue = Array.isArray(snapshotData?.tickerList)
+    ? snapshotData.tickerList.reduce((sum, entry) => {
+        const shares = typeof entry?.shares === 'number' ? entry.shares : 0;
+        const currentPrice = typeof entry?.current_price === 'number' ? entry.current_price : 0;
+        return sum + shares * currentPrice;
+      }, 0)
+    : 0;
+  const optionValue = Array.isArray(snapshotData?.puts)
+    ? snapshotData.puts.reduce((sum, position) => {
+        const marketPrice = typeof position?.option_market_price_per_share === 'number'
+          ? position.option_market_price_per_share
+          : 0;
+        const contracts = typeof position?.contracts === 'number' ? position.contracts : 0;
+        return sum + marketPrice * contracts * 100;
+      }, 0)
+    : 0;
+
+  return cash + stockValue + optionValue;
+}
+
+function upsertDailyAccountValueHistory(history, totalCapital, now = new Date()) {
+  if (!Number.isFinite(totalCapital) || totalCapital <= 0) {
+    return Array.isArray(history) ? history : [];
+  }
+
+  const date = getLocalDateInput(now);
+  const asOf = now.toISOString();
+  const normalized = Array.isArray(history) ? [...history] : [];
+  const index = normalized.findIndex((item) => typeof item?.date === 'string' && item.date === date);
+  const nextEntry = {
+    date,
+    total_capital: totalCapital,
+    as_of: asOf
+  };
+
+  if (index >= 0) {
+    normalized[index] = nextEntry;
+  } else {
+    normalized.push(nextEntry);
+  }
+
+  return normalized.sort((a, b) => {
+    const dateCompare = String(a?.date ?? '').localeCompare(String(b?.date ?? ''));
+    if (dateCompare !== 0) {
+      return dateCompare;
+    }
+    return String(a?.as_of ?? '').localeCompare(String(b?.as_of ?? ''));
+  });
 }
 
 export async function refreshAppStateSnapshot(
@@ -2687,11 +2741,7 @@ export async function refreshAppStateSnapshot(
             mic_code: entry.provider_mic_code ?? null,
             include_market_metrics: true
           });
-
-        const updatedAt =
-          quoteResult.ok && typeof quoteResult.as_of === 'string' && quoteResult.as_of !== ''
-            ? quoteResult.as_of
-            : nowIso;
+        const updatedAt = nowIso;
 
         if (quoteResult.ok) {
           entry.current_price = quoteResult.price;
@@ -2823,7 +2873,16 @@ export async function refreshAppStateSnapshot(
     data: {
       ...normalizedSnapshot.data,
       tickerList: nextTickerList,
-      puts: nextPuts
+      puts: nextPuts,
+      accountValueHistory: upsertDailyAccountValueHistory(
+        normalizedSnapshot.data.accountValueHistory,
+        computeSnapshotTotalCapital({
+          ...normalizedSnapshot.data,
+          tickerList: nextTickerList,
+          puts: nextPuts
+        }),
+        now
+      )
     }
   };
 

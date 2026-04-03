@@ -1,10 +1,12 @@
 import type {
+  AccountValueSnapshot,
   AppStateSnapshot,
   ClosedPutTrade,
   Config,
   PutPosition,
   PutPositionsExportPayload,
   RiskScorePoint,
+  StockTradeHistory,
   StressMode,
   StressScenario,
   TickerEntry,
@@ -18,10 +20,12 @@ const STORAGE_KEYS = {
   tickerList: 'risk-tool-ticker-list',
   deletedTickers: 'risk-tool-deleted-tickers',
   closedTrades: 'risk-tool-closed-trades',
+  stockTrades: 'risk-tool-stock-trades',
   scenario: 'risk-tool-scenario',
   stressMode: 'risk-tool-stress-mode',
   scoreHistory: 'risk-tool-score-history',
-  vixHistory: 'risk-tool-vix-history'
+  vixHistory: 'risk-tool-vix-history',
+  accountValueHistory: 'risk-tool-account-value-history'
 } as const;
 
 const DEFAULT_BETA_BY_TICKER: Record<string, number> = {
@@ -224,17 +228,34 @@ export function reconcileHydratedOpenPositions(
 }
 
 export function mergePutPositionsPreservingLocal(snapshotPuts: PutPosition[], localPuts: PutPosition[]): PutPosition[] {
+  const snapshotById = new Map(snapshotPuts.filter((put) => put.id !== '').map((put) => [put.id, put]));
+  const localById = new Map(localPuts.filter((put) => put.id !== '').map((put) => [put.id, put]));
   const mergedById = new Map<string, PutPosition>();
 
-  for (const put of snapshotPuts) {
-    if (put.id !== '') {
-      mergedById.set(put.id, put);
-    }
-  }
+  for (const id of new Set([...snapshotById.keys(), ...localById.keys()])) {
+    const snapshotPut = snapshotById.get(id);
+    const localPut = localById.get(id);
 
-  for (const put of localPuts) {
-    if (put.id !== '') {
-      mergedById.set(put.id, put);
+    if (snapshotPut && localPut) {
+      mergedById.set(id, {
+        ...snapshotPut,
+        ...localPut,
+        option_market_price_per_share: snapshotPut.option_market_price_per_share ?? localPut.option_market_price_per_share,
+        option_market_price_updated: snapshotPut.option_market_price_updated ?? localPut.option_market_price_updated,
+        option_theta_per_share: snapshotPut.option_theta_per_share ?? localPut.option_theta_per_share,
+        decision_rationale: localPut.decision_rationale || snapshotPut.decision_rationale,
+        decision_snapshot: snapshotPut.decision_snapshot ?? localPut.decision_snapshot
+      });
+      continue;
+    }
+
+    if (snapshotPut) {
+      mergedById.set(id, snapshotPut);
+      continue;
+    }
+
+    if (localPut) {
+      mergedById.set(id, localPut);
     }
   }
 
@@ -281,6 +302,44 @@ export function loadClosedTrades(): ClosedPutTrade[] {
 
 export function saveClosedTrades(trades: ClosedPutTrade[]): void {
   saveJson(STORAGE_KEYS.closedTrades, trades);
+}
+
+export function loadStockTrades(): StockTradeHistory[] {
+  const rawTrades = loadJson<Array<Record<string, unknown>>>(STORAGE_KEYS.stockTrades, []);
+
+  return rawTrades
+    .map<StockTradeHistory>((trade) => ({
+      id: typeof trade.id === 'string' ? trade.id : '',
+      ticker: typeof trade.ticker === 'string' ? trade.ticker.trim().toUpperCase() : '',
+      action: trade.action === 'buy' ? 'buy' : 'sell',
+      shares: typeof trade.shares === 'number' ? trade.shares : 0,
+      price_per_share: typeof trade.price_per_share === 'number' ? trade.price_per_share : 0,
+      traded_at: typeof trade.traded_at === 'string' ? trade.traded_at : '',
+      cash_change: typeof trade.cash_change === 'number' ? trade.cash_change : 0,
+      realized_pnl: typeof trade.realized_pnl === 'number' ? trade.realized_pnl : 0
+    }))
+    .filter((trade) => trade.id !== '' && trade.ticker !== '' && trade.traded_at !== '');
+}
+
+export function saveStockTrades(trades: StockTradeHistory[]): void {
+  saveJson(STORAGE_KEYS.stockTrades, trades);
+}
+
+export function mergeStockTradesPreservingLocal(
+  snapshotTrades: StockTradeHistory[],
+  localTrades: StockTradeHistory[]
+): StockTradeHistory[] {
+  const mergedById = new Map<string, StockTradeHistory>();
+
+  for (const trade of snapshotTrades) {
+    mergedById.set(trade.id, trade);
+  }
+
+  for (const trade of localTrades) {
+    mergedById.set(trade.id, trade);
+  }
+
+  return [...mergedById.values()].sort((a, b) => b.traded_at.localeCompare(a.traded_at));
 }
 
 export function mergeClosedTradesPreservingLocal(
@@ -542,6 +601,30 @@ export function saveVixHistory(history: VixHistoryPoint[]): void {
   saveJson(STORAGE_KEYS.vixHistory, history);
 }
 
+export function loadAccountValueHistory(): AccountValueSnapshot[] {
+  const rawHistory = loadJson<Array<Record<string, unknown>>>(STORAGE_KEYS.accountValueHistory, []);
+  return rawHistory
+    .map((item) => ({
+      date: typeof item.date === 'string' ? item.date : '',
+      total_capital: typeof item.total_capital === 'number' ? item.total_capital : NaN,
+      as_of: typeof item.as_of === 'string' ? item.as_of : ''
+    }))
+    .filter((item) => item.date !== '' && Number.isFinite(item.total_capital) && item.as_of !== '')
+    .sort((a, b) => a.date.localeCompare(b.date) || a.as_of.localeCompare(b.as_of));
+}
+
+export function saveAccountValueHistory(history: AccountValueSnapshot[]): void {
+  const normalized = history
+    .filter(
+      (item) =>
+        item.date.trim() !== '' &&
+        Number.isFinite(item.total_capital) &&
+        item.as_of.trim() !== ''
+    )
+    .sort((a, b) => a.date.localeCompare(b.date) || a.as_of.localeCompare(b.as_of));
+  saveJson(STORAGE_KEYS.accountValueHistory, normalized);
+}
+
 export function buildPutPositionsExportPayload(): PutPositionsExportPayload {
   return {
     version: 1,
@@ -556,9 +639,11 @@ export function buildAppStateSnapshot(input: {
   config: Config | null;
   puts: PutPosition[];
   closedTrades: ClosedPutTrade[];
+  stockTrades: StockTradeHistory[];
   tickerList: TickerEntry[];
   scenario: StressScenario | null;
   vixHistory: VixHistoryPoint[];
+  accountValueHistory: AccountValueSnapshot[];
 }): AppStateSnapshot {
   return {
     version: 1,
@@ -567,9 +652,11 @@ export function buildAppStateSnapshot(input: {
       config: input.config,
       puts: input.puts,
       closedTrades: input.closedTrades,
+      stockTrades: input.stockTrades,
       tickerList: input.tickerList,
       scenario: input.scenario,
-      vixHistory: input.vixHistory
+      vixHistory: input.vixHistory,
+      accountValueHistory: input.accountValueHistory
     }
   };
 }
@@ -613,9 +700,13 @@ export function parseAppStateSnapshot(raw: string): AppStateSnapshot {
       config: isRecord(data.config) ? loadConfigFromRecord(data.config) : null,
       puts: normalizeImportedPuts(Array.isArray(data.puts) ? data.puts : []),
       closedTrades: normalizeImportedClosedTrades(Array.isArray(data.closedTrades) ? data.closedTrades : []),
+      stockTrades: normalizeImportedStockTrades(Array.isArray(data.stockTrades) ? data.stockTrades : []),
       tickerList: normalizeImportedTickerList(Array.isArray(data.tickerList) ? data.tickerList : []),
       scenario: typeof data.scenario === 'number' ? data.scenario : null,
-      vixHistory: normalizeImportedVixHistory(Array.isArray(data.vixHistory) ? data.vixHistory : [])
+      vixHistory: normalizeImportedVixHistory(Array.isArray(data.vixHistory) ? data.vixHistory : []),
+      accountValueHistory: normalizeImportedAccountValueHistory(
+        Array.isArray(data.accountValueHistory) ? data.accountValueHistory : []
+      )
     }
   };
 }
@@ -733,6 +824,24 @@ function normalizeImportedClosedTrades(rawTrades: unknown[]): ClosedPutTrade[] {
     .sort((a, b) => b.closed_at.localeCompare(a.closed_at));
 }
 
+function normalizeImportedStockTrades(rawTrades: unknown[]): StockTradeHistory[] {
+  return rawTrades
+    .map((trade) => {
+      const record = (typeof trade === 'object' && trade !== null ? trade : {}) as Record<string, unknown>;
+      return {
+        id: typeof record.id === 'string' ? record.id : '',
+        ticker: typeof record.ticker === 'string' ? record.ticker.trim().toUpperCase() : '',
+        action: record.action === 'buy' ? 'buy' : 'sell',
+        shares: typeof record.shares === 'number' ? record.shares : 0,
+        price_per_share: typeof record.price_per_share === 'number' ? record.price_per_share : 0,
+        traded_at: typeof record.traded_at === 'string' ? record.traded_at : '',
+        cash_change: typeof record.cash_change === 'number' ? record.cash_change : 0,
+        realized_pnl: typeof record.realized_pnl === 'number' ? record.realized_pnl : 0
+      } satisfies StockTradeHistory;
+    })
+    .filter((trade) => trade.id !== '' && trade.ticker !== '' && trade.traded_at !== '');
+}
+
 function normalizeImportedVixHistory(rawHistory: unknown[]): VixHistoryPoint[] {
   return rawHistory
     .map((item) => {
@@ -744,6 +853,20 @@ function normalizeImportedVixHistory(rawHistory: unknown[]): VixHistoryPoint[] {
       };
     })
     .filter((item) => item.timestamp !== '' && Number.isFinite(item.value) && Number.isFinite(item.stress));
+}
+
+function normalizeImportedAccountValueHistory(rawHistory: unknown[]): AccountValueSnapshot[] {
+  return rawHistory
+    .map((item) => {
+      const record = (typeof item === 'object' && item !== null ? item : {}) as Record<string, unknown>;
+      return {
+        date: typeof record.date === 'string' ? record.date : '',
+        total_capital: typeof record.total_capital === 'number' ? record.total_capital : NaN,
+        as_of: typeof record.as_of === 'string' ? record.as_of : ''
+      };
+    })
+    .filter((item) => item.date !== '' && Number.isFinite(item.total_capital) && item.as_of !== '')
+    .sort((a, b) => a.date.localeCompare(b.date) || a.as_of.localeCompare(b.as_of));
 }
 
 export function applyPutPositionsImportPayload(payload: PutPositionsExportPayload): {

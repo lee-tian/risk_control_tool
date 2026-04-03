@@ -8,9 +8,11 @@ import {
   filterDeletedTickers,
   loadConfig,
   loadClosedTrades,
+  loadAccountValueHistory,
   loadDeletedPositionIds,
   loadDeletedTickers,
   loadPuts,
+  loadStockTrades,
   loadTickerList,
   mergeClosedTradesPreservingLocal,
   mergePutPositionsPreservingLocal,
@@ -20,8 +22,10 @@ import {
   reconcileHydratedOpenPositions,
   saveConfig,
   saveClosedTrades,
+  saveAccountValueHistory,
   saveDeletedPositionIds,
   savePuts,
+  saveStockTrades,
   saveDeletedTickers,
   saveTickerList
 } from './storage';
@@ -302,6 +306,56 @@ describe('storage helpers', () => {
 
     expect(reconcileHydratedOpenPositions([], localPuts, [], [])).toEqual([
       expect.objectContaining({ id: 'call-1', contracts: 2, option_side: 'call' })
+    ]);
+  });
+
+  it('prefers refreshed snapshot market fields while preserving local position metadata', () => {
+    const snapshotPuts = [
+      {
+        id: 'call-1',
+        ticker: 'MSFT',
+        option_side: 'call',
+        put_strike: 400,
+        premium_per_share: 6.95,
+        contracts: 2,
+        iv_rank: 38,
+        date_sold: '2026-04-01',
+        expiration_date: '2026-05-15',
+        option_market_price_per_share: 2.4,
+        option_market_price_updated: '2026-04-03T20:00:00.000Z',
+        option_theta_per_share: -0.06,
+        decision_rationale: '',
+        decision_snapshot: null
+      }
+    ] as PutPosition[];
+
+    const localPuts = [
+      {
+        id: 'call-1',
+        ticker: 'MSFT',
+        option_side: 'call',
+        put_strike: 400,
+        premium_per_share: 6.95,
+        contracts: 2,
+        iv_rank: 38,
+        date_sold: '2026-04-01',
+        expiration_date: '2026-05-15',
+        option_market_price_per_share: 3.1,
+        option_market_price_updated: '2026-04-02T15:00:00.000Z',
+        option_theta_per_share: -0.04,
+        decision_rationale: 'keep local rationale',
+        decision_snapshot: null
+      }
+    ] as PutPosition[];
+
+    expect(mergePutPositionsPreservingLocal(snapshotPuts, localPuts)).toEqual([
+      expect.objectContaining({
+        id: 'call-1',
+        option_market_price_per_share: 2.4,
+        option_market_price_updated: '2026-04-03T20:00:00.000Z',
+        option_theta_per_share: -0.06,
+        decision_rationale: 'keep local rationale'
+      })
     ]);
   });
 
@@ -794,9 +848,14 @@ describe('storage helpers', () => {
           config: { total_cash: 88000, warning_threshold_pct: 0.7 },
           puts: [{ id: 'put-1', ticker: ' msft ', put_strike: 300, premium_per_share: 5, contracts: 1 }],
           closedTrades: [{ id: 'trade-1', ticker: ' msft ', option_side: 'call', closed_at: '2026-03-20', close_reason: 'expired' }],
+          stockTrades: [{ id: 'stock-1', ticker: ' aapl ', action: 'sell', shares: 10, price_per_share: 210, traded_at: '2026-03-24', cash_change: 2100, realized_pnl: 150 }],
           tickerList: [{ ticker: ' gld ' }, { ticker: 'aapl', beta: 0.9 }],
           scenario: 0.12,
-          vixHistory: [{ timestamp: '2026-03-26', value: 25.18, stress: 0.1 }, { timestamp: '', value: 0, stress: 0 }]
+          vixHistory: [{ timestamp: '2026-03-26', value: 25.18, stress: 0.1 }, { timestamp: '', value: 0, stress: 0 }],
+          accountValueHistory: [
+            { date: '2026-03-26', total_capital: 100500, as_of: '2026-03-26T20:00:00.000Z' },
+            { date: '', total_capital: 0, as_of: '' }
+          ]
         }
       })
     );
@@ -819,12 +878,26 @@ describe('storage helpers', () => {
       option_side: 'call',
       close_reason: 'expired'
     });
+    expect(snapshot.data.stockTrades).toEqual([
+      expect.objectContaining({
+        id: 'stock-1',
+        ticker: 'AAPL',
+        action: 'sell',
+        shares: 10,
+        price_per_share: 210,
+        cash_change: 2100,
+        realized_pnl: 150
+      })
+    ]);
     expect(snapshot.data.tickerList).toEqual([
       expect.objectContaining({ ticker: 'AAPL', beta: 0.9 }),
       expect.objectContaining({ ticker: 'GLD', beta: 0.19, provider_exchange: 'NYSE', provider_mic_code: 'ARCX' })
     ]);
     expect(snapshot.data.scenario).toBe(0.12);
     expect(snapshot.data.vixHistory).toEqual([{ timestamp: '2026-03-26', value: 25.18, stress: 0.1 }]);
+    expect(snapshot.data.accountValueHistory).toEqual([
+      { date: '2026-03-26', total_capital: 100500, as_of: '2026-03-26T20:00:00.000Z' }
+    ]);
 
     expect(() => parseAppStateSnapshot(JSON.stringify({ version: 2, data: {} }))).toThrow('应用快照格式不正确');
   });
@@ -875,16 +948,79 @@ describe('storage helpers', () => {
       config: { cash: 100000, risk_limit_pct: 0.2, warning_threshold_pct: 0.8 },
       puts: [],
       closedTrades: [],
+      stockTrades: [],
       tickerList: [],
       scenario: 0.1,
-      vixHistory: [{ timestamp: '2026-03-26', value: 25.18, stress: 0.1 }]
+      vixHistory: [{ timestamp: '2026-03-26', value: 25.18, stress: 0.1 }],
+      accountValueHistory: [{ date: '2026-03-26', total_capital: 100000, as_of: '2026-03-26T20:00:00.000Z' }]
     });
 
     expect(snapshot.version).toBe(1);
     expect(snapshot.data.config?.cash).toBe(100000);
     expect(snapshot.data.scenario).toBe(0.1);
     expect(snapshot.data.vixHistory).toEqual([{ timestamp: '2026-03-26', value: 25.18, stress: 0.1 }]);
+    expect(snapshot.data.accountValueHistory).toEqual([
+      { date: '2026-03-26', total_capital: 100000, as_of: '2026-03-26T20:00:00.000Z' }
+    ]);
     expect(typeof snapshot.exported_at).toBe('string');
+  });
+
+  it('loads and saves stock trade history', () => {
+    saveStockTrades([
+      {
+        id: 'stock-buy-1',
+        ticker: 'msft',
+        action: 'buy',
+        shares: 50,
+        price_per_share: 300,
+        traded_at: '2026-04-01',
+        cash_change: -15000,
+        realized_pnl: 0
+      },
+      {
+        id: 'stock-sell-1',
+        ticker: 'aapl',
+        action: 'sell',
+        shares: 20,
+        price_per_share: 220,
+        traded_at: '2026-04-02',
+        cash_change: 4400,
+        realized_pnl: 180
+      }
+    ]);
+
+    expect(loadStockTrades()).toEqual([
+      expect.objectContaining({
+        id: 'stock-buy-1',
+        ticker: 'MSFT',
+        action: 'buy',
+        cash_change: -15000
+      }),
+      expect.objectContaining({
+        id: 'stock-sell-1',
+        ticker: 'AAPL',
+        action: 'sell',
+        realized_pnl: 180
+      })
+    ]);
+  });
+
+  it('loads and saves account value history', () => {
+    saveAccountValueHistory([
+      {
+        date: '2026-04-02',
+        total_capital: 120500,
+        as_of: '2026-04-02T20:00:00.000Z'
+      }
+    ]);
+
+    expect(loadAccountValueHistory()).toEqual([
+      {
+        date: '2026-04-02',
+        total_capital: 120500,
+        as_of: '2026-04-02T20:00:00.000Z'
+      }
+    ]);
   });
 
   it('loads and saves closed trade reflection notes', () => {
