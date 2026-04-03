@@ -600,6 +600,15 @@ async function saveRefreshStatus(payload) {
   await writeRefreshStatus(payload);
 }
 
+async function saveRefreshStatusSafely(payload) {
+  try {
+    await saveRefreshStatus(payload);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : 'Failed to save refresh status';
+  }
+}
+
 function isFreshTimestamp(timestamp, ttlMs) {
   if (typeof timestamp !== 'string' || timestamp === '') {
     return false;
@@ -2620,12 +2629,32 @@ function computeSnapshotTotalCapital(snapshotData) {
 
 function upsertDailyAccountValueHistory(history, totalCapital, now = new Date()) {
   if (!Number.isFinite(totalCapital) || totalCapital <= 0) {
-    return Array.isArray(history) ? history : [];
+    return Array.isArray(history)
+      ? history.filter(
+          (item) =>
+            typeof item?.date === 'string' &&
+            item.date !== '' &&
+            typeof item?.as_of === 'string' &&
+            item.as_of !== '' &&
+            typeof item?.total_capital === 'number' &&
+            Number.isFinite(item.total_capital)
+        )
+      : [];
   }
 
   const date = getLocalDateInput(now);
   const asOf = now.toISOString();
-  const normalized = Array.isArray(history) ? [...history] : [];
+  const normalized = Array.isArray(history)
+    ? history.filter(
+        (item) =>
+          typeof item?.date === 'string' &&
+          item.date !== '' &&
+          typeof item?.as_of === 'string' &&
+          item.as_of !== '' &&
+          typeof item?.total_capital === 'number' &&
+          Number.isFinite(item.total_capital)
+      )
+    : [];
   const index = normalized.findIndex((item) => typeof item?.date === 'string' && item.date === date);
   const nextEntry = {
     date,
@@ -2867,6 +2896,23 @@ export async function refreshAppStateSnapshot(
     });
   }
 
+  let nextAccountValueHistory = normalizedSnapshot.data.accountValueHistory;
+  try {
+    nextAccountValueHistory = upsertDailyAccountValueHistory(
+      normalizedSnapshot.data.accountValueHistory,
+      computeSnapshotTotalCapital({
+        ...normalizedSnapshot.data,
+        tickerList: nextTickerList,
+        puts: nextPuts
+      }),
+      now
+    );
+  } catch {
+    nextAccountValueHistory = Array.isArray(normalizedSnapshot.data.accountValueHistory)
+      ? normalizedSnapshot.data.accountValueHistory
+      : [];
+  }
+
   const updatedSnapshot = {
     ...normalizedSnapshot,
     exported_at: nowIso,
@@ -2874,15 +2920,7 @@ export async function refreshAppStateSnapshot(
       ...normalizedSnapshot.data,
       tickerList: nextTickerList,
       puts: nextPuts,
-      accountValueHistory: upsertDailyAccountValueHistory(
-        normalizedSnapshot.data.accountValueHistory,
-        computeSnapshotTotalCapital({
-          ...normalizedSnapshot.data,
-          tickerList: nextTickerList,
-          puts: nextPuts
-        }),
-        now
-      )
+      accountValueHistory: nextAccountValueHistory
     }
   };
 
@@ -2993,7 +3031,7 @@ export async function handleApiRequest(req, res) {
       const includeVix = !((url.searchParams.get('include_vix') ?? payload.include_vix ?? '') === 'false' || payload.include_vix === false);
       const source = typeof payload.source === 'string' && payload.source.trim() !== '' ? payload.source.trim() : 'github-actions';
       const startedAt = new Date().toISOString();
-      await saveRefreshStatus({
+      const runningStatusError = await saveRefreshStatusSafely({
         status: 'running',
         source,
         started_at: startedAt,
@@ -3016,11 +3054,11 @@ export async function handleApiRequest(req, res) {
         includeVix,
         source,
         onProgress: async (status) => {
-          await saveRefreshStatus(status);
+          await saveRefreshStatusSafely(status);
         }
       });
       await saveSnapshot(refreshResult.snapshot);
-      await saveRefreshStatus({
+      const successStatusError = await saveRefreshStatusSafely({
         status: 'success',
         source,
         started_at: startedAt,
@@ -3035,7 +3073,7 @@ export async function handleApiRequest(req, res) {
         refreshed_options: refreshResult.refreshedOptions,
         current_label: null,
         message: refreshResult.marketOpen || force ? '后台刷新完成' : '当前非盘中，仅刷新了 VIX / Fear & Greed',
-        error: null
+        error: runningStatusError ?? null
       });
 
       sendJson(res, 200, {
@@ -3049,10 +3087,11 @@ export async function handleApiRequest(req, res) {
         ticker_failures: refreshResult.tickerResults.filter((item) => !item.ok),
         option_failures: refreshResult.optionResults.filter((item) => !item.ok),
         vix_result: refreshResult.vixResult,
+        refresh_status_warning: runningStatusError ?? successStatusError,
         storage: describeStorageTarget()
       });
     } catch (error) {
-      await saveRefreshStatus({
+      await saveRefreshStatusSafely({
         status: 'error',
         source: 'github-actions',
         started_at: null,
@@ -3068,7 +3107,7 @@ export async function handleApiRequest(req, res) {
         current_label: null,
         message: '后台刷新失败',
         error: error instanceof Error ? error.message : 'Failed to refresh market data'
-      }).catch(() => {});
+      });
       sendJson(res, 500, {
         ok: false,
         error: error instanceof Error ? error.message : 'Failed to refresh market data'

@@ -210,4 +210,36 @@ describe('refreshAppStateSnapshot', () => {
     expect(fetchQuoteBundleFn).not.toHaveBeenCalled();
     expect(fetchCurrentOptionQuoteFn).not.toHaveBeenCalled();
   });
+
+  it('does not fail the whole refresh when account value history data is malformed', async () => {
+    const result = await refreshAppStateSnapshot(
+      {
+        version: 1,
+        exported_at: '2026-04-03T20:00:00.000Z',
+        data: {
+          config: { cash: 100000, risk_limit_pct: 0.04, warning_threshold_pct: 0.8 },
+          closedTrades: [],
+          stockTrades: [],
+          scenario: null,
+          vixHistory: [],
+          accountValueHistory: [{ foo: 'bar' }],
+          tickerList: [],
+          puts: []
+        }
+      },
+      {
+        now: new Date('2026-04-03T21:00:00.000Z'),
+        force: true,
+        includeVix: false,
+        sleepFn: vi.fn(async () => {})
+      }
+    );
+
+    expect(result.snapshot.data.accountValueHistory).toEqual([
+      expect.objectContaining({
+        date: '2026-04-03',
+        total_capital: 100000
+      })
+    ]);
+  });
 });
