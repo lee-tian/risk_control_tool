@@ -66,18 +66,29 @@ export function buildAccountValueComparisons(
   const currentMonthStart = getCurrentMonthStart(today);
   const currentYearStart = getCurrentYearStart(today);
 
+  // Filter out today's snapshot to avoid using stale data
+  const historicalSnapshots = history.filter((item) => item.date < today);
+
+  // Debug logging
+  console.log('[accountValueHistory] Debug Info:', {
+    today,
+    currentTotalCapital,
+    allHistory: history.map(h => ({ date: h.date, capital: h.total_capital })),
+    historicalSnapshots: historicalSnapshots.map(h => ({ date: h.date, capital: h.total_capital }))
+  });
+
   const baselines = [
     {
       label: '对比昨天',
-      baseline: findLatestBefore(history, today)
+      baseline: findLatestBefore(historicalSnapshots, today)
     },
     {
       label: '对比上月',
-      baseline: findLatestBefore(history, currentMonthStart)
+      baseline: findLatestBefore(historicalSnapshots, currentMonthStart)
     },
     {
       label: 'YTD',
-      baseline: findLatestBefore(history, currentYearStart)
+      baseline: findLatestBefore(historicalSnapshots, currentYearStart)
     }
   ];
 
@@ -92,6 +103,13 @@ export function buildAccountValueComparisons(
     }
 
     const changeAmount = currentTotalCapital - item.baseline.total_capital;
+    console.log(`[accountValueHistory] ${item.label}:`, {
+      baseline: item.baseline.total_capital,
+      current: currentTotalCapital,
+      change: changeAmount,
+      changePct: item.baseline.total_capital > 0 ? changeAmount / item.baseline.total_capital : null
+    });
+    
     return {
       label: item.label,
       baseline: item.baseline,

@@ -2577,21 +2577,14 @@ function App() {
     }
   }
 
-  function handleSaveConfig() {
+  async function handleSaveConfig() {
     const errors = validateConfig(configForm);
     setConfigErrors(errors);
     if (Object.keys(errors).length > 0) return;
 
     setConfig(configForm);
     saveConfig(configForm);
-  }
-
-  function handleResetConfig() {
-    setConfig(DEFAULT_CONFIG);
-    setConfigForm(DEFAULT_CONFIG);
-    setConfigErrors({});
-    saveConfig(DEFAULT_CONFIG);
-    setScenario(DEFAULT_STRESS_SCENARIO);
+    await handleSaveAppState(configForm);
   }
 
   async function runPutChecksAndSave(normalized: PutPosition): Promise<'saved' | 'blocked' | 'error'> {
@@ -3895,10 +3888,10 @@ function App() {
     handleOpenStockFromDashboard(ticker);
   }
 
-  async function handleSaveAppState() {
+  async function handleSaveAppState(configOverride?: Config | null) {
     try {
       const snapshot = buildAppStateSnapshot({
-        config,
+        config: configOverride ?? config,
         puts,
         closedTrades,
         stockTrades,
@@ -4462,23 +4455,9 @@ function App() {
             <div className="trend-card risk-curve-card">
               <div className="trend-summary">
                 <div className="trend-summary-item">
-                  <span>情景盈亏</span>
-                  <strong className={riskCalculator.totalNetChange > 0 ? 'value-positive' : riskCalculator.totalNetChange < 0 ? 'value-negative' : ''}>
-                    {formatSignedCurrency(riskCalculator.totalNetChange)}
-                  </strong>
-                  <small
-                    className={
-                      riskCalculator.capitalBase > 0 && riskCalculator.totalNetChange > 0
-                        ? 'value-positive'
-                        : riskCalculator.capitalBase > 0 && riskCalculator.totalNetChange < 0
-                          ? 'value-negative'
-                          : ''
-                    }
-                  >
-                    {riskCalculator.capitalBase > 0
-                      ? `${formatSignedPercent(riskCalculator.totalNetChange / riskCalculator.capitalBase)} vs total capital`
-                      : '总资金基线不足'}
-                  </small>
+                  <span>{`变化${formatSignedPercent(riskCalculator.scenarioPct)}`}</span>
+                  <strong>{formatCurrency(riskCalculator.capitalBase)}</strong>
+                  <small>现有资金</small>
                 </div>
                 <div className="trend-summary-item">
                   <span>变化幅度 %</span>
@@ -4491,10 +4470,32 @@ function App() {
                     value={riskCalculatorDropInput}
                     onChange={(event) => setRiskCalculatorDropInput(event.target.value)}
                   />
+                  <small
+                    className={
+                      riskCalculator.totalPutChange + riskCalculator.totalCallChange > 0
+                        ? 'value-positive'
+                        : riskCalculator.totalPutChange + riskCalculator.totalCallChange < 0
+                          ? 'value-negative'
+                          : ''
+                    }
+                  >
+                    {`期权盈利 ${formatSignedCurrency(riskCalculator.totalPutChange + riskCalculator.totalCallChange)}`}
+                  </small>
                 </div>
                 <div className="trend-summary-item">
-                  <span>{`变化${formatSignedPercent(riskCalculator.scenarioPct)} 情景总资金`}</span>
+                  <span>Total</span>
                   <strong>{formatCurrency(riskCalculator.scenarioCapital)}</strong>
+                  <small
+                    className={
+                      riskCalculator.totalNetChange > 0
+                        ? 'value-positive'
+                        : riskCalculator.totalNetChange < 0
+                          ? 'value-negative'
+                          : ''
+                    }
+                  >
+                    {formatSignedCurrency(riskCalculator.totalNetChange)}
+                  </small>
                 </div>
               </div>
               <svg className="trend-chart trend-chart-rich" viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none" role="img" aria-label="Risk curve">
@@ -6679,14 +6680,8 @@ function App() {
               <button className="ghost-button" onClick={handleExportData} type="button">
                 Export All Data
               </button>
-              <button className="ghost-button" onClick={() => void handleSaveAppState()} type="button">
+              <button className="primary-button" onClick={() => void handleSaveConfig()} type="button">
                 Save
-              </button>
-              <button className="ghost-button" onClick={handleResetConfig} type="button">
-                Reset config
-              </button>
-              <button className="primary-button" onClick={handleSaveConfig} type="button">
-                Save config
               </button>
             </div>
           </div>
