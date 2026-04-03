@@ -480,7 +480,7 @@ type StockExtremeSignal = {
   ticker: string;
   direction: 'overbought' | 'oversold';
   score: number;
-  severity: 'watch' | 'extreme';
+  severity: 'watch' | 'strong' | 'extreme';
   rsiDaily: number | null;
   rsiHourly: number | null;
   currentPrice: number;
@@ -488,9 +488,10 @@ type StockExtremeSignal = {
   ma200: number | null;
   priceVsMa21Pct: number | null;
   priceVsMa200Pct: number | null;
+  ma21VsMa200Pct: number | null;
   label: string;
   note: string;
-  tone: 'red' | 'green';
+  tone: 'yellow' | 'red';
 };
 
 function getPercentDistanceFromAverage(price: number | null, average: number | null): number | null {
@@ -536,40 +537,32 @@ function buildStockExtremeSignal(entry: TickerEntry): StockExtremeSignal | null 
 
   const priceVsMa21Pct = getPercentDistanceFromAverage(entry.current_price, entry.ma_21);
   const priceVsMa200Pct = getPercentDistanceFromAverage(entry.current_price, entry.ma_200);
+  const ma21VsMa200Pct = getPercentDistanceFromAverage(entry.ma_21, entry.ma_200);
   const dailyRsi = entry.rsi_14;
   const hourlyRsi = entry.rsi_14_1h;
-  const isOverboughtExtreme = (hourlyRsi !== null && hourlyRsi >= 80) || (dailyRsi !== null && dailyRsi >= 70);
-  const isOverboughtWatch =
-    isOverboughtExtreme ||
-    (hourlyRsi !== null && hourlyRsi >= 70) ||
-    (dailyRsi !== null && dailyRsi >= 60 && priceVsMa21Pct !== null && priceVsMa21Pct > 0);
+  const overboughtScore =
+    (hourlyRsi !== null && hourlyRsi >= 85 ? 4 : hourlyRsi !== null && hourlyRsi >= 80 ? 3 : hourlyRsi !== null && hourlyRsi >= 70 ? 2 : 0) +
+    (dailyRsi !== null && dailyRsi >= 75 ? 4 : dailyRsi !== null && dailyRsi >= 70 ? 3 : dailyRsi !== null && dailyRsi >= 60 ? 2 : 0) +
+    (priceVsMa21Pct !== null && priceVsMa21Pct >= 8 ? 2 : priceVsMa21Pct !== null && priceVsMa21Pct >= 5 ? 1 : 0) +
+    (priceVsMa200Pct !== null && priceVsMa200Pct >= 15 ? 2 : priceVsMa200Pct !== null && priceVsMa200Pct >= 8 ? 1 : 0) +
+    (ma21VsMa200Pct !== null && ma21VsMa200Pct >= 8 ? 2 : ma21VsMa200Pct !== null && ma21VsMa200Pct >= 3 ? 1 : 0);
 
-  const isOversoldExtreme = (hourlyRsi !== null && hourlyRsi <= 20) || (dailyRsi !== null && dailyRsi <= 30);
-  const isOversoldWatch =
-    isOversoldExtreme ||
-    (hourlyRsi !== null && hourlyRsi <= 30) ||
-    (dailyRsi !== null && dailyRsi <= 40 && priceVsMa21Pct !== null && priceVsMa21Pct < 0);
+  const oversoldScore =
+    (hourlyRsi !== null && hourlyRsi <= 15 ? 4 : hourlyRsi !== null && hourlyRsi <= 20 ? 3 : hourlyRsi !== null && hourlyRsi <= 30 ? 2 : 0) +
+    (dailyRsi !== null && dailyRsi <= 25 ? 4 : dailyRsi !== null && dailyRsi <= 30 ? 3 : dailyRsi !== null && dailyRsi <= 40 ? 2 : 0) +
+    (priceVsMa21Pct !== null && priceVsMa21Pct <= -8 ? 2 : priceVsMa21Pct !== null && priceVsMa21Pct <= -5 ? 1 : 0) +
+    (priceVsMa200Pct !== null && priceVsMa200Pct <= -15 ? 2 : priceVsMa200Pct !== null && priceVsMa200Pct <= -8 ? 1 : 0) +
+    (ma21VsMa200Pct !== null && ma21VsMa200Pct <= -8 ? 2 : ma21VsMa200Pct !== null && ma21VsMa200Pct <= -3 ? 1 : 0);
 
-  if (!isOverboughtWatch && !isOversoldWatch) {
+  const hasOverboughtSignal = overboughtScore >= 4;
+  const hasOversoldSignal = oversoldScore >= 4;
+
+  if (!hasOverboughtSignal && !hasOversoldSignal) {
     return null;
   }
 
-  const overboughtScore =
-    (isOverboughtExtreme ? 100 : isOverboughtWatch ? 60 : 0) +
-    Math.max((hourlyRsi ?? 0) - 70, 0) * 2 +
-    Math.max((dailyRsi ?? 0) - 60, 0) * 2 +
-    Math.max(priceVsMa21Pct ?? 0, 0) +
-    Math.max(priceVsMa200Pct ?? 0, 0) * 0.5;
-
-  const oversoldScore =
-    (isOversoldExtreme ? 100 : isOversoldWatch ? 60 : 0) +
-    Math.max(30 - (hourlyRsi ?? 100), 0) * 2 +
-    Math.max(40 - (dailyRsi ?? 100), 0) * 2 +
-    Math.max(-(priceVsMa21Pct ?? 0), 0) +
-    Math.max(-(priceVsMa200Pct ?? 0), 0) * 0.5;
-
-  if (isOverboughtWatch && overboughtScore >= oversoldScore) {
-    const severity: StockExtremeSignal['severity'] = isOverboughtExtreme ? 'extreme' : 'watch';
+  if (hasOverboughtSignal && overboughtScore >= oversoldScore) {
+    const severity: StockExtremeSignal['severity'] = overboughtScore >= 10 ? 'extreme' : overboughtScore >= 7 ? 'strong' : 'watch';
     const extensionBits = [
       dailyRsi !== null ? `1D RSI ${dailyRsi.toFixed(1)}` : null,
       hourlyRsi !== null ? `1H RSI ${hourlyRsi.toFixed(1)}` : null,
@@ -578,6 +571,9 @@ function buildStockExtremeSignal(entry: TickerEntry): StockExtremeSignal | null 
         : null,
       priceVsMa200Pct !== null
         ? `${priceVsMa200Pct >= 0 ? '高于' : '低于'} MA200 ${Math.abs(priceVsMa200Pct).toFixed(1)}%`
+        : null,
+      ma21VsMa200Pct !== null
+        ? `${ma21VsMa200Pct >= 0 ? 'MA21 高于' : 'MA21 低于'} MA200 ${Math.abs(ma21VsMa200Pct).toFixed(1)}%`
         : null
     ].filter(Boolean);
 
@@ -593,13 +589,14 @@ function buildStockExtremeSignal(entry: TickerEntry): StockExtremeSignal | null 
       ma200: entry.ma_200,
       priceVsMa21Pct,
       priceVsMa200Pct,
-      label: severity === 'extreme' ? '极度超买' : '偏超买',
-      note: extensionBits.join('，'),
-      tone: 'red'
+      ma21VsMa200Pct,
+      label: severity === 'extreme' ? '极端超买' : severity === 'strong' ? '强超买' : '偏超买',
+      note: `共振强度 ${overboughtScore}/14 · ${extensionBits.join('，')}`,
+      tone: severity === 'extreme' ? 'red' : 'yellow'
     };
   }
 
-  const severity: StockExtremeSignal['severity'] = isOversoldExtreme ? 'extreme' : 'watch';
+  const severity: StockExtremeSignal['severity'] = oversoldScore >= 10 ? 'extreme' : oversoldScore >= 7 ? 'strong' : 'watch';
   const extensionBits = [
     dailyRsi !== null ? `1D RSI ${dailyRsi.toFixed(1)}` : null,
     hourlyRsi !== null ? `1H RSI ${hourlyRsi.toFixed(1)}` : null,
@@ -608,6 +605,9 @@ function buildStockExtremeSignal(entry: TickerEntry): StockExtremeSignal | null 
       : null,
     priceVsMa200Pct !== null
       ? `${priceVsMa200Pct >= 0 ? '高于' : '低于'} MA200 ${Math.abs(priceVsMa200Pct).toFixed(1)}%`
+      : null,
+    ma21VsMa200Pct !== null
+      ? `${ma21VsMa200Pct >= 0 ? 'MA21 高于' : 'MA21 低于'} MA200 ${Math.abs(ma21VsMa200Pct).toFixed(1)}%`
       : null
   ].filter(Boolean);
 
@@ -623,9 +623,10 @@ function buildStockExtremeSignal(entry: TickerEntry): StockExtremeSignal | null 
     ma200: entry.ma_200,
     priceVsMa21Pct,
     priceVsMa200Pct,
-    label: severity === 'extreme' ? '极度超卖' : '偏超卖',
-    note: extensionBits.join('，'),
-    tone: 'green'
+    ma21VsMa200Pct,
+    label: severity === 'extreme' ? '极端超卖' : severity === 'strong' ? '强超卖' : '偏超卖',
+    note: `共振强度 ${oversoldScore}/14 · ${extensionBits.join('，')}`,
+    tone: severity === 'extreme' ? 'red' : 'yellow'
   };
 }
 
@@ -4734,7 +4735,7 @@ function App() {
                               <small>{item.note}</small>
                             </div>
                             <div className="ticker-risk-main" style={{ justifyItems: 'end' }}>
-                              <span className={`pill-badge ${item.tone}`}>{item.label}</span>
+                              <span className={`pill-badge ${item.tone}`}>{`${item.label} · ${item.score}/14`}</span>
                               <small>现价 {formatCurrency(item.currentPrice)}</small>
                             </div>
                           </div>
@@ -4760,7 +4761,7 @@ function App() {
                               <small>{item.note}</small>
                             </div>
                             <div className="ticker-risk-main" style={{ justifyItems: 'end' }}>
-                              <span className={`pill-badge ${item.tone}`}>{item.label}</span>
+                              <span className={`pill-badge ${item.tone}`}>{`${item.label} · ${item.score}/14`}</span>
                               <small>现价 {formatCurrency(item.currentPrice)}</small>
                             </div>
                           </div>
