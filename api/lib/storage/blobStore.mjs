@@ -24,11 +24,20 @@ async function readJsonBlob(pathname) {
       token: process.env.BLOB_READ_WRITE_TOKEN
     });
 
-    if (!result?.url) {
+    const targetUrl = result?.downloadUrl ?? result?.url;
+    if (!targetUrl) {
       return null;
     }
 
-    const response = await fetch(result.url);
+    let response = await fetch(targetUrl);
+    if (response.status === 403 && process.env.BLOB_READ_WRITE_TOKEN) {
+      response = await fetch(targetUrl, {
+        headers: {
+          Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}`
+        }
+      });
+    }
+
     if (response.status === 404) {
       return null;
     }

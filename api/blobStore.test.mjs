@@ -52,6 +52,48 @@ describe('blob storage adapter', () => {
     globalThis.fetch = originalFetch;
   });
 
+  it('prefers downloadUrl and retries with token on 403', async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = 'blob-secret-token';
+
+    setBlobSdkLoaderForTests(async () => ({
+      head: async () => ({
+        url: 'https://example.test/public.json',
+        downloadUrl: 'https://example.test/download.json'
+      })
+    }));
+
+    const originalFetch = globalThis.fetch;
+    const calls = [];
+    globalThis.fetch = async (input, init) => {
+      calls.push({
+        input: String(input),
+        auth: init && 'headers' in init ? init.headers?.Authorization ?? init.headers?.authorization ?? null : null
+      });
+
+      if (calls.length === 1) {
+        return new Response('forbidden', { status: 403 });
+      }
+
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+    };
+
+    await expect(readAppState()).resolves.toEqual({ ok: true });
+    expect(calls[0]).toMatchObject({
+      input: 'https://example.test/download.json'
+    });
+    expect(calls[1]).toMatchObject({
+      input: 'https://example.test/download.json',
+      auth: 'Bearer blob-secret-token'
+    });
+
+    globalThis.fetch = originalFetch;
+  });
+
   it('treats a missing blob as an empty cache instead of throwing', async () => {
     process.env.BLOB_READ_WRITE_TOKEN = 'blob-secret-token';
 
