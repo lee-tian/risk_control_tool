@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { buildAccountValueComparisons, upsertDailyAccountValueSnapshot } from './lib/accountValueHistory';
 import { buildSummaryText, calculatePortfolioMetrics } from './lib/calculations';
+import { applyOptionCloseCash, applyOptionOpenCash, applyStockBuyCash, applyStockSellCash } from './lib/cashFlows';
 import { formatCurrency, formatPercent } from './lib/formatters';
-import { compareOptionRowsByLossPct, isOptionLossAtTwoXCredit } from './lib/optionAlerts';
+import { compareOptionRowsByLossPct, getAttentionLevel, getAttentionReasons, isOptionLossAtTwoXCredit } from './lib/optionAlerts';
 import { parseJsonResponseText } from './lib/quoteRefresh';
 import { buildTopIvRankStocks } from './lib/dashboardSignals';
 import { buildCapitalAllocationChart, buildRiskCalculator, buildRiskCurvePoints, buildTickerAllocationItems } from './lib/dashboardPortfolio';
+import { analyzeVixTrend } from './lib/vixTrend';
 import {
   buildAppStateSnapshot,
   applyPutPositionsImportPayload,
@@ -15,9 +18,12 @@ import {
   loadDeletedTickers,
   loadPuts,
   loadScenario,
+  loadStockTrades,
+  loadAccountValueHistory,
   loadTickerList,
   loadVixHistory,
   mergeClosedTradesPreservingLocal,
+  mergeStockTradesPreservingLocal,
   mergeTickerListsPreservingManualFields,
   parseAppStateSnapshot,
   parsePutPositionsImportPayload,
@@ -28,6 +34,8 @@ import {
   saveDeletedTickers,
   savePuts,
   saveScenario,
+  saveStockTrades,
+  saveAccountValueHistory,
   saveTickerList,
   saveVixHistory
 } from './lib/storage';
@@ -47,6 +55,7 @@ import {
 } from './lib/putWorkflow';
 import {
   addTickerEntry,
+  buyTickerShares,
   normalizeTickerSymbol,
   removeTickerEntry,
   sellTickerShares,
@@ -54,7 +63,18 @@ import {
   type TickerDraft
 } from './lib/tickerWorkflow';
 import { validateConfig, validatePut, type ValidationErrors } from './lib/validation';
-import type { ClosedPutTrade, Config, PutPosition, PutRiskRow, ScoreLevel, StressScenario, TickerEntry, VixHistoryPoint } from './types';
+import type {
+  AccountValueSnapshot,
+  ClosedPutTrade,
+  Config,
+  PutPosition,
+  PutRiskRow,
+  ScoreLevel,
+  StockTradeHistory,
+  StressScenario,
+  TickerEntry,
+  VixHistoryPoint
+} from './types';
 
 const DEFAULT_STRESS_SCENARIO: StressScenario = 0.1;
 
@@ -942,76 +962,7 @@ function getDynamicStressAdjustment(history: VixHistoryPoint[]): {
   action: string;
   sevenDayAverage: number | null;
 } {
-  const dailyHistory = compressVixHistory(history);
-  const latest = dailyHistory[dailyHistory.length - 1];
-  if (!latest) {
-    return { adjustment: 0, mode: 'neutral', note: '等待 VIX 历史数据', action: '请先刷新 VIX', sevenDayAverage: null };
-  }
-
-  const lastSeven = dailyHistory.slice(-7);
-  const sevenDayAverage =
-    lastSeven.length === 0 ? null : lastSeven.reduce((sum, point) => sum + point.value, 0) / lastSeven.length;
-  const latestValue = latest.value;
-  const slope =
-    lastSeven.length >= 2 ? (lastSeven[lastSeven.length - 1].value - lastSeven[0].value) / (lastSeven.length - 1) : 0;
-  const slopeThreshold = 0.35;
-  const trendMode =
-    lastSeven.length >= 7 && slope >= slopeThreshold
-      ? 'rising'
-      : lastSeven.length >= 7 && slope <= -slopeThreshold
-        ? 'falling'
-        : 'sideways';
-
-  let adjustment = 0;
-  if (latestValue < 20) {
-    adjustment += 0.04;
-  }
-  else if (latestValue < 25) {
-    adjustment += 0.015;
-  }
-  else if (latestValue < 30) {
-    adjustment += 0;
-  }
-  else if (latestValue >= 40) {
-    adjustment += 0.04;
-  }
-
-  if (trendMode === 'rising') {
-    adjustment += 0.02;
-  } else if (trendMode === 'falling') {
-    adjustment -= 0.015;
-  }
-
-  const action =
-    latestValue < 20
-      ? '低 VIX（<20）：尽量不要卖'
-      : latestValue < 25
-        ? trendMode === 'rising'
-          ? 'VIX 20-25 且持续上升：少卖'
-          : 'VIX 20-25：少卖'
-        : latestValue < 30
-          ? trendMode === 'sideways'
-            ? 'VIX 25-30 且震荡：可以多卖一些 put'
-            : trendMode === 'falling'
-              ? 'VIX 25-30 且下跌：可以多卖一点'
-              : 'VIX 25-30 但持续上升：偏保守，少卖'
-          : latestValue < 40
-            ? trendMode === 'rising'
-              ? 'VIX 30-40 且持续上升：偏保守，少卖'
-              : trendMode === 'falling'
-                ? 'VIX 30-40 且下跌：可以多卖一点'
-                : 'VIX 30-40 且震荡：中性，择机卖'
-            : 'VIX > 40：先不要卖，等确认回落';
-
-  const trendLabel =
-    trendMode === 'rising' ? 'VIX 持续上升' : trendMode === 'falling' ? 'VIX 下跌' : 'VIX 震荡';
-  return {
-    adjustment,
-    mode: trendMode,
-    note: `${trendLabel}，7 天均值 ${sevenDayAverage === null ? '-' : sevenDayAverage.toFixed(2)}`,
-    action,
-    sevenDayAverage
-  };
+  return analyzeVixTrend(compressVixHistory(history));
 }
 
 function getDaysToExpirationForPreview(dateSold: string, expirationDate: string): number {
@@ -1289,6 +1240,7 @@ function App() {
   const [config, setConfig] = useState<Config | null>(savedConfig);
   const [puts, setPuts] = useState<PutPosition[]>(loadPuts());
   const [closedTrades, setClosedTrades] = useState<ClosedPutTrade[]>(loadClosedTrades());
+  const [stockTrades, setStockTrades] = useState<StockTradeHistory[]>(loadStockTrades());
   const [tickerList, setTickerList] = useState<TickerEntry[]>(() => loadTickerList());
   const [scenario, setScenario] = useState<StressScenario>(getInitialScenario());
   const [configForm, setConfigForm] = useState<Config>(savedConfig ?? DEFAULT_CONFIG);
@@ -1391,6 +1343,12 @@ function App() {
     sellPricePerShare: string;
     coveredCallShares: number;
   } | null>(null);
+  const [buyStockPreview, setBuyStockPreview] = useState<{
+    ticker: string;
+    currentShares: number;
+    sharesToBuy: string;
+    buyPricePerShare: string;
+  } | null>(null);
   const [historyEditPreview, setHistoryEditPreview] = useState<{
     tradeId: string;
     ticker: string;
@@ -1415,6 +1373,7 @@ function App() {
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all');
   const [copyMessage, setCopyMessage] = useState('');
   const [importExportMessage, setImportExportMessage] = useState('');
+  const [accountValueHistory, setAccountValueHistory] = useState<AccountValueSnapshot[]>(() => loadAccountValueHistory());
   const [deletedTickers, setDeletedTickers] = useState<string[]>(() => loadDeletedTickers());
   const [deletedPositionIds, setDeletedPositionIds] = useState<string[]>(() => loadDeletedPositionIds());
   const [activeTab, setActiveTab] = useState<AppTab>(() => {
@@ -1440,6 +1399,7 @@ function App() {
   const addPutSectionRef = useRef<HTMLElement | null>(null);
   const hasHydratedSnapshotRef = useRef(false);
   const latestBackgroundRefreshFinishedAtRef = useRef<string | null>(null);
+  const [isSnapshotHydrated, setIsSnapshotHydrated] = useState(false);
 
   function applyRemoteSnapshot(snapshotPayload: unknown, successMessage?: string) {
     const snapshot = parseAppStateSnapshot(JSON.stringify(snapshotPayload));
@@ -1451,11 +1411,19 @@ function App() {
       setPuts((currentPuts) => reconcileHydratedOpenPositions(snapshot.data.puts, currentPuts, deletedPositionIds, nextClosedTrades));
       return nextClosedTrades;
     });
+    setStockTrades((current) => mergeStockTradesPreservingLocal(snapshot.data.stockTrades, current));
     setTickerList((current) =>
       filterDeletedTickers(mergeTickerListsPreservingManualFields(snapshot.data.tickerList, current), deletedTickers)
     );
     setScenario(snapshot.data.scenario ?? DEFAULT_STRESS_SCENARIO);
     setVixHistory(mergeSeededVixHistory(snapshot.data.vixHistory));
+    setAccountValueHistory((current) => {
+      const latestByDate = new Map<string, AccountValueSnapshot>();
+      for (const item of [...current, ...snapshot.data.accountValueHistory]) {
+        latestByDate.set(item.date, item);
+      }
+      return [...latestByDate.values()].sort((a, b) => a.date.localeCompare(b.date) || a.as_of.localeCompare(b.as_of));
+    });
     if (successMessage) {
       setImportExportMessage(successMessage);
     }
@@ -1486,6 +1454,10 @@ function App() {
   }, [closedTrades]);
 
   useEffect(() => {
+    saveStockTrades(stockTrades);
+  }, [stockTrades]);
+
+  useEffect(() => {
     saveTickerList(tickerList);
   }, [tickerList]);
 
@@ -1504,6 +1476,10 @@ function App() {
   useEffect(() => {
     saveVixHistory(vixHistory);
   }, [vixHistory]);
+
+  useEffect(() => {
+    saveAccountValueHistory(accountValueHistory);
+  }, [accountValueHistory]);
 
   useEffect(() => {
     if (copyMessage === '') return;
@@ -1704,6 +1680,7 @@ function App() {
       } finally {
         if (!ignore) {
           hasHydratedSnapshotRef.current = true;
+          setIsSnapshotHydrated(true);
         }
       }
     }
@@ -1946,9 +1923,11 @@ function App() {
         config,
         puts,
         closedTrades,
+        stockTrades,
         tickerList,
         scenario,
-        vixHistory
+        vixHistory,
+        accountValueHistory
       });
 
       void fetch('/api/app-state', {
@@ -1963,7 +1942,7 @@ function App() {
     }, 800);
 
     return () => window.clearTimeout(timer);
-  }, [closedTrades, config, puts, tickerList, scenario, vixHistory]);
+  }, [accountValueHistory, closedTrades, config, puts, tickerList, scenario, vixHistory]);
 
   useEffect(() => {
     if (!hasHydratedSnapshotRef.current || puts.length === 0) {
@@ -2128,30 +2107,7 @@ function App() {
     [stockExtremeSignals]
   );
   const topIvRankStocks = useMemo(() => buildTopIvRankStocks(tickerList, 5), [tickerList]);
-  const insightLines = useMemo(() => {
-    return [
-      ...(metrics.missingStockBetaTickers.length > 0
-        ? [`Beta 忘记输入了：${metrics.missingStockBetaTickers.join('、')}`]
-        : []),
-      mostOverboughtStocks.length > 0
-        ? `最超买：${mostOverboughtStocks[0].ticker}（1D ${mostOverboughtStocks[0].rsiDaily?.toFixed(1) ?? '-'} / 1H ${mostOverboughtStocks[0].rsiHourly?.toFixed(1) ?? '-'}）`
-        : '当前没有明显超买股票',
-      mostOversoldStocks.length > 0
-        ? `最超卖：${mostOversoldStocks[0].ticker}（1D ${mostOversoldStocks[0].rsiDaily?.toFixed(1) ?? '-'} / 1H ${mostOversoldStocks[0].rsiHourly?.toFixed(1) ?? '-'}）`
-        : '当前没有明显超卖股票',
-      metrics.canAddMoreRisk
-        ? `还可增加 Put 风险：${formatCurrency(metrics.remainingRiskBudget)}`
-        : '当前已超过风险预算，建议暂停新增 Option 仓位',
-      `Put Risk % of Cash：${formatPercent(metrics.portfolioRiskPctOfCash)}`,
-      `Total Risk % of Total Capital：${formatPercent(metrics.totalRiskPctOfTotalCapital)}`,
-      `目前年化收益率（总资金）：${formatPercent(metrics.annualizedYieldOnTotalCash)}`,
-      `Estimated theta income / day：${formatCurrency(metrics.estimatedThetaIncomePerDay)}`,
-      `Estimated theta income / week：${formatCurrency(metrics.estimatedThetaIncomePerWeek)}`,
-      `Estimated theta income / month：${formatCurrency(metrics.estimatedThetaIncomePerMonth)}`
-    ];
-  }, [metrics, mostOverboughtStocks, mostOversoldStocks]);
 
-  const compactInsightLines = insightLines;
   const riskTickersWithOptionLoss = useMemo(() => {
     const putRows = metrics.putRows.filter((row) => row.option_side !== 'call');
     const optionLossByTicker = new Map<string, number>();
@@ -2264,6 +2220,7 @@ function App() {
           totalOptionPremiumIncome,
           putPnl,
           callPnl,
+          stockPnl,
           totalPnlPct,
           currentValue,
           displayValue,
@@ -2287,22 +2244,40 @@ function App() {
     () => [...closedTrades].sort((a, b) => b.closed_at.localeCompare(a.closed_at)),
     [closedTrades]
   );
-  const visibleClosedTrades = useMemo(() => {
+  const unifiedHistory = useMemo(() => {
+    const optionItems = sortedClosedTrades.map((trade) => ({
+      kind: 'option' as const,
+      id: trade.id,
+      timestamp: trade.closed_at,
+      realizedPnl: trade.realized_pnl,
+      trade
+    }));
+    const stockItems = stockTrades.map((trade) => ({
+      kind: 'stock' as const,
+      id: trade.id,
+      timestamp: trade.traded_at,
+      realizedPnl: trade.realized_pnl,
+      trade
+    }));
+
+    return [...optionItems, ...stockItems].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  }, [sortedClosedTrades, stockTrades]);
+  const visibleHistoryItems = useMemo(() => {
     if (historyFilter === 'profit') {
-      return sortedClosedTrades.filter((trade) => trade.realized_pnl > 0);
+      return unifiedHistory.filter((item) => item.realizedPnl > 0);
     }
 
     if (historyFilter === 'loss') {
-      return sortedClosedTrades.filter((trade) => trade.realized_pnl < 0);
+      return unifiedHistory.filter((item) => item.realizedPnl < 0);
     }
 
-    return sortedClosedTrades;
-  }, [historyFilter, sortedClosedTrades]);
+    return unifiedHistory;
+  }, [historyFilter, unifiedHistory]);
   const historySummary = useMemo(() => {
-    const totalRealizedPnl = closedTrades.reduce((sum, trade) => sum + trade.realized_pnl, 0);
-    const totalClosed = closedTrades.length;
-    const wins = closedTrades.filter((trade) => trade.realized_pnl > 0).length;
-    const losses = closedTrades.filter((trade) => trade.realized_pnl < 0).length;
+    const totalRealizedPnl = unifiedHistory.reduce((sum, item) => sum + item.realizedPnl, 0);
+    const totalClosed = unifiedHistory.length;
+    const wins = unifiedHistory.filter((item) => item.realizedPnl > 0).length;
+    const losses = unifiedHistory.filter((item) => item.realizedPnl < 0).length;
     const breakEven = totalClosed - wins - losses;
 
     return {
@@ -2313,30 +2288,38 @@ function App() {
       breakEven,
       winRate: totalClosed > 0 ? wins / totalClosed : 0
     };
-  }, [closedTrades]);
+  }, [unifiedHistory]);
   const dailyVixHistory = useMemo(() => compressVixHistory(vixHistory), [vixHistory]);
   const visibleVixHistory = useMemo(() => dailyVixHistory.slice(-30), [dailyVixHistory]);
   const latestVixPoint = dailyVixHistory[dailyVixHistory.length - 1] ?? null;
   const attentionRows = useMemo(
     () =>
       metrics.putRows
-        .filter((row) => (row.daysToExpiration >= 0 && row.daysToExpiration <= 7) || (row.premiumCapturedPct ?? 0) >= 0.6)
-        .map((row) => ({
-          row,
-          reasons: [
-            ...(row.daysToExpiration >= 0 && row.daysToExpiration <= 7 ? ['7 天内到期'] : []),
-            ...((row.premiumCapturedPct ?? 0) >= 0.6 ? ['盈利超过 60%'] : [])
-          ]
-        }))
-        .sort((a, b) => {
-          const aExpiring = a.row.daysToExpiration >= 0 && a.row.daysToExpiration <= 7 ? 0 : 1;
-          const bExpiring = b.row.daysToExpiration >= 0 && b.row.daysToExpiration <= 7 ? 0 : 1;
-          if (aExpiring !== bExpiring) {
-            return aExpiring - bExpiring;
+        .map((row) => {
+          const level = getAttentionLevel(row);
+          if (!level) {
+            return null;
           }
 
-          const premiumGap = (b.row.premiumCapturedPct ?? 0) - (a.row.premiumCapturedPct ?? 0);
-          return a.row.daysToExpiration - b.row.daysToExpiration || premiumGap;
+          return {
+            row,
+            level,
+            reasons: getAttentionReasons(row)
+          };
+        })
+        .filter((item): item is { row: PutRiskRow; level: 'red' | 'yellow'; reasons: string[] } => item !== null)
+        .sort((a, b) => {
+          const levelRank = { red: 0, yellow: 1 };
+          if (levelRank[a.level] !== levelRank[b.level]) {
+            return levelRank[a.level] - levelRank[b.level];
+          }
+
+          const dteGap = a.row.daysToExpiration - b.row.daysToExpiration;
+          if (dteGap !== 0) {
+            return dteGap;
+          }
+
+          return (b.row.premiumCapturedPct ?? 0) - (a.row.premiumCapturedPct ?? 0);
         }),
     [metrics.putRows]
   );
@@ -2355,6 +2338,49 @@ function App() {
     [visibleVixHistory]
   );
   const remainingCashAmount = Math.max((config?.cash ?? 0) - metrics.totalNominalPutExposure, 0);
+  const overallCapitalAmount = remainingCashAmount + metrics.totalNominalPutExposure + totalStockMarketValue;
+  const remainingCashPct = overallCapitalAmount > 0 ? remainingCashAmount / overallCapitalAmount : 0;
+  const accountCapitalBase = metrics.totalCapitalBase > 0 ? metrics.totalCapitalBase : overallCapitalAmount;
+  const accountValueComparisons = useMemo(
+    () => buildAccountValueComparisons(accountValueHistory, accountCapitalBase),
+    [accountCapitalBase, accountValueHistory]
+  );
+  useEffect(() => {
+    if (!isSnapshotHydrated) {
+      return;
+    }
+
+    setAccountValueHistory((current) => upsertDailyAccountValueSnapshot(current, accountCapitalBase));
+  }, [accountCapitalBase, isSnapshotHydrated]);
+  const insightLines = useMemo(() => {
+    return [
+      ...accountValueComparisons.map((item) =>
+        item.changeAmount === null
+          ? `${item.label}：暂无历史基线`
+          : `${item.label}：${formatSignedCurrency(item.changeAmount)}（${formatSignedPercent(item.changePct ?? 0)}）`
+      ),
+      ...(metrics.missingStockBetaTickers.length > 0
+        ? [`Beta 忘记输入了：${metrics.missingStockBetaTickers.join('、')}`]
+        : []),
+      mostOverboughtStocks.length > 0
+        ? `${mostOverboughtStocks[0].ticker}（1D ${mostOverboughtStocks[0].rsiDaily?.toFixed(1) ?? '-'} / 1H ${mostOverboughtStocks[0].rsiHourly?.toFixed(1) ?? '-'}）`
+        : '当前没有明显超买股票',
+      mostOversoldStocks.length > 0
+        ? `${mostOversoldStocks[0].ticker}（1D ${mostOversoldStocks[0].rsiDaily?.toFixed(1) ?? '-'} / 1H ${mostOversoldStocks[0].rsiHourly?.toFixed(1) ?? '-'}）`
+        : '当前没有明显超卖股票',
+      metrics.canAddMoreRisk
+        ? `还可增加 Put 风险：${formatCurrency(metrics.remainingRiskBudget)}`
+        : '当前已超过风险预算，建议暂停新增 Option 仓位',
+      `Put Risk % of Cash：${formatPercent(metrics.portfolioRiskPctOfCash)}`,
+      `Total Risk % of Total Capital：${formatPercent(metrics.totalRiskPctOfTotalCapital)}`,
+      `目前年化收益率（总资金）：${formatPercent(metrics.annualizedYieldOnTotalCash)}`,
+      `Total option premium income：${formatCurrency(metrics.totalPremiumIncome)}`,
+      `Option theta income / day：${formatCurrency(metrics.estimatedThetaIncomePerDay)}`,
+      `Option theta income / month：${formatCurrency(metrics.estimatedThetaIncomePerMonth)}`
+    ];
+  }, [accountValueComparisons, metrics, mostOverboughtStocks, mostOversoldStocks]);
+
+  const compactInsightLines = insightLines;
   const capitalAllocationChart = useMemo(
     () => buildCapitalAllocationChart(totalStockMarketValue, metrics.totalNominalPutExposure, remainingCashAmount),
     [metrics.totalNominalPutExposure, remainingCashAmount, totalStockMarketValue]
@@ -2363,8 +2389,6 @@ function App() {
     () => buildTickerAllocationItems(stockHoldings, metrics.putRows),
     [metrics.putRows, stockHoldings]
   );
-  const overallCapitalAmount = remainingCashAmount + metrics.totalNominalPutExposure + totalStockMarketValue;
-  const remainingCashPct = overallCapitalAmount > 0 ? remainingCashAmount / overallCapitalAmount : 0;
   const riskCalculatorDropPct = useMemo(() => {
     const raw = percentInputToDecimal(riskCalculatorDropInput);
     if (!Number.isFinite(raw)) {
@@ -2374,12 +2398,12 @@ function App() {
     return Math.min(Math.max(raw, -0.3), 0.3);
   }, [riskCalculatorDropInput]);
   const riskCalculator = useMemo(
-    () => buildRiskCalculator(puts, tickerList, riskCalculatorDropPct, metrics.totalCapitalBase > 0 ? metrics.totalCapitalBase : overallCapitalAmount),
-    [metrics.totalCapitalBase, overallCapitalAmount, puts, riskCalculatorDropPct, tickerList]
+    () => buildRiskCalculator(puts, tickerList, riskCalculatorDropPct, accountCapitalBase),
+    [accountCapitalBase, puts, riskCalculatorDropPct, tickerList]
   );
   const riskCurvePoints = useMemo(
-    () => buildRiskCurvePoints(puts, tickerList, metrics.totalCapitalBase > 0 ? metrics.totalCapitalBase : overallCapitalAmount),
-    [metrics.totalCapitalBase, overallCapitalAmount, puts, tickerList]
+    () => buildRiskCurvePoints(puts, tickerList, accountCapitalBase),
+    [accountCapitalBase, puts, tickerList]
   );
   const baseRiskScore = metrics.riskScore;
   const regimeAdjustment = getRegimeAdjustment(vixSnapshot?.fearGreedScore ?? null);
@@ -2720,6 +2744,11 @@ function App() {
     }
 
     savePutPosition(normalized, editingPutId, setPuts, setTickerList);
+    const nextConfig = applyOptionOpenCash(config, configForm ?? DEFAULT_CONFIG, normalized, editingPutId !== null);
+    saveConfig(nextConfig);
+    setConfig(nextConfig);
+    setConfigForm(nextConfig);
+    setConfigErrors({});
     setImportExportMessage(`风险检查通过，已保存 ${normalized.ticker} ${getOptionSideLabel(normalized.option_side)}`);
     setActiveTab('positions');
     window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, 'positions');
@@ -3102,6 +3131,12 @@ function App() {
     setClosedTrades(closeResult.nextClosedTrades);
     setPuts(closeResult.nextPuts);
 
+    const nextConfig = applyOptionCloseCash(config, configForm ?? DEFAULT_CONFIG, buybackPremiumPerShare, contractsToClose);
+    saveConfig(nextConfig);
+    setConfig(nextConfig);
+    setConfigForm(nextConfig);
+    setConfigErrors({});
+
     const isFullyClosed = contractsToClose >= closePreview.row.contracts;
     if (isFullyClosed) {
       const nextDeletedPositionIds = [...deletedPositionIds.filter((item) => item !== closePreview.row.id), closePreview.row.id].sort();
@@ -3291,6 +3326,20 @@ function App() {
     });
   }
 
+  function handleOpenBuyStock(entry: TickerEntry) {
+    setBuyStockPreview({
+      ticker: entry.ticker,
+      currentShares: entry.shares ?? 0,
+      sharesToBuy: '100',
+      buyPricePerShare:
+        typeof entry.current_price === 'number' && Number.isFinite(entry.current_price)
+          ? entry.current_price.toFixed(2)
+          : typeof entry.average_cost_basis === 'number' && Number.isFinite(entry.average_cost_basis)
+            ? entry.average_cost_basis.toFixed(2)
+            : ''
+    });
+  }
+
   function confirmSellStock() {
     if (!sellStockPreview) {
       return;
@@ -3324,11 +3373,24 @@ function App() {
     saveTickerList(sellResult.nextEntries);
     setTickerList(sellResult.nextEntries);
 
-    const cashBase = config ?? configForm ?? DEFAULT_CONFIG;
-    const nextConfig = {
-      ...cashBase,
-      cash: (cashBase.cash ?? 0) + sellResult.proceeds
-    };
+    const averageCostBasis =
+      tickerList.find((entry) => entry.ticker === sellStockPreview.ticker)?.average_cost_basis ?? 0;
+    const realizedPnl = (sellPricePerShare - averageCostBasis) * sharesToSell;
+    setStockTrades((current) => [
+      {
+        id: generateId(),
+        ticker: sellStockPreview.ticker,
+        action: 'sell',
+        shares: sharesToSell,
+        price_per_share: sellPricePerShare,
+        traded_at: new Date().toISOString().slice(0, 10),
+        cash_change: sellResult.proceeds,
+        realized_pnl: realizedPnl
+      },
+      ...current
+    ]);
+
+    const nextConfig = applyStockSellCash(config, configForm ?? DEFAULT_CONFIG, sellResult.proceeds);
     saveConfig(nextConfig);
     setConfig(nextConfig);
     setConfigForm(nextConfig);
@@ -3337,6 +3399,63 @@ function App() {
     setSellStockPreview(null);
     setTickerMessage(
       `已卖出 ${sellStockPreview.ticker} ${sharesToSell} 股，回笼现金 ${formatCurrency(sellResult.proceeds)}`
+    );
+  }
+
+  function confirmBuyStock() {
+    if (!buyStockPreview) {
+      return;
+    }
+
+    const sharesToBuy = Number(buyStockPreview.sharesToBuy);
+    const buyPricePerShare = Number(buyStockPreview.buyPricePerShare);
+    if (!Number.isFinite(sharesToBuy) || sharesToBuy <= 0) {
+      setTickerMessage('买入股数请输入有效数字');
+      return;
+    }
+    if (!Number.isFinite(buyPricePerShare) || buyPricePerShare < 0) {
+      setTickerMessage('买入价格请输入有效数字');
+      return;
+    }
+
+    const buyResult = buyTickerShares(tickerList, buyStockPreview.ticker, sharesToBuy, buyPricePerShare);
+    if (!buyResult) {
+      setTickerMessage(`无法买入 ${buyStockPreview.ticker}，请检查买入股数和价格`);
+      return;
+    }
+
+    const cashBase = config ?? configForm ?? DEFAULT_CONFIG;
+    if (buyResult.cost > (cashBase.cash ?? 0)) {
+      setTickerMessage(`现金不足：买入 ${buyStockPreview.ticker} 需要 ${formatCurrency(buyResult.cost)}`);
+      return;
+    }
+
+    saveTickerList(buyResult.nextEntries);
+    setTickerList(buyResult.nextEntries);
+
+    setStockTrades((current) => [
+      {
+        id: generateId(),
+        ticker: buyStockPreview.ticker,
+        action: 'buy',
+        shares: sharesToBuy,
+        price_per_share: buyPricePerShare,
+        traded_at: new Date().toISOString().slice(0, 10),
+        cash_change: -buyResult.cost,
+        realized_pnl: 0
+      },
+      ...current
+    ]);
+
+    const nextConfig = applyStockBuyCash(config, configForm ?? DEFAULT_CONFIG, buyResult.cost);
+    saveConfig(nextConfig);
+    setConfig(nextConfig);
+    setConfigForm(nextConfig);
+    setConfigErrors({});
+
+    setBuyStockPreview(null);
+    setTickerMessage(
+      `已买入 ${buyStockPreview.ticker} ${sharesToBuy} 股，现金减少 ${formatCurrency(buyResult.cost)}`
     );
   }
 
@@ -3729,9 +3848,11 @@ function App() {
       config,
       puts,
       closedTrades,
+      stockTrades,
       tickerList,
       scenario,
-      vixHistory
+      vixHistory,
+      accountValueHistory
     });
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -3777,9 +3898,11 @@ function App() {
         config,
         puts,
         closedTrades,
+        stockTrades,
         tickerList,
         scenario,
-        vixHistory
+        vixHistory,
+        accountValueHistory
       });
 
       const response = await fetch('/api/app-state', {
@@ -3813,6 +3936,7 @@ function App() {
         setConfigForm(snapshot.data.config ?? DEFAULT_CONFIG);
         setPuts(snapshot.data.puts);
         setClosedTrades(snapshot.data.closedTrades);
+        setStockTrades(snapshot.data.stockTrades);
         setTickerList(
           filterDeletedTickers(
             snapshot.data.tickerList,
@@ -3987,19 +4111,6 @@ function App() {
           <>
         <section className="card dashboard-grid">
           <div className="dashboard-left">
-            <div className="section-header">
-              <div>
-                <p className="section-kicker">Section 1</p>
-                <h2>Insights</h2>
-              </div>
-            </div>
-            <div className="insights-metric-grid">
-              {compactInsightLines.map((line) => (
-                <div key={line} className="insight-item">
-                  {line}
-                </div>
-              ))}
-            </div>
             <div className="dashboard-stack dashboard-stack-compact">
               <div className="dashboard-subcard dashboard-subcard-wide">
                 <div className="section-subhead">
@@ -4051,6 +4162,12 @@ function App() {
                               </div>
                             </div>
                             <div className="stock-holding-summary-strip">
+                              <span>
+                                <small>股票盈亏</small>
+                                <strong className={item.stockPnl > 0 ? 'value-positive' : item.stockPnl < 0 ? 'value-negative' : ''}>
+                                  {formatSignedCurrency(item.stockPnl)}
+                                </strong>
+                              </span>
                               <span>
                                 <small>Put 盈亏</small>
                                 <strong className={item.putPnl > 0 ? 'value-positive' : item.putPnl < 0 ? 'value-negative' : ''}>
@@ -4317,6 +4434,19 @@ function App() {
           <div className="dashboard-right">
             <div className="section-header">
               <div>
+                <p className="section-kicker">Section 1</p>
+                <h2>Insights</h2>
+              </div>
+            </div>
+            <div className="insights-metric-grid">
+              {compactInsightLines.map((line) => (
+                <div key={line} className="insight-item">
+                  {line}
+                </div>
+              ))}
+            </div>
+            <div className="section-header">
+              <div>
                 <p className="section-kicker">Scenario</p>
                 <h2>Risk Curve</h2>
               </div>
@@ -4435,7 +4565,13 @@ function App() {
                   <div className="trend-summary-item">
                     <span>7D Trend</span>
                     <strong>
-                      {stressAdjustment.mode === 'rising' ? 'VIX 持续上升' : stressAdjustment.mode === 'falling' ? 'VIX 下跌' : 'VIX 震荡'}
+                      {stressAdjustment.mode === 'rising'
+                        ? 'VIX 上行'
+                        : stressAdjustment.mode === 'falling'
+                          ? 'VIX 回落'
+                          : stressAdjustment.mode === 'sideways'
+                            ? 'VIX 区间震荡'
+                            : '等待数据'}
                     </strong>
                   </div>
                 </div>
@@ -4628,14 +4764,14 @@ function App() {
               {attentionRows.length === 0 ? (
                 <div className="empty-state compact-empty dashboard-empty-state">
                   <strong>当前没有需要优先处理的期权</strong>
-                  <span>临近到期或盈利较高的仓位会显示在这里。</span>
+                  <span>到期日小于 21 天或盈利百分比较高的仓位会显示在这里。</span>
                 </div>
               ) : (
                 <div className="ticker-risk-list">
-                  {attentionRows.map(({ row }) => (
+                  {attentionRows.map(({ row, level, reasons }) => (
                     <button
                       key={`attention-${row.id}`}
-                      className="ticker-risk-item ticker-risk-button"
+                      className={`ticker-risk-item ticker-risk-button ${level === 'red' ? 'ticker-risk-alert' : 'ticker-risk-warning'}`}
                       type="button"
                       onClick={() => handleOpenPositionFromDashboard(row.id)}
                     >
@@ -4648,11 +4784,18 @@ function App() {
                           {' · '}
                           盈利百分比 {row.premiumCapturedPct == null ? '-' : formatPercent(row.premiumCapturedPct)}
                         </small>
-                        {row.daysToExpiration >= 0 && row.daysToExpiration <= 7 ? (
-                          <small>7 天内到期 · Breakeven {formatCurrency(row.breakevenPrice)}</small>
-                        ) : null}
+                        <small>
+                          {reasons.join(' · ')}
+                          {' · '}
+                          Breakeven {formatCurrency(row.breakevenPrice)}
+                        </small>
                       </div>
-                      <strong>{row.expiration_date}</strong>
+                      <div className="ticker-risk-main" style={{ justifyItems: 'end' }}>
+                        <span className={`pill-badge ${level === 'red' ? 'red' : 'yellow'}`}>
+                          {level === 'red' ? '红色预警' : '黄色提醒'}
+                        </span>
+                        <strong>{row.expiration_date}</strong>
+                      </div>
                     </button>
                   ))}
                 </div>
@@ -5494,6 +5637,16 @@ function App() {
                     className="primary-button"
                     onClick={() => {
                       savePutPosition(forceSellCandidate, editingPutId, setPuts, setTickerList);
+                      const nextConfig = applyOptionOpenCash(
+                        config,
+                        configForm ?? DEFAULT_CONFIG,
+                        forceSellCandidate,
+                        editingPutId !== null
+                      );
+                      saveConfig(nextConfig);
+                      setConfig(nextConfig);
+                      setConfigForm(nextConfig);
+                      setConfigErrors({});
                       setForceSellCandidate(null);
                       setPreTradeCandidate(null);
                       setPreTradeQuestionnaire(createEmptyPreTradeQuestionnaire());
@@ -5944,41 +6097,61 @@ function App() {
                 <strong>{formatPercent(historySummary.winRate)}</strong>
               </article>
             </div>
-            {closedTrades.length === 0 ? (
-              <div className="empty-state">还没有历史记录。等你在 Option Positions 里点击 Close 平仓后，这里会开始累计。</div>
-            ) : visibleClosedTrades.length === 0 ? (
+            {unifiedHistory.length === 0 ? (
+              <div className="empty-state">还没有历史记录。等你平仓期权、买入股票或卖出股票后，这里会开始累计。</div>
+            ) : visibleHistoryItems.length === 0 ? (
               <div className="empty-state">当前筛选条件下没有匹配的历史记录。</div>
             ) : (
               <div className="history-list">
-                {visibleClosedTrades.map((trade) => (
-                  <div key={trade.id} className="history-row history-trade-row">
-                    <div className="history-trade-main">
-                      <div className="ticker-risk-main">
-                        <span>{trade.ticker} · {getOptionSideBadge(trade.option_side)} · ${trade.put_strike.toFixed(2)} strike</span>
-                        <small>
-                          卖出 {trade.date_sold} · 平仓 {trade.closed_at} · {trade.contracts} contract{trade.contracts > 1 ? 's' : ''}
-                        </small>
-                        <small>
-                          收入 {formatCurrency(trade.premium_sold_per_share)}/share · {trade.close_reason === 'expired' ? 'Expired 到期（权利金全额回收）' : `买回 ${formatCurrency(trade.premium_bought_back_per_share)}/share`}
-                        </small>
+                {visibleHistoryItems.map((item) =>
+                  item.kind === 'option' ? (
+                    <div key={item.id} className="history-row history-trade-row">
+                      <div className="history-trade-main">
+                        <div className="ticker-risk-main">
+                          <span>{item.trade.ticker} · {getOptionSideBadge(item.trade.option_side)} · ${item.trade.put_strike.toFixed(2)} strike</span>
+                          <small>
+                            卖出 {item.trade.date_sold} · 平仓 {item.trade.closed_at} · {item.trade.contracts} contract{item.trade.contracts > 1 ? 's' : ''}
+                          </small>
+                          <small>
+                            收入 {formatCurrency(item.trade.premium_sold_per_share)}/share · {item.trade.close_reason === 'expired' ? 'Expired 到期（权利金全额回收）' : `买回 ${formatCurrency(item.trade.premium_bought_back_per_share)}/share`}
+                          </small>
+                        </div>
+                        <label className="history-reflection-field">
+                          <span>复盘 / 反思总结</span>
+                          <textarea
+                            value={item.trade.reflection_notes ?? ''}
+                            onChange={(event) => handleUpdateClosedTradeReflection(item.trade.id, event.target.value)}
+                            placeholder="记录这笔交易做得不好的地方、触发亏损的原因、下次如何避免。"
+                          />
+                        </label>
                       </div>
-                      <label className="history-reflection-field">
-                        <span>复盘 / 反思总结</span>
-                        <textarea
-                          value={trade.reflection_notes ?? ''}
-                          onChange={(event) => handleUpdateClosedTradeReflection(trade.id, event.target.value)}
-                          placeholder="记录这笔交易做得不好的地方、触发亏损的原因、下次如何避免。"
-                        />
-                      </label>
+                      <div className="history-row-actions">
+                        <strong>{formatCurrency(item.trade.realized_pnl)}</strong>
+                        <button type="button" className="ghost-button" onClick={() => handleEditClosedTrade(item.trade)}>
+                          Edit
+                        </button>
+                      </div>
                     </div>
-                    <div className="history-row-actions">
-                      <strong>{formatCurrency(trade.realized_pnl)}</strong>
-                      <button type="button" className="ghost-button" onClick={() => handleEditClosedTrade(trade)}>
-                        Edit
-                      </button>
+                  ) : (
+                    <div key={item.id} className="history-row history-trade-row">
+                      <div className="history-trade-main">
+                        <div className="ticker-risk-main">
+                          <span>{item.trade.ticker} · 股票 · {item.trade.action === 'buy' ? '买入' : '卖出'}</span>
+                          <small>
+                            {item.trade.traded_at} · {item.trade.shares} 股 · {formatCurrency(item.trade.price_per_share)}/share
+                          </small>
+                          <small>
+                            现金变化 {formatSignedCurrency(item.trade.cash_change)}
+                            {item.trade.action === 'sell' ? ` · 已实现盈亏 ${formatSignedCurrency(item.trade.realized_pnl)}` : ' · 建仓记录'}
+                          </small>
+                        </div>
+                      </div>
+                      <div className="history-row-actions">
+                        <strong>{formatCurrency(item.trade.realized_pnl)}</strong>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  )
+                )}
               </div>
             )}
           </section>
@@ -6399,6 +6572,71 @@ function App() {
           </div>
         )}
 
+        {buyStockPreview && (
+          <div className="modal-backdrop" role="presentation" onClick={() => setBuyStockPreview(null)}>
+            <div
+              className="modal-card"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="buy-stock-title"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <p className="section-kicker">Buy Stock</p>
+              <h3 id="buy-stock-title">买入 {buyStockPreview.ticker} 股票</h3>
+              <p className="modal-copy">
+                当前持股 <strong>{buyStockPreview.currentShares}</strong> 股。
+              </p>
+              <div className="form-grid compact">
+                <label>
+                  <span>买入股数</span>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={buyStockPreview.sharesToBuy}
+                    onChange={(event) =>
+                      setBuyStockPreview((current) =>
+                        current ? { ...current, sharesToBuy: event.target.value } : current
+                      )
+                    }
+                  />
+                </label>
+                <label>
+                  <span>买入价格</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={buyStockPreview.buyPricePerShare}
+                    onChange={(event) =>
+                      setBuyStockPreview((current) =>
+                        current ? { ...current, buyPricePerShare: event.target.value } : current
+                      )
+                    }
+                  />
+                </label>
+              </div>
+              <p className="modal-copy">
+                预计占用现金：
+                <strong>
+                  {formatCurrency(
+                    Math.max(Number(buyStockPreview.sharesToBuy) || 0, 0) *
+                      Math.max(Number(buyStockPreview.buyPricePerShare) || 0, 0)
+                  )}
+                </strong>
+              </p>
+              <div className="modal-actions">
+                <button className="ghost-button" onClick={() => setBuyStockPreview(null)} type="button">
+                  Cancel
+                </button>
+                <button className="primary-button" onClick={confirmBuyStock} type="button">
+                  Confirm Buy
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {activeTab === 'dashboard' && (
         <section className="card">
           <div className="section-header">
@@ -6773,6 +7011,14 @@ function App() {
                       Cancel
                     </button>
                   ) : null}
+                  <button
+                    className="ghost-button ticker-refresh-button"
+                    onClick={() => handleOpenBuyStock(entry)}
+                    type="button"
+                    disabled={refreshingTicker !== null || isRefreshingAllTickers}
+                  >
+                    Buy
+                  </button>
                   <button
                     className="ghost-button ticker-refresh-button"
                     onClick={() => handleRefreshTicker(entry)}

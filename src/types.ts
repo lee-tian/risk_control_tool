@@ -55,6 +55,17 @@ export type ClosedPutTrade = {
   reflection_notes?: string;
 };
 
+export type StockTradeHistory = {
+  id: string;
+  ticker: string;
+  action: 'buy' | 'sell';
+  shares: number;
+  price_per_share: number;
+  traded_at: string;
+  cash_change: number;
+  realized_pnl: number;
+};
+
 export type TickerEntry = {
   ticker: string;
   beta: number | null;
@@ -119,6 +130,12 @@ export type VixHistoryPoint = {
   stress: number;
 };
 
+export type AccountValueSnapshot = {
+  date: string;
+  total_capital: number;
+  as_of: string;
+};
+
 export type PortfolioMetrics = {
   weightedAverageBeta: number;
   weightedAverageEffectiveStressPct: number;
@@ -167,8 +184,10 @@ export type AppStateSnapshot = {
     config: Config | null;
     puts: PutPosition[];
     closedTrades: ClosedPutTrade[];
+    stockTrades: StockTradeHistory[];
     tickerList: TickerEntry[];
     scenario: StressScenario | null;
     vixHistory: VixHistoryPoint[];
+    accountValueHistory: AccountValueSnapshot[];
   };
 };

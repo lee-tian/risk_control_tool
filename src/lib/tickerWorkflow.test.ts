@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { TickerEntry } from '../types';
 import {
   addTickerEntry,
+  buyTickerShares,
   createTickerEntryFromDraft,
   findTickerEntry,
   removeTickerEntry,
@@ -193,6 +194,20 @@ describe('tickerWorkflow', () => {
       ],
       proceeds: 20000,
       remainingShares: 0
+    });
+  });
+
+  it('buys more shares and updates weighted average cost basis', () => {
+    const result = buyTickerShares(baseEntries, 'AAPL', 50, 250);
+
+    expect(result).toMatchObject({
+      cost: 12500,
+      totalShares: 150
+    });
+    expect(result?.averageCostBasis).toBeCloseTo((100 * 180 + 50 * 250) / 150);
+    expect(result?.nextEntries[0]).toMatchObject({
+      shares: 150,
+      average_cost_basis: (100 * 180 + 50 * 250) / 150
     });
   });
 });

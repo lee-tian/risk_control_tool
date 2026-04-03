@@ -134,3 +134,49 @@ export function sellTickerShares(
     remainingShares
   };
 }
+
+export function buyTickerShares(
+  entries: TickerEntry[],
+  ticker: string,
+  sharesToBuy: number,
+  buyPricePerShare: number
+): { nextEntries: TickerEntry[]; cost: number; totalShares: number; averageCostBasis: number } | null {
+  const normalized = normalizeTickerSymbol(ticker);
+  const currentEntry = entries.find((entry) => entry.ticker === normalized);
+
+  if (!currentEntry) {
+    return null;
+  }
+  if (!Number.isFinite(sharesToBuy) || sharesToBuy <= 0) {
+    return null;
+  }
+  if (!Number.isFinite(buyPricePerShare) || buyPricePerShare < 0) {
+    return null;
+  }
+
+  const currentShares = currentEntry.shares ?? 0;
+  const currentAverageCostBasis = currentEntry.average_cost_basis ?? 0;
+  const totalShares = currentShares + sharesToBuy;
+  const cost = sharesToBuy * buyPricePerShare;
+  const averageCostBasis =
+    totalShares > 0
+      ? ((currentShares * currentAverageCostBasis) + cost) / totalShares
+      : buyPricePerShare;
+
+  const nextEntries = entries.map((entry) =>
+    entry.ticker === normalized
+      ? {
+          ...entry,
+          shares: totalShares,
+          average_cost_basis: averageCostBasis
+        }
+      : entry
+  );
+
+  return {
+    nextEntries,
+    cost,
+    totalShares,
+    averageCostBasis
+  };
+}
