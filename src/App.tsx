@@ -1398,11 +1398,13 @@ function App() {
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const addPutSectionRef = useRef<HTMLElement | null>(null);
   const hasHydratedSnapshotRef = useRef(false);
+  const hasLoadedRemoteSnapshotRef = useRef(false);
   const latestBackgroundRefreshFinishedAtRef = useRef<string | null>(null);
   const [isSnapshotHydrated, setIsSnapshotHydrated] = useState(false);
 
   function applyRemoteSnapshot(snapshotPayload: unknown, successMessage?: string) {
     const snapshot = parseAppStateSnapshot(JSON.stringify(snapshotPayload));
+    hasLoadedRemoteSnapshotRef.current = true;
 
     setConfig(snapshot.data.config);
     setConfigForm(snapshot.data.config ?? DEFAULT_CONFIG);
@@ -1753,7 +1755,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!hasHydratedSnapshotRef.current) {
+    if (!hasHydratedSnapshotRef.current || !hasLoadedRemoteSnapshotRef.current) {
       return;
     }
 
@@ -2056,7 +2058,7 @@ function App() {
           callUnrealizedPnl: callRows.some((row) => typeof row.option_market_price_per_share === 'number')
             ? callUnrealizedPnl
             : null,
-          callSectionLabel: shares > 0 ? 'Covered Call' : 'Call Position',
+          callSectionLabel: 'Call 持仓',
           callStrikeLabel:
             distinctStrikes.length === 0
               ? ''
@@ -3918,6 +3920,7 @@ function App() {
         throw new Error(payload.error ?? '保存失败');
       }
 
+      hasLoadedRemoteSnapshotRef.current = true;
       setImportExportMessage('已保存当前全部数据到本地文件');
     } catch (error) {
       setImportExportMessage(error instanceof Error ? error.message : '保存失败');
@@ -4331,8 +4334,6 @@ function App() {
                                         </small>
                                       ) : null}
                                       <div className="stock-holding-grid">
-                                        <small>合约数</small>
-                                        <strong>{holding.callCount} 张</strong>
                                         <small>{holding.hasStockHolding ? '覆盖股数' : '状态'}</small>
                                         <strong>{holding.hasStockHolding ? `${holding.coveredCallShares} shares` : '未覆盖'}</strong>
                                         {holding.hasStockHolding ? (
