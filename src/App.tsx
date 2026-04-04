@@ -11,20 +11,11 @@ import { analyzeVixTrend } from './lib/vixTrend';
 import {
   buildAppStateSnapshot,
   applyPutPositionsImportPayload,
+  clearCoreAppStateCache,
   loadScenario,
   loadVixHistory,
   parseAppStateSnapshot,
   parsePutPositionsImportPayload,
-  saveConfig,
-  saveClosedTrades,
-  saveDeletedPositionIds,
-  saveDeletedTickers,
-  savePuts,
-  saveScenario,
-  saveStockTrades,
-  saveAccountValueHistory,
-  saveTickerList,
-  saveVixHistory
 } from './lib/storage';
 import {
   buildClosedTradeEditPreview,
@@ -1170,14 +1161,10 @@ function savePutPosition(
   setTickerList: React.Dispatch<React.SetStateAction<TickerEntry[]>>
 ) {
   setTickerList((current) => {
-    const nextTickerList = ensureTickerExists(current, normalized.ticker);
-    saveTickerList(nextTickerList);
-    return nextTickerList;
+    return ensureTickerExists(current, normalized.ticker);
   });
   setPuts((current) => {
-    const nextPuts = upsertPutPosition(current, normalized, editingPutId, generateId);
-    savePuts(nextPuts);
-    return nextPuts;
+    return upsertPutPosition(current, normalized, editingPutId, generateId);
   });
 }
 
@@ -1232,6 +1219,7 @@ function App() {
   const [scenario, setScenario] = useState<StressScenario>(getInitialScenario());
   const [configForm, setConfigForm] = useState<Config>(DEFAULT_CONFIG);
   const [configErrors, setConfigErrors] = useState<ValidationErrors<Config>>({});
+  const [isEditingConfig, setIsEditingConfig] = useState(false);
   const [putForm, setPutForm] = useState<PutPosition>(initialOptionDraft.putForm);
   const [putErrors, setPutErrors] = useState<ValidationErrors<PutPosition>>({});
   const [editingPutId, setEditingPutId] = useState<string | null>(initialOptionDraft.editingPutId);
@@ -1387,6 +1375,7 @@ function App() {
   const hasHydratedSnapshotRef = useRef(false);
   const hasLoadedRemoteSnapshotRef = useRef(false);
   const latestBackgroundRefreshFinishedAtRef = useRef<string | null>(null);
+  const isEditingConfigRef = useRef(false);
   const [isSnapshotHydrated, setIsSnapshotHydrated] = useState(false);
 
   function applyRemoteSnapshot(snapshotPayload: unknown, successMessage?: string) {
@@ -1394,7 +1383,11 @@ function App() {
     hasLoadedRemoteSnapshotRef.current = true;
 
     setConfig(snapshot.data.config);
-    setConfigForm(snapshot.data.config ?? DEFAULT_CONFIG);
+    if (!isEditingConfigRef.current) {
+      setConfigForm(snapshot.data.config ?? DEFAULT_CONFIG);
+      setIsEditingConfig(false);
+    }
+    clearCoreAppStateCache();
     setPuts(snapshot.data.puts);
     setClosedTrades(snapshot.data.closedTrades);
     setStockTrades(snapshot.data.stockTrades);
@@ -1422,44 +1415,12 @@ function App() {
   const tickerMap = useMemo(() => new Map(tickerList.map((entry) => [entry.ticker, entry])), [tickerList]);
 
   useEffect(() => {
-    savePuts(puts);
-  }, [puts]);
-
-  useEffect(() => {
     putsRef.current = puts;
   }, [puts]);
 
   useEffect(() => {
-    saveClosedTrades(closedTrades);
-  }, [closedTrades]);
-
-  useEffect(() => {
-    saveStockTrades(stockTrades);
-  }, [stockTrades]);
-
-  useEffect(() => {
-    saveTickerList(tickerList);
-  }, [tickerList]);
-
-  useEffect(() => {
-    saveDeletedTickers(deletedTickers);
-  }, [deletedTickers]);
-
-  useEffect(() => {
-    saveDeletedPositionIds(deletedPositionIds);
-  }, [deletedPositionIds]);
-
-  useEffect(() => {
-    saveScenario(scenario);
-  }, [scenario]);
-
-  useEffect(() => {
-    saveVixHistory(vixHistory);
-  }, [vixHistory]);
-
-  useEffect(() => {
-    saveAccountValueHistory(accountValueHistory);
-  }, [accountValueHistory]);
+    isEditingConfigRef.current = isEditingConfig;
+  }, [isEditingConfig]);
 
   useEffect(() => {
     if (copyMessage === '') return;
@@ -1940,9 +1901,6 @@ function App() {
       .filter(Boolean)
       .filter((value, index, array) => array.indexOf(value) === index)
       .sort();
-    saveClosedTrades(nextClosedTrades);
-    savePuts(nextPuts);
-    saveDeletedPositionIds(nextDeletedPositionIds);
     setClosedTrades(nextClosedTrades);
     setPuts(nextPuts);
     setDeletedPositionIds(nextDeletedPositionIds);
@@ -2560,8 +2518,20 @@ function App() {
     if (Object.keys(errors).length > 0) return;
 
     setConfig(configForm);
-    saveConfig(configForm);
     await handleSaveAppState(configForm);
+    setIsEditingConfig(false);
+  }
+
+  function handleStartConfigEdit() {
+    setConfigForm(config ?? DEFAULT_CONFIG);
+    setConfigErrors({});
+    setIsEditingConfig(true);
+  }
+
+  function handleCancelConfigEdit() {
+    setConfigForm(config ?? DEFAULT_CONFIG);
+    setConfigErrors({});
+    setIsEditingConfig(false);
   }
 
   async function runPutChecksAndSave(normalized: PutPosition): Promise<'saved' | 'blocked' | 'error'> {
@@ -2718,7 +2688,6 @@ function App() {
 
     savePutPosition(normalized, editingPutId, setPuts, setTickerList);
     const nextConfig = applyOptionOpenCash(config, configForm ?? DEFAULT_CONFIG, normalized, editingPutId !== null);
-    saveConfig(nextConfig);
     setConfig(nextConfig);
     setConfigForm(nextConfig);
     setConfigErrors({});
@@ -3050,16 +3019,12 @@ function App() {
 
     const deleteResult = deleteOpenPositionAndPruneTicker(puts, tickerList, deletePreview.id);
     const nextDeletedPositionIds = [...deletedPositionIds.filter((item) => item !== deletePreview.id), deletePreview.id].sort();
-    savePuts(deleteResult.nextPuts);
-    saveDeletedPositionIds(nextDeletedPositionIds);
     setPuts(deleteResult.nextPuts);
     setDeletedPositionIds(nextDeletedPositionIds);
     if (deleteResult.removedTicker) {
-      saveTickerList(deleteResult.nextTickerList);
       setTickerList(deleteResult.nextTickerList);
       const removedTicker = deleteResult.removedTicker;
       const nextDeletedTickers = [...deletedTickers.filter((item) => item !== removedTicker), removedTicker].sort();
-      saveDeletedTickers(nextDeletedTickers);
       setDeletedTickers(nextDeletedTickers);
       if (putForm.ticker === deleteResult.removedTicker) {
         setPutForm((current) => ({ ...current, ticker: '' }));
@@ -3099,13 +3064,10 @@ function App() {
       generateId,
       contractsToClose
     );
-    saveClosedTrades(closeResult.nextClosedTrades);
-    savePuts(closeResult.nextPuts);
     setClosedTrades(closeResult.nextClosedTrades);
     setPuts(closeResult.nextPuts);
 
     const nextConfig = applyOptionCloseCash(config, configForm ?? DEFAULT_CONFIG, buybackPremiumPerShare, contractsToClose);
-    saveConfig(nextConfig);
     setConfig(nextConfig);
     setConfigForm(nextConfig);
     setConfigErrors({});
@@ -3113,7 +3075,6 @@ function App() {
     const isFullyClosed = contractsToClose >= closePreview.row.contracts;
     if (isFullyClosed) {
       const nextDeletedPositionIds = [...deletedPositionIds.filter((item) => item !== closePreview.row.id), closePreview.row.id].sort();
-      saveDeletedPositionIds(nextDeletedPositionIds);
       setDeletedPositionIds(nextDeletedPositionIds);
     }
 
@@ -3267,33 +3228,52 @@ function App() {
     }
 
     setTickerList((current) => {
-      const nextTickerList = updateTickerEntry(current, ticker, {
+      return updateTickerEntry(current, ticker, {
         beta: draft.beta.trim() === '' ? null : Number(draft.beta),
         shares: draft.shares.trim() === '' ? null : Number(draft.shares),
         average_cost_basis: draft.averageCostBasis.trim() === '' ? null : Number(draft.averageCostBasis),
         downside_tolerance_pct: draft.downsideTolerancePct.trim() === '' ? null : Number(draft.downsideTolerancePct) / 100
       });
-      saveTickerList(nextTickerList);
-      return nextTickerList;
     });
 
     handleCancelTickerEdit(ticker);
     setTickerMessage(`已保存 ${ticker}`);
   }
 
-  function handleDeleteTicker(ticker: string) {
+  async function handleDeleteTicker(ticker: string) {
     const hasOpenPut = puts.some((put) => put.ticker === ticker);
     if (hasOpenPut) {
       setTickerMessage(`无法删除 ${ticker}：还有 Option 仓位在使用它`);
       return;
     }
 
-    setTickerList((current) => removeTickerEntry(current, ticker));
-    setDeletedTickers((current) => [...current.filter((item) => item !== ticker), ticker].sort());
+    const nextTickerList = removeTickerEntry(tickerList, ticker);
+    const nextDeletedTickers = [...deletedTickers.filter((item) => item !== ticker), ticker].sort();
+    setTickerList(nextTickerList);
+    setDeletedTickers(nextDeletedTickers);
     if (putForm.ticker === ticker) {
       setPutForm((current) => ({ ...current, ticker: '' }));
     }
-    setTickerMessage(`已删除 ${ticker}`);
+
+    try {
+      await persistAppStateSnapshot(
+        buildAppStateSnapshot({
+          config,
+          puts,
+          closedTrades,
+          stockTrades,
+          tickerList: nextTickerList,
+          scenario,
+          vixHistory,
+          accountValueHistory
+        }),
+        `已删除 ${ticker}`,
+        '删除股票后保存失败'
+      );
+    } catch (error) {
+      setTickerMessage(error instanceof Error ? error.message : '删除股票后保存失败');
+      return;
+    }
   }
 
   function handleOpenSellStock(entry: TickerEntry) {
@@ -3361,7 +3341,6 @@ function App() {
       return;
     }
 
-    saveTickerList(sellResult.nextEntries);
     setTickerList(sellResult.nextEntries);
 
     const averageCostBasis =
@@ -3382,7 +3361,6 @@ function App() {
     ]);
 
     const nextConfig = applyStockSellCash(config, configForm ?? DEFAULT_CONFIG, sellResult.proceeds);
-    saveConfig(nextConfig);
     setConfig(nextConfig);
     setConfigForm(nextConfig);
     setConfigErrors({});
@@ -3421,7 +3399,6 @@ function App() {
       return;
     }
 
-    saveTickerList(buyResult.nextEntries);
     setTickerList(buyResult.nextEntries);
 
     setStockTrades((current) => [
@@ -3439,7 +3416,6 @@ function App() {
     ]);
 
     const nextConfig = applyStockBuyCash(config, configForm ?? DEFAULT_CONFIG, buyResult.cost);
-    saveConfig(nextConfig);
     setConfig(nextConfig);
     setConfigForm(nextConfig);
     setConfigErrors({});
@@ -3902,6 +3878,7 @@ function App() {
     }
 
     hasLoadedRemoteSnapshotRef.current = true;
+    clearCoreAppStateCache();
     if (successMessage) {
       setImportExportMessage(successMessage);
     }
@@ -3937,6 +3914,8 @@ function App() {
         setConfig(snapshot.data.config);
         setConfigForm(snapshot.data.config ?? DEFAULT_CONFIG);
         setConfigErrors({});
+        setIsEditingConfig(false);
+        clearCoreAppStateCache();
         setPuts(snapshot.data.puts);
         setClosedTrades(snapshot.data.closedTrades);
         setStockTrades(snapshot.data.stockTrades);
@@ -5675,7 +5654,6 @@ function App() {
                         forceSellCandidate,
                         editingPutId !== null
                       );
-                      saveConfig(nextConfig);
                       setConfig(nextConfig);
                       setConfigForm(nextConfig);
                       setConfigErrors({});
@@ -6690,9 +6668,13 @@ function App() {
               <button className="ghost-button" onClick={handleExportData} type="button">
                 Export All Data
               </button>
-              <button className="primary-button" onClick={() => void handleSaveConfig()} type="button">
-                Save
-              </button>
+              {!isEditingConfig ? (
+                <button className="primary-button" onClick={handleStartConfigEdit} type="button">
+                  Edit
+                </button>
+              ) : (
+                <span className="config-edit-pill">编辑中</span>
+              )}
             </div>
           </div>
           {importExportMessage && <div className="copy-message">{importExportMessage}</div>}
@@ -6759,6 +6741,7 @@ function App() {
                 min="0"
                 step="0.01"
                 value={configForm.cash}
+                disabled={!isEditingConfig}
                 onChange={(event) => setConfigForm((current) => ({ ...current, cash: toInputNumber(event.target.value) }))}
               />
               <FieldError message={configErrors.cash} />
@@ -6771,6 +6754,7 @@ function App() {
                 max="100"
                 step="0.1"
                 value={decimalToPercentInput(configForm.risk_limit_pct)}
+                disabled={!isEditingConfig}
                 onChange={(event) =>
                   setConfigForm((current) => ({ ...current, risk_limit_pct: percentInputToDecimal(event.target.value) }))
                 }
@@ -6785,6 +6769,7 @@ function App() {
                 max="100"
                 step="0.1"
                 value={decimalToPercentInput(configForm.warning_threshold_pct)}
+                disabled={!isEditingConfig}
                 onChange={(event) =>
                   setConfigForm((current) => ({
                     ...current,
@@ -6795,6 +6780,19 @@ function App() {
               <FieldError message={configErrors.warning_threshold_pct} />
             </label>
           </div>
+          {isEditingConfig && (
+            <div className="config-edit-actions">
+              <div className="copy-message">编辑完成后，点击 Save 保存到 NAS / Docker 后端文件。</div>
+              <div className="inline-actions">
+                <button className="ghost-button" onClick={handleCancelConfigEdit} type="button">
+                  Cancel
+                </button>
+                <button className="primary-button" onClick={() => void handleSaveConfig()} type="button">
+                  Save
+                </button>
+              </div>
+            </div>
+          )}
           {!config && <div className="empty-banner">尚未保存配置。请先填写可用于卖期权的资金和风险参数。</div>}
         </section>
         )}
