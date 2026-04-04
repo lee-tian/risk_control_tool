@@ -11,23 +11,10 @@ import { analyzeVixTrend } from './lib/vixTrend';
 import {
   buildAppStateSnapshot,
   applyPutPositionsImportPayload,
-  filterDeletedTickers,
-  loadClosedTrades,
-  loadConfig,
-  loadDeletedPositionIds,
-  loadDeletedTickers,
-  loadPuts,
   loadScenario,
-  loadStockTrades,
-  loadAccountValueHistory,
-  loadTickerList,
   loadVixHistory,
-  mergeClosedTradesPreservingLocal,
-  mergeStockTradesPreservingLocal,
-  mergeTickerListsPreservingManualFields,
   parseAppStateSnapshot,
   parsePutPositionsImportPayload,
-  reconcileHydratedOpenPositions,
   saveConfig,
   saveClosedTrades,
   saveDeletedPositionIds,
@@ -1237,14 +1224,13 @@ function normalizeBackgroundRefreshStatus(raw: unknown): BackgroundRefreshStatus
 
 function App() {
   const initialOptionDraft = loadOptionDraftState();
-  const savedConfig = loadConfig();
-  const [config, setConfig] = useState<Config | null>(savedConfig);
-  const [puts, setPuts] = useState<PutPosition[]>(loadPuts());
-  const [closedTrades, setClosedTrades] = useState<ClosedPutTrade[]>(loadClosedTrades());
-  const [stockTrades, setStockTrades] = useState<StockTradeHistory[]>(loadStockTrades());
-  const [tickerList, setTickerList] = useState<TickerEntry[]>(() => loadTickerList());
+  const [config, setConfig] = useState<Config | null>(null);
+  const [puts, setPuts] = useState<PutPosition[]>([]);
+  const [closedTrades, setClosedTrades] = useState<ClosedPutTrade[]>([]);
+  const [stockTrades, setStockTrades] = useState<StockTradeHistory[]>([]);
+  const [tickerList, setTickerList] = useState<TickerEntry[]>([]);
   const [scenario, setScenario] = useState<StressScenario>(getInitialScenario());
-  const [configForm, setConfigForm] = useState<Config>(savedConfig ?? DEFAULT_CONFIG);
+  const [configForm, setConfigForm] = useState<Config>(DEFAULT_CONFIG);
   const [configErrors, setConfigErrors] = useState<ValidationErrors<Config>>({});
   const [putForm, setPutForm] = useState<PutPosition>(initialOptionDraft.putForm);
   const [putErrors, setPutErrors] = useState<ValidationErrors<PutPosition>>({});
@@ -1374,9 +1360,9 @@ function App() {
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all');
   const [copyMessage, setCopyMessage] = useState('');
   const [importExportMessage, setImportExportMessage] = useState('');
-  const [accountValueHistory, setAccountValueHistory] = useState<AccountValueSnapshot[]>(() => loadAccountValueHistory());
-  const [deletedTickers, setDeletedTickers] = useState<string[]>(() => loadDeletedTickers());
-  const [deletedPositionIds, setDeletedPositionIds] = useState<string[]>(() => loadDeletedPositionIds());
+  const [accountValueHistory, setAccountValueHistory] = useState<AccountValueSnapshot[]>([]);
+  const [deletedTickers, setDeletedTickers] = useState<string[]>([]);
+  const [deletedPositionIds, setDeletedPositionIds] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<AppTab>(() => {
     if (typeof window === 'undefined') {
       return 'dashboard';
@@ -1409,24 +1395,15 @@ function App() {
 
     setConfig(snapshot.data.config);
     setConfigForm(snapshot.data.config ?? DEFAULT_CONFIG);
-    setClosedTrades((currentClosedTrades) => {
-      const nextClosedTrades = mergeClosedTradesPreservingLocal(snapshot.data.closedTrades, currentClosedTrades);
-      setPuts((currentPuts) => reconcileHydratedOpenPositions(snapshot.data.puts, currentPuts, deletedPositionIds, nextClosedTrades));
-      return nextClosedTrades;
-    });
-    setStockTrades((current) => mergeStockTradesPreservingLocal(snapshot.data.stockTrades, current));
-    setTickerList((current) =>
-      filterDeletedTickers(mergeTickerListsPreservingManualFields(snapshot.data.tickerList, current), deletedTickers)
-    );
+    setPuts(snapshot.data.puts);
+    setClosedTrades(snapshot.data.closedTrades);
+    setStockTrades(snapshot.data.stockTrades);
+    setTickerList(snapshot.data.tickerList);
     setScenario(snapshot.data.scenario ?? DEFAULT_STRESS_SCENARIO);
     setVixHistory(mergeSeededVixHistory(snapshot.data.vixHistory));
-    setAccountValueHistory((current) => {
-      const latestByDate = new Map<string, AccountValueSnapshot>();
-      for (const item of [...current, ...snapshot.data.accountValueHistory]) {
-        latestByDate.set(item.date, item);
-      }
-      return [...latestByDate.values()].sort((a, b) => a.date.localeCompare(b.date) || a.as_of.localeCompare(b.as_of));
-    });
+    setAccountValueHistory(snapshot.data.accountValueHistory);
+    setDeletedTickers([]);
+    setDeletedPositionIds([]);
     if (successMessage) {
       setImportExportMessage(successMessage);
     }
@@ -3096,7 +3073,7 @@ function App() {
     setDeletePreview(null);
   }
 
-  function confirmClosePut() {
+  async function confirmClosePut() {
     if (!closePreview) {
       return;
     }
@@ -3145,12 +3122,30 @@ function App() {
       setPutForm(createEmptyPut());
       setPutErrors({});
     }
-    setImportExportMessage(
-      `已平仓 ${closePreview.row.ticker} ${contractsToClose} 张，已实现盈亏 ${formatCurrency(
-        (closePreview.row.premium_per_share - buybackPremiumPerShare) * contractsToClose * 100
-      )}`
-    );
+
+    const successMessage = `已平仓 ${closePreview.row.ticker} ${contractsToClose} 张，已实现盈亏 ${formatCurrency(
+      (closePreview.row.premium_per_share - buybackPremiumPerShare) * contractsToClose * 100
+    )}`;
     setClosePreview(null);
+
+    try {
+      await persistAppStateSnapshot(
+        buildAppStateSnapshot({
+          config: nextConfig,
+          puts: closeResult.nextPuts,
+          closedTrades: closeResult.nextClosedTrades,
+          stockTrades,
+          tickerList,
+          scenario,
+          vixHistory,
+          accountValueHistory
+        }),
+        successMessage,
+        '平仓后保存失败'
+      );
+    } catch (error) {
+      setImportExportMessage(error instanceof Error ? error.message : '平仓后保存失败');
+    }
   }
 
   function handleEditClosedTrade(trade: ClosedPutTrade) {
@@ -3888,6 +3883,30 @@ function App() {
     handleOpenStockFromDashboard(ticker);
   }
 
+  async function persistAppStateSnapshot(
+    snapshot: ReturnType<typeof buildAppStateSnapshot>,
+    successMessage?: string,
+    failureFallback = '保存失败'
+  ) {
+    const response = await fetch('/api/app-state', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(snapshot)
+    });
+    const payload = (await response.json()) as { ok?: boolean; error?: string };
+
+    if (!response.ok || payload.error) {
+      throw new Error(payload.error ?? failureFallback);
+    }
+
+    hasLoadedRemoteSnapshotRef.current = true;
+    if (successMessage) {
+      setImportExportMessage(successMessage);
+    }
+  }
+
   async function handleSaveAppState(configOverride?: Config | null) {
     try {
       const snapshot = buildAppStateSnapshot({
@@ -3901,21 +3920,7 @@ function App() {
         accountValueHistory
       });
 
-      const response = await fetch('/api/app-state', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(snapshot)
-      });
-      const payload = (await response.json()) as { ok?: boolean; error?: string };
-
-      if (!response.ok || payload.error) {
-        throw new Error(payload.error ?? '保存失败');
-      }
-
-      hasLoadedRemoteSnapshotRef.current = true;
-      setImportExportMessage('已保存当前全部数据到本地文件');
+      await persistAppStateSnapshot(snapshot, '已保存当前全部数据到本地文件');
     } catch (error) {
       setImportExportMessage(error instanceof Error ? error.message : '保存失败');
     }
@@ -3947,13 +3952,8 @@ function App() {
         const payload = parsePutPositionsImportPayload(raw);
         const imported = applyPutPositionsImportPayload(payload);
         setPuts(imported.puts);
-        setTickerList(
-          filterDeletedTickers(
-            imported.tickerList,
-            deletedTickers.filter((item) => !imported.tickerList.some((entry) => entry.ticker === item))
-          )
-        );
-        setDeletedTickers((current) => current.filter((item) => !imported.tickerList.some((entry) => entry.ticker === item)));
+        setTickerList(imported.tickerList);
+        setDeletedTickers([]);
         setImportExportMessage('Option 数据导入成功');
       }
     } catch {
@@ -4494,6 +4494,17 @@ function App() {
                     }
                   >
                     {formatSignedCurrency(riskCalculator.totalNetChange)}
+                  </small>
+                  <small
+                    className={
+                      (riskCalculator.totalNetChangePctOfCapital ?? 0) > 0
+                        ? 'value-positive'
+                        : (riskCalculator.totalNetChangePctOfCapital ?? 0) < 0
+                          ? 'value-negative'
+                          : ''
+                    }
+                  >
+                    {`盈利百分比 ${formatSignedPercent(riskCalculator.totalNetChangePctOfCapital ?? 0)}`}
                   </small>
                 </div>
               </div>
