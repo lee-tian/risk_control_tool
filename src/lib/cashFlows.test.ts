@@ -26,9 +26,22 @@ const samplePosition: PutPosition = {
   decision_snapshot: null
 };
 
+const sampleCallPosition: PutPosition = {
+  ...samplePosition,
+  id: 'call-1',
+  option_side: 'call',
+  put_strike: 400,
+  premium_per_share: 6.95,
+  contracts: 2
+};
+
 describe('cashFlows', () => {
   it('adds premium to cash when opening a new option', () => {
     expect(applyOptionOpenCash(baseConfig, baseConfig, samplePosition, false).cash).toBe(101257);
+  });
+
+  it('adds call premium to cash when opening a covered call', () => {
+    expect(applyOptionOpenCash(baseConfig, baseConfig, sampleCallPosition, false).cash).toBe(101390);
   });
 
   it('does not change cash when editing an option', () => {
@@ -37,6 +50,12 @@ describe('cashFlows', () => {
 
   it('subtracts buyback cost from cash when closing an option', () => {
     expect(applyOptionCloseCash(baseConfig, baseConfig, 3.2, 2).cash).toBe(99360);
+  });
+
+  it('falls back to the provided config values when current config is null', () => {
+    expect(applyStockSellCash(null, baseConfig, 8400).cash).toBe(108400);
+    expect(applyStockBuyCash(null, baseConfig, 12500).cash).toBe(87500);
+    expect(applyOptionCloseCash(null, baseConfig, 3.2, 2).cash).toBe(99360);
   });
 
   it('adds stock sale proceeds to cash', () => {

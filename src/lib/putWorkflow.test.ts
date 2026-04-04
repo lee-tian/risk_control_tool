@@ -184,11 +184,50 @@ describe('upsertPutPosition', () => {
     expect(next[0].id).toBe('generated-id');
   });
 
+  it('creates a new put and then deletes it cleanly', () => {
+    const created = upsertPutPosition([], basePut, null, () => 'generated-put');
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      id: 'generated-put',
+      ticker: 'NVDA'
+    });
+
+    const next = removePutPosition(created, 'generated-put');
+    expect(next).toEqual([]);
+  });
+
   it('replaces an existing position when editing', () => {
     const current = [{ ...basePut, id: 'existing' }];
     const next = upsertPutPosition(current, { ...basePut, id: 'existing', premium_per_share: 5.2 }, 'existing', () => 'ignored');
     expect(next).toHaveLength(1);
     expect(next[0].premium_per_share).toBe(5.2);
+  });
+
+  it('updates only the targeted put row during edit flow and does not append a duplicate', () => {
+    const untouched = { ...basePut, id: 'other-put', ticker: 'MSFT', premium_per_share: 2.1 };
+    const current = [{ ...basePut, id: 'existing' }, untouched];
+
+    const next = upsertPutPosition(
+      current,
+      {
+        ...basePut,
+        id: 'existing',
+        ticker: 'NVDA',
+        premium_per_share: 5.2,
+        contracts: 2
+      },
+      'existing',
+      () => 'ignored'
+    );
+
+    expect(next).toHaveLength(2);
+    expect(next[0]).toMatchObject({
+      id: 'existing',
+      ticker: 'NVDA',
+      premium_per_share: 5.2,
+      contracts: 2
+    });
+    expect(next[1]).toEqual(untouched);
   });
 
   it('preserves call option side when adding a covered call', () => {
@@ -198,6 +237,60 @@ describe('upsertPutPosition', () => {
         id: 'generated-call',
         option_side: 'call',
         ticker: 'AAPL'
+      })
+    ]);
+  });
+
+  it('preserves call-specific fields when editing an existing covered call', () => {
+    const current = [
+      {
+        ...baseCall,
+        id: 'existing-call',
+        premium_per_share: 6.95,
+        date_sold: '2026-04-01',
+        decision_snapshot: {
+          verdict: '可以考虑',
+          summary: '旧摘要',
+          rationale_check: '旧理由',
+          worst_case: '上涨收益封顶',
+          fundamental_note: '旧基本面',
+          fundamental_events: ['事件A'],
+          current_iv_rank: '41.2',
+          iv_rank_note: '旧 IV',
+          iv_rank_source: 'Barchart',
+          iv_rank_time: '2026-04-01T12:00:00Z',
+          iv_rank_link: 'https://example.com',
+          action: '继续观察',
+          key_risks: ['被提前行权'],
+          max_profit: '$695',
+          risk_at_10pct_drop: '$0',
+          analyzed_at: '2026-04-01T12:00:00Z'
+        }
+      }
+    ];
+
+    const next = upsertPutPosition(
+      current,
+      {
+        ...baseCall,
+        id: 'existing-call',
+        premium_per_share: 7.25,
+        contracts: 2,
+        date_sold: '2026-04-03',
+        decision_snapshot: current[0].decision_snapshot
+      },
+      'existing-call',
+      () => 'ignored'
+    );
+
+    expect(next).toEqual([
+      expect.objectContaining({
+        id: 'existing-call',
+        option_side: 'call',
+        premium_per_share: 7.25,
+        contracts: 2,
+        date_sold: '2026-04-03',
+        decision_snapshot: current[0].decision_snapshot
       })
     ]);
   });

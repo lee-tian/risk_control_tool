@@ -91,6 +91,23 @@ export function saveConfig(config: Config): void {
   saveJson(STORAGE_KEYS.config, config);
 }
 
+export function clearCoreAppStateCache(): void {
+  for (const key of [
+    STORAGE_KEYS.config,
+    STORAGE_KEYS.puts,
+    STORAGE_KEYS.deletedPositionIds,
+    STORAGE_KEYS.tickerList,
+    STORAGE_KEYS.deletedTickers,
+    STORAGE_KEYS.closedTrades,
+    STORAGE_KEYS.stockTrades,
+    STORAGE_KEYS.scenario,
+    STORAGE_KEYS.vixHistory,
+    STORAGE_KEYS.accountValueHistory
+  ]) {
+    window.localStorage.removeItem(key);
+  }
+}
+
 export function loadPuts(): PutPosition[] {
   const rawPuts = loadJson<Array<Record<string, unknown>>>(STORAGE_KEYS.puts, []);
 

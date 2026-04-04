@@ -165,6 +165,17 @@ h2 {
   align-items: center;
 }
 
+.config-edit-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(18, 78, 102, 0.08);
+  color: var(--brand);
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
 .primary-button,
 .ghost-button,
 .segment,
@@ -214,6 +225,32 @@ h2 {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 16px;
+}
+
+.config-edit-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px dashed rgba(31, 70, 108, 0.2);
+}
+
+.config-edit-actions .copy-message {
+  margin: 0;
+  flex: 1;
+}
+
+@media (max-width: 720px) {
+  .config-edit-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .config-edit-actions .inline-actions {
+    justify-content: flex-end;
+  }
 }
 
 .form-grid.compact {

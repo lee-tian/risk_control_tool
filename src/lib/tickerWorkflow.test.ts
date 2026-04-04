@@ -93,6 +93,23 @@ describe('tickerWorkflow', () => {
     });
   });
 
+  it('adds a stock and then deletes it cleanly', () => {
+    const created = addTickerEntry(baseEntries, {
+      ticker: 'msft',
+      beta: '1.1',
+      shares: '50',
+      averageCostBasis: '420',
+      downsideTolerancePct: '8',
+      providerExchange: '',
+      providerMicCode: ''
+    });
+
+    expect(created.map((entry) => entry.ticker)).toEqual(['AAPL', 'MSFT']);
+
+    const next = removeTickerEntry(created, 'MSFT');
+    expect(next).toEqual(baseEntries);
+  });
+
   it('does not add a duplicate stock ticker', () => {
     const next = addTickerEntry(baseEntries, {
       ticker: ' aapl ',
@@ -165,6 +182,12 @@ describe('tickerWorkflow', () => {
     expect(next).toEqual([baseEntries[0]]);
   });
 
+  it('keeps the list unchanged when deleting a missing ticker', () => {
+    const next = removeTickerEntry(baseEntries, 'msft');
+
+    expect(next).toEqual(baseEntries);
+  });
+
   it('sells part of a stock position and returns proceeds', () => {
     const result = sellTickerShares(baseEntries, 'AAPL', 40, 210);
 
@@ -179,6 +202,12 @@ describe('tickerWorkflow', () => {
       proceeds: 8400,
       remainingShares: 60
     });
+  });
+
+  it('rejects invalid sell requests that exceed current shares', () => {
+    const result = sellTickerShares(baseEntries, 'AAPL', 140, 210);
+
+    expect(result).toBeNull();
   });
 
   it('clears average cost after selling the entire position', () => {
@@ -209,5 +238,36 @@ describe('tickerWorkflow', () => {
       shares: 150,
       average_cost_basis: (100 * 180 + 50 * 250) / 150
     });
+  });
+
+  it('buys into an empty holding and uses the buy price as the new cost basis', () => {
+    const result = buyTickerShares(
+      [
+        {
+          ...baseEntries[0],
+          shares: 0,
+          average_cost_basis: null
+        }
+      ],
+      'AAPL',
+      25,
+      190
+    );
+
+    expect(result).toMatchObject({
+      cost: 4750,
+      totalShares: 25,
+      averageCostBasis: 190
+    });
+    expect(result?.nextEntries[0]).toMatchObject({
+      shares: 25,
+      average_cost_basis: 190
+    });
+  });
+
+  it('returns null when buying a ticker that does not exist', () => {
+    const result = buyTickerShares(baseEntries, 'MSFT', 10, 400);
+
+    expect(result).toBeNull();
   });
 });

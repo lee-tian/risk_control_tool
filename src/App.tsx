@@ -3012,30 +3012,48 @@ function App() {
     }
   }
 
-  function confirmDeletePut() {
+  async function confirmDeletePut() {
     if (!deletePreview) {
       return;
     }
 
     const deleteResult = deleteOpenPositionAndPruneTicker(puts, tickerList, deletePreview.id);
     const nextDeletedPositionIds = [...deletedPositionIds.filter((item) => item !== deletePreview.id), deletePreview.id].sort();
-    setPuts(deleteResult.nextPuts);
-    setDeletedPositionIds(nextDeletedPositionIds);
-    if (deleteResult.removedTicker) {
-      setTickerList(deleteResult.nextTickerList);
-      const removedTicker = deleteResult.removedTicker;
-      const nextDeletedTickers = [...deletedTickers.filter((item) => item !== removedTicker), removedTicker].sort();
-      setDeletedTickers(nextDeletedTickers);
-      if (putForm.ticker === deleteResult.removedTicker) {
-        setPutForm((current) => ({ ...current, ticker: '' }));
+    const nextDeletedTickersForRemoval = deleteResult.removedTicker
+      ? [...deletedTickers.filter((item) => item !== deleteResult.removedTicker), deleteResult.removedTicker].sort()
+      : deletedTickers;
+
+    const nextSnapshot = buildAppStateSnapshot({
+      config,
+      puts: deleteResult.nextPuts,
+      closedTrades,
+      stockTrades,
+      tickerList: deleteResult.removedTicker ? deleteResult.nextTickerList : tickerList,
+      scenario,
+      vixHistory,
+      accountValueHistory
+    });
+
+    try {
+      await persistAppStateSnapshot(nextSnapshot, `已删除 ${deletePreview.ticker}`, '删除期权后保存失败');
+      setPuts(deleteResult.nextPuts);
+      setDeletedPositionIds(nextDeletedPositionIds);
+      if (deleteResult.removedTicker) {
+        setTickerList(deleteResult.nextTickerList);
+        setDeletedTickers(nextDeletedTickersForRemoval);
+        if (putForm.ticker === deleteResult.removedTicker) {
+          setPutForm((current) => ({ ...current, ticker: '' }));
+        }
       }
+      if (editingPutId === deletePreview.id) {
+        setEditingPutId(null);
+        setPutForm(createEmptyPut());
+        setPutErrors({});
+      }
+      setDeletePreview(null);
+    } catch (error) {
+      setImportExportMessage(error instanceof Error ? error.message : '删除期权后保存失败');
     }
-    if (editingPutId === deletePreview.id) {
-      setEditingPutId(null);
-      setPutForm(createEmptyPut());
-      setPutErrors({});
-    }
-    setDeletePreview(null);
   }
 
   async function confirmClosePut() {
@@ -3064,46 +3082,46 @@ function App() {
       generateId,
       contractsToClose
     );
-    setClosedTrades(closeResult.nextClosedTrades);
-    setPuts(closeResult.nextPuts);
 
     const nextConfig = applyOptionCloseCash(config, configForm ?? DEFAULT_CONFIG, buybackPremiumPerShare, contractsToClose);
-    setConfig(nextConfig);
-    setConfigForm(nextConfig);
-    setConfigErrors({});
 
     const isFullyClosed = contractsToClose >= closePreview.row.contracts;
-    if (isFullyClosed) {
-      const nextDeletedPositionIds = [...deletedPositionIds.filter((item) => item !== closePreview.row.id), closePreview.row.id].sort();
-      setDeletedPositionIds(nextDeletedPositionIds);
-    }
+    const nextDeletedPositionIds = isFullyClosed
+      ? [...deletedPositionIds.filter((item) => item !== closePreview.row.id), closePreview.row.id].sort()
+      : deletedPositionIds;
 
-    if (editingPutId === closePreview.row.id && isFullyClosed) {
-      setEditingPutId(null);
-      setPutForm(createEmptyPut());
-      setPutErrors({});
-    }
+    const nextSnapshot = buildAppStateSnapshot({
+      config: nextConfig,
+      puts: closeResult.nextPuts,
+      closedTrades: closeResult.nextClosedTrades,
+      stockTrades,
+      tickerList,
+      scenario,
+      vixHistory,
+      accountValueHistory
+    });
 
     const successMessage = `已平仓 ${closePreview.row.ticker} ${contractsToClose} 张，已实现盈亏 ${formatCurrency(
       (closePreview.row.premium_per_share - buybackPremiumPerShare) * contractsToClose * 100
     )}`;
-    setClosePreview(null);
 
     try {
-      await persistAppStateSnapshot(
-        buildAppStateSnapshot({
-          config: nextConfig,
-          puts: closeResult.nextPuts,
-          closedTrades: closeResult.nextClosedTrades,
-          stockTrades,
-          tickerList,
-          scenario,
-          vixHistory,
-          accountValueHistory
-        }),
-        successMessage,
-        '平仓后保存失败'
-      );
+      await persistAppStateSnapshot(nextSnapshot, successMessage, '平仓后保存失败');
+
+      setClosedTrades(closeResult.nextClosedTrades);
+      setPuts(closeResult.nextPuts);
+      setConfig(nextConfig);
+      setConfigForm(nextConfig);
+      setConfigErrors({});
+      if (isFullyClosed) {
+        setDeletedPositionIds(nextDeletedPositionIds);
+      }
+      if (editingPutId === closePreview.row.id && isFullyClosed) {
+        setEditingPutId(null);
+        setPutForm(createEmptyPut());
+        setPutErrors({});
+      }
+      setClosePreview(null);
     } catch (error) {
       setImportExportMessage(error instanceof Error ? error.message : '平仓后保存失败');
     }
@@ -3221,23 +3239,40 @@ function App() {
     }));
   }
 
-  function handleSaveTickerEdit(ticker: string) {
+  async function handleSaveTickerEdit(ticker: string) {
     const draft = tickerDrafts[ticker];
     if (!draft) {
       return;
     }
 
-    setTickerList((current) => {
-      return updateTickerEntry(current, ticker, {
-        beta: draft.beta.trim() === '' ? null : Number(draft.beta),
-        shares: draft.shares.trim() === '' ? null : Number(draft.shares),
-        average_cost_basis: draft.averageCostBasis.trim() === '' ? null : Number(draft.averageCostBasis),
-        downside_tolerance_pct: draft.downsideTolerancePct.trim() === '' ? null : Number(draft.downsideTolerancePct) / 100
-      });
+    const nextTickerList = updateTickerEntry(tickerList, ticker, {
+      beta: draft.beta.trim() === '' ? null : Number(draft.beta),
+      shares: draft.shares.trim() === '' ? null : Number(draft.shares),
+      average_cost_basis: draft.averageCostBasis.trim() === '' ? null : Number(draft.averageCostBasis),
+      downside_tolerance_pct: draft.downsideTolerancePct.trim() === '' ? null : Number(draft.downsideTolerancePct) / 100
     });
 
-    handleCancelTickerEdit(ticker);
-    setTickerMessage(`已保存 ${ticker}`);
+    try {
+      await persistAppStateSnapshot(
+        buildAppStateSnapshot({
+          config,
+          puts,
+          closedTrades,
+          stockTrades,
+          tickerList: nextTickerList,
+          scenario,
+          vixHistory,
+          accountValueHistory
+        }),
+        `已保存 ${ticker}`,
+        '保存股票配置失败'
+      );
+      setTickerList(nextTickerList);
+      handleCancelTickerEdit(ticker);
+      setTickerMessage(`已保存 ${ticker}`);
+    } catch (error) {
+      setTickerMessage(error instanceof Error ? error.message : '保存股票配置失败');
+    }
   }
 
   async function handleDeleteTicker(ticker: string) {
@@ -3249,11 +3284,6 @@ function App() {
 
     const nextTickerList = removeTickerEntry(tickerList, ticker);
     const nextDeletedTickers = [...deletedTickers.filter((item) => item !== ticker), ticker].sort();
-    setTickerList(nextTickerList);
-    setDeletedTickers(nextDeletedTickers);
-    if (putForm.ticker === ticker) {
-      setPutForm((current) => ({ ...current, ticker: '' }));
-    }
 
     try {
       await persistAppStateSnapshot(
@@ -3270,6 +3300,11 @@ function App() {
         `已删除 ${ticker}`,
         '删除股票后保存失败'
       );
+      setTickerList(nextTickerList);
+      setDeletedTickers(nextDeletedTickers);
+      if (putForm.ticker === ticker) {
+        setPutForm((current) => ({ ...current, ticker: '' }));
+      }
     } catch (error) {
       setTickerMessage(error instanceof Error ? error.message : '删除股票后保存失败');
       return;
@@ -3311,7 +3346,7 @@ function App() {
     });
   }
 
-  function confirmSellStock() {
+  async function confirmSellStock() {
     if (!sellStockPreview) {
       return;
     }
@@ -3341,37 +3376,54 @@ function App() {
       return;
     }
 
-    setTickerList(sellResult.nextEntries);
-
     const averageCostBasis =
       tickerList.find((entry) => entry.ticker === sellStockPreview.ticker)?.average_cost_basis ?? 0;
     const realizedPnl = (sellPricePerShare - averageCostBasis) * sharesToSell;
-    setStockTrades((current) => [
+    const nextStockTrades: StockTradeHistory[] = [
       {
         id: generateId(),
         ticker: sellStockPreview.ticker,
-        action: 'sell',
+        action: 'sell' as const,
         shares: sharesToSell,
         price_per_share: sellPricePerShare,
         traded_at: new Date().toISOString().slice(0, 10),
         cash_change: sellResult.proceeds,
         realized_pnl: realizedPnl
       },
-      ...current
-    ]);
+      ...stockTrades
+    ];
 
     const nextConfig = applyStockSellCash(config, configForm ?? DEFAULT_CONFIG, sellResult.proceeds);
-    setConfig(nextConfig);
-    setConfigForm(nextConfig);
-    setConfigErrors({});
-
-    setSellStockPreview(null);
-    setTickerMessage(
-      `已卖出 ${sellStockPreview.ticker} ${sharesToSell} 股，回笼现金 ${formatCurrency(sellResult.proceeds)}`
-    );
+    try {
+      await persistAppStateSnapshot(
+        buildAppStateSnapshot({
+          config: nextConfig,
+          puts,
+          closedTrades,
+          stockTrades: nextStockTrades,
+          tickerList: sellResult.nextEntries,
+          scenario,
+          vixHistory,
+          accountValueHistory
+        }),
+        `已卖出 ${sellStockPreview.ticker} ${sharesToSell} 股，回笼现金 ${formatCurrency(sellResult.proceeds)}`,
+        '卖出股票后保存失败'
+      );
+      setTickerList(sellResult.nextEntries);
+      setStockTrades(nextStockTrades);
+      setConfig(nextConfig);
+      setConfigForm(nextConfig);
+      setConfigErrors({});
+      setSellStockPreview(null);
+      setTickerMessage(
+        `已卖出 ${sellStockPreview.ticker} ${sharesToSell} 股，回笼现金 ${formatCurrency(sellResult.proceeds)}`
+      );
+    } catch (error) {
+      setTickerMessage(error instanceof Error ? error.message : '卖出股票后保存失败');
+    }
   }
 
-  function confirmBuyStock() {
+  async function confirmBuyStock() {
     if (!buyStockPreview) {
       return;
     }
@@ -3399,31 +3451,48 @@ function App() {
       return;
     }
 
-    setTickerList(buyResult.nextEntries);
-
-    setStockTrades((current) => [
+    const nextStockTrades: StockTradeHistory[] = [
       {
         id: generateId(),
         ticker: buyStockPreview.ticker,
-        action: 'buy',
+        action: 'buy' as const,
         shares: sharesToBuy,
         price_per_share: buyPricePerShare,
         traded_at: new Date().toISOString().slice(0, 10),
         cash_change: -buyResult.cost,
         realized_pnl: 0
       },
-      ...current
-    ]);
+      ...stockTrades
+    ];
 
     const nextConfig = applyStockBuyCash(config, configForm ?? DEFAULT_CONFIG, buyResult.cost);
-    setConfig(nextConfig);
-    setConfigForm(nextConfig);
-    setConfigErrors({});
-
-    setBuyStockPreview(null);
-    setTickerMessage(
-      `已买入 ${buyStockPreview.ticker} ${sharesToBuy} 股，现金减少 ${formatCurrency(buyResult.cost)}`
-    );
+    try {
+      await persistAppStateSnapshot(
+        buildAppStateSnapshot({
+          config: nextConfig,
+          puts,
+          closedTrades,
+          stockTrades: nextStockTrades,
+          tickerList: buyResult.nextEntries,
+          scenario,
+          vixHistory,
+          accountValueHistory
+        }),
+        `已买入 ${buyStockPreview.ticker} ${sharesToBuy} 股，现金减少 ${formatCurrency(buyResult.cost)}`,
+        '买入股票后保存失败'
+      );
+      setTickerList(buyResult.nextEntries);
+      setStockTrades(nextStockTrades);
+      setConfig(nextConfig);
+      setConfigForm(nextConfig);
+      setConfigErrors({});
+      setBuyStockPreview(null);
+      setTickerMessage(
+        `已买入 ${buyStockPreview.ticker} ${sharesToBuy} 股，现金减少 ${formatCurrency(buyResult.cost)}`
+      );
+    } catch (error) {
+      setTickerMessage(error instanceof Error ? error.message : '买入股票后保存失败');
+    }
   }
 
   function applyQuotesPayload(payload: QuotesPayload, requestedTickers: string[]) {
