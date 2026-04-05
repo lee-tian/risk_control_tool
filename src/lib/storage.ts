@@ -127,6 +127,8 @@ export function loadPuts(): PutPosition[] {
       typeof put.option_market_price_updated === 'string' ? put.option_market_price_updated : null,
     option_theta_per_share:
       typeof put.option_theta_per_share === 'number' ? put.option_theta_per_share : null,
+    option_delta: typeof put.option_delta === 'number' ? put.option_delta : null,
+    option_gamma: typeof put.option_gamma === 'number' ? put.option_gamma : null,
     decision_rationale: typeof put.decision_rationale === 'string' ? put.decision_rationale : '',
     decision_snapshot:
       typeof put.decision_snapshot === 'object' && put.decision_snapshot !== null
@@ -260,6 +262,8 @@ export function mergePutPositionsPreservingLocal(snapshotPuts: PutPosition[], lo
         option_market_price_per_share: snapshotPut.option_market_price_per_share ?? localPut.option_market_price_per_share,
         option_market_price_updated: snapshotPut.option_market_price_updated ?? localPut.option_market_price_updated,
         option_theta_per_share: snapshotPut.option_theta_per_share ?? localPut.option_theta_per_share,
+        option_delta: snapshotPut.option_delta ?? localPut.option_delta,
+        option_gamma: snapshotPut.option_gamma ?? localPut.option_gamma,
         decision_rationale: localPut.decision_rationale || snapshotPut.decision_rationale,
         decision_snapshot: snapshotPut.decision_snapshot ?? localPut.decision_snapshot
       });
@@ -759,7 +763,9 @@ function normalizeImportedPuts(rawPuts: unknown[]): PutPosition[] {
       option_market_price_updated:
         typeof record.option_market_price_updated === 'string' ? record.option_market_price_updated : null,
       option_theta_per_share:
-        typeof record.option_theta_per_share === 'number' ? record.option_theta_per_share : null
+        typeof record.option_theta_per_share === 'number' ? record.option_theta_per_share : null,
+      option_delta: typeof record.option_delta === 'number' ? record.option_delta : null,
+      option_gamma: typeof record.option_gamma === 'number' ? record.option_gamma : null
     };
   });
 }

@@ -580,6 +580,19 @@ async function saveSnapshot(payload) {
   await writeAppState(payload);
 }
 
+function hasMeaningfulSnapshotData(snapshot) {
+  const data = typeof snapshot?.data === 'object' && snapshot.data !== null ? snapshot.data : {};
+
+  return (
+    data.config !== null ||
+    (Array.isArray(data.puts) && data.puts.length > 0) ||
+    (Array.isArray(data.closedTrades) && data.closedTrades.length > 0) ||
+    (Array.isArray(data.stockTrades) && data.stockTrades.length > 0) ||
+    (Array.isArray(data.tickerList) && data.tickerList.length > 0) ||
+    (Array.isArray(data.accountValueHistory) && data.accountValueHistory.length > 0)
+  );
+}
+
 function getDateKey(date = new Date()) {
   return date.toISOString().slice(0, 10);
 }
@@ -1934,7 +1947,9 @@ async function fetchCurrentOptionQuote(symbol, expirationDate, strike, side = 'p
             ask: [fallbackData?.ask?.[exactIndex]],
             mid: [fallbackData?.mid?.[exactIndex]],
             last: [fallbackData?.last?.[exactIndex]],
-            theta: [fallbackData?.theta?.[exactIndex]]
+            theta: [fallbackData?.theta?.[exactIndex]],
+            delta: [fallbackData?.delta?.[exactIndex]],
+            gamma: [fallbackData?.gamma?.[exactIndex]]
           },
           strike
         );
@@ -1950,7 +1965,9 @@ async function fetchCurrentOptionQuote(symbol, expirationDate, strike, side = 'p
 
   return {
     price: sample.price,
-    theta: sample.theta
+    theta: sample.theta,
+    delta: sample.delta,
+    gamma: sample.gamma
   };
 }
 
@@ -2877,6 +2894,8 @@ export async function refreshAppStateSnapshot(
         position.option_market_price_per_share = optionQuote.price;
         position.option_market_price_updated = nowIso;
         position.option_theta_per_share = optionQuote.theta;
+        position.option_delta = optionQuote.delta;
+        position.option_gamma = optionQuote.gamma;
         optionResults.push({
           id: position.id,
           ticker: position.ticker,
@@ -3370,6 +3389,16 @@ export async function handleApiRequest(req, res) {
   if (url.pathname === '/api/app-state' && req.method === 'POST') {
     try {
       const payload = await readJsonBody(req);
+      const incomingSnapshot = coerceSnapshot(payload);
+      const existingSnapshot = await loadSavedSnapshot();
+
+      if (!hasMeaningfulSnapshotData(incomingSnapshot) && hasMeaningfulSnapshotData(existingSnapshot)) {
+        sendJson(res, 409, {
+          error: 'Refusing to overwrite existing app state with an empty snapshot'
+        });
+        return;
+      }
+
       await saveSnapshot(payload);
       const storageTarget = describeStorageTarget();
       sendJson(res, 200, {
@@ -3425,6 +3454,8 @@ export async function handleApiRequest(req, res) {
           side,
           option_price_per_share: optionQuote.price,
           theta_per_share: optionQuote.theta,
+          delta: optionQuote.delta,
+          gamma: optionQuote.gamma,
           as_of: new Date().toISOString(),
           source: 'MarketData.app /options/quotes'
         });

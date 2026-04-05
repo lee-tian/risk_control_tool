@@ -142,6 +142,14 @@ export function calculatePortfolioMetrics(
         ? safeDivide(put.premium_per_share - put.option_market_price_per_share, put.premium_per_share)
         : null;
     const optionThetaPerShare = typeof put.option_theta_per_share === 'number' ? put.option_theta_per_share : null;
+    const optionDelta = typeof put.option_delta === 'number' ? put.option_delta : null;
+    const optionGamma = typeof put.option_gamma === 'number' ? put.option_gamma : null;
+    const gammaThetaRatio =
+      typeof optionGamma === 'number' &&
+      typeof optionThetaPerShare === 'number' &&
+      Math.abs(optionThetaPerShare) > 0.000001
+        ? Math.abs(optionGamma / optionThetaPerShare)
+        : null;
     const thetaIncomePerDay =
       typeof optionThetaPerShare === 'number' ? Math.max(-optionThetaPerShare, 0) * put.contracts * 100 : null;
 
@@ -164,6 +172,9 @@ export function calculatePortfolioMetrics(
       unrealizedPnl,
       premiumCapturedPct,
       optionThetaPerShare,
+      optionDelta,
+      optionGamma,
+      gammaThetaRatio,
       thetaIncomePerDay
     };
   });

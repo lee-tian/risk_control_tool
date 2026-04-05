@@ -100,7 +100,7 @@ describe('refreshAppStateSnapshot', () => {
             }
           }
         })),
-        fetchCurrentOptionQuoteFn: vi.fn(async () => ({ price: 2.15, theta: -0.07 })),
+        fetchCurrentOptionQuoteFn: vi.fn(async () => ({ price: 2.15, theta: -0.07, delta: -0.24, gamma: 0.013 })),
         refreshVixFn: vi.fn(async () => ({ value: 25.1 })),
         sleepFn: vi.fn(async () => {})
       }
@@ -126,7 +126,9 @@ describe('refreshAppStateSnapshot', () => {
     expect(result.snapshot.data.puts[0]).toMatchObject({
       option_market_price_per_share: 2.15,
       option_market_price_updated: '2026-04-01T15:00:00.000Z',
-      option_theta_per_share: -0.07
+      option_theta_per_share: -0.07,
+      option_delta: -0.24,
+      option_gamma: 0.013
     });
     expect(result.snapshot.data.accountValueHistory).toEqual([
       expect.objectContaining({

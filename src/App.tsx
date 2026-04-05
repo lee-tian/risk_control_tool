@@ -6,7 +6,13 @@ import { formatCurrency, formatPercent } from './lib/formatters';
 import { compareOptionRowsByLossPct, getAttentionLevel, getAttentionReasons, isOptionLossAtTwoXCredit } from './lib/optionAlerts';
 import { parseJsonResponseText } from './lib/quoteRefresh';
 import { buildTopIvRankStocks } from './lib/dashboardSignals';
-import { buildCapitalAllocationChart, buildRiskCalculator, buildRiskCurvePoints, buildTickerAllocationItems } from './lib/dashboardPortfolio';
+import {
+  buildCapitalAllocationChart,
+  buildHoldingDeltaSummary,
+  buildRiskCalculator,
+  buildRiskCurvePoints,
+  buildTickerAllocationItems
+} from './lib/dashboardPortfolio';
 import { analyzeVixTrend } from './lib/vixTrend';
 import {
   buildAppStateSnapshot,
@@ -1277,7 +1283,9 @@ function App() {
   const refreshingOptionPriceIdRef = useRef<string | null>(refreshingOptionPriceId);
   const autoRefreshingOptionPriceIdRef = useRef<string | null>(autoRefreshingOptionPriceId);
   const isRefreshingAllOptionsRef = useRef(isRefreshingAllOptions);
-  const [optionPriceOverrides, setOptionPriceOverrides] = useState<Record<string, { price: number; theta: number | null; updatedAt: string }>>({});
+  const [optionPriceOverrides, setOptionPriceOverrides] = useState<
+    Record<string, { price: number; theta: number | null; delta: number | null; gamma: number | null; updatedAt: string }>
+  >({});
   const [optionPriceMessages, setOptionPriceMessages] = useState<
     Record<string, { tone: 'success' | 'error' | 'info'; text: string }>
   >({});
@@ -1408,9 +1416,28 @@ function App() {
   const fearGreedStressAdjustment = getFearGreedStressAdjustment(vixSnapshot?.fearGreedScore);
   const suggestedActionTone = getSuggestedActionTone(vixSnapshot?.fearGreedScore);
   const activeScenario = Math.max((autoScenario ?? scenario) + stressAdjustment.adjustment + fearGreedStressAdjustment, 0.08);
+  const putsWithOverrides = useMemo(
+    () =>
+      puts.map((put) => {
+        const override = optionPriceOverrides[put.id];
+        if (!override) {
+          return put;
+        }
+
+        return {
+          ...put,
+          option_market_price_per_share: override.price,
+          option_market_price_updated: override.updatedAt,
+          option_theta_per_share: override.theta,
+          option_delta: override.delta,
+          option_gamma: override.gamma
+        };
+      }),
+    [optionPriceOverrides, puts]
+  );
   const metrics = useMemo(
-    () => calculatePortfolioMetrics(config, puts, tickerList, activeScenario),
-    [activeScenario, config, puts, tickerList]
+    () => calculatePortfolioMetrics(config, putsWithOverrides, tickerList, activeScenario),
+    [activeScenario, config, putsWithOverrides, tickerList]
   );
   const tickerMap = useMemo(() => new Map(tickerList.map((entry) => [entry.ticker, entry])), [tickerList]);
 
@@ -1916,13 +1943,13 @@ function App() {
 
   const stockHoldings = useMemo(() => {
     const stockEntries = tickerList.filter((entry) => (entry.shares ?? 0) > 0);
-    const callTickers = [...new Set(puts.filter((row) => row.option_side === 'call').map((row) => row.ticker))];
-    const holdingTickers = [...new Set([...stockEntries.map((entry) => entry.ticker), ...callTickers])];
+    const optionTickers = [...new Set(putsWithOverrides.map((row) => row.ticker))];
+    const holdingTickers = [...new Set([...stockEntries.map((entry) => entry.ticker), ...optionTickers])];
 
     return holdingTickers
       .map((ticker) => {
         const stockEntry = tickerList.find((entry) => entry.ticker === ticker);
-        const callRows = puts.filter((row) => row.ticker === ticker && row.option_side === 'call');
+        const callRows = putsWithOverrides.filter((row) => row.ticker === ticker && row.option_side === 'call');
         const distinctStrikes = [...new Set(callRows.map((row) => row.put_strike))].sort((a, b) => a - b);
         const callContracts = callRows.reduce((sum, row) => sum + row.contracts, 0);
         const callPremiumIncome = callRows.reduce(
@@ -1948,6 +1975,10 @@ function App() {
         const strikeDistances = callRows
           .map((row) => getPercentDistanceToStrike(currentPrice, row.put_strike, 'call'))
           .filter((value): value is number => value !== null);
+        const deltaSummary = buildHoldingDeltaSummary(
+          shares,
+          [...callRows, ...putsWithOverrides.filter((row) => row.ticker === ticker && row.option_side !== 'call')]
+        );
 
         return {
           ticker,
@@ -1958,6 +1989,14 @@ function App() {
             .map((row) => ({
               ...row,
               premiumIncome: row.premium_per_share * row.contracts * 100,
+              optionDelta: typeof row.option_delta === 'number' ? row.option_delta : null,
+              optionGamma: typeof row.option_gamma === 'number' ? row.option_gamma : null,
+              gammaThetaRatio:
+                typeof row.option_gamma === 'number' &&
+                typeof row.option_theta_per_share === 'number' &&
+                Math.abs(row.option_theta_per_share) > 0.000001
+                  ? Math.abs(row.option_gamma / row.option_theta_per_share)
+                  : null,
               unrealizedPnl:
                 typeof row.option_market_price_per_share === 'number'
                   ? (row.premium_per_share - row.option_market_price_per_share) * row.contracts * 100
@@ -1990,6 +2029,9 @@ function App() {
           callCount: callContracts,
           coveredCallShares,
           callPremiumIncome,
+          stockDelta: deltaSummary.stockDelta,
+          optionDelta: deltaSummary.optionDelta,
+          totalDelta: deltaSummary.totalDelta,
           nearestStrikeDistancePct: strikeDistances.length > 0 ? Math.min(...strikeDistances) : null,
           callUnrealizedPnl: callRows.some((row) => typeof row.option_market_price_per_share === 'number')
             ? callUnrealizedPnl
@@ -2023,7 +2065,7 @@ function App() {
         }
         return a.ticker.localeCompare(b.ticker);
       });
-  }, [puts, tickerList]);
+  }, [putsWithOverrides, tickerList]);
   const totalStockMarketValue = useMemo(
     () => stockHoldings.reduce((sum, holding) => sum + holding.marketValue, 0),
     [stockHoldings]
@@ -2279,6 +2321,9 @@ function App() {
   const overallCapitalAmount = remainingCashAmount + metrics.totalNominalPutExposure + totalStockMarketValue;
   const remainingCashPct = overallCapitalAmount > 0 ? remainingCashAmount / overallCapitalAmount : 0;
   const accountCapitalBase = metrics.totalCapitalBase > 0 ? metrics.totalCapitalBase : overallCapitalAmount;
+  const riskCurveCapitalBase = overallCapitalAmount > 0 ? overallCapitalAmount : accountCapitalBase;
+  const totalUnrealizedOptionPnl = metrics.putRows.reduce((sum, row) => sum + (row.unrealizedPnl ?? 0), 0);
+  const accountEquity = (config?.cash ?? 0) + totalStockMarketValue + totalUnrealizedOptionPnl;
   const accountValueComparisons = useMemo(
     () => buildAccountValueComparisons(accountValueHistory, accountCapitalBase),
     [accountCapitalBase, accountValueHistory]
@@ -2336,12 +2381,12 @@ function App() {
     return Math.min(Math.max(raw, -0.3), 0.3);
   }, [riskCalculatorDropInput]);
   const riskCalculator = useMemo(
-    () => buildRiskCalculator(puts, tickerList, riskCalculatorDropPct, accountCapitalBase),
-    [accountCapitalBase, puts, riskCalculatorDropPct, tickerList]
+    () => buildRiskCalculator(puts, tickerList, riskCalculatorDropPct, riskCurveCapitalBase),
+    [puts, riskCalculatorDropPct, riskCurveCapitalBase, tickerList]
   );
   const riskCurvePoints = useMemo(
-    () => buildRiskCurvePoints(puts, tickerList, accountCapitalBase),
-    [accountCapitalBase, puts, tickerList]
+    () => buildRiskCurvePoints(puts, tickerList, riskCurveCapitalBase),
+    [puts, riskCurveCapitalBase, tickerList]
   );
   const baseRiskScore = metrics.riskScore;
   const regimeAdjustment = getRegimeAdjustment(vixSnapshot?.fearGreedScore ?? null);
@@ -2782,7 +2827,16 @@ function App() {
   async function refreshSingleOptionPrice(
     position: Pick<
       PutPosition,
-      'id' | 'ticker' | 'expiration_date' | 'put_strike' | 'option_side' | 'option_market_price_per_share' | 'option_market_price_updated' | 'option_theta_per_share'
+      | 'id'
+      | 'ticker'
+      | 'expiration_date'
+      | 'put_strike'
+      | 'option_side'
+      | 'option_market_price_per_share'
+      | 'option_market_price_updated'
+      | 'option_theta_per_share'
+      | 'option_delta'
+      | 'option_gamma'
     >,
     silent = false
   ) {
@@ -2792,6 +2846,8 @@ function App() {
     const payload = (await response.json()) as {
       option_price_per_share?: number;
       theta_per_share?: number | null;
+      delta?: number | null;
+      gamma?: number | null;
       as_of?: string;
       error?: string;
     };
@@ -2803,13 +2859,19 @@ function App() {
     const updatedAt = payload.as_of ?? new Date().toISOString();
     const refreshedOptionPrice = payload.option_price_per_share;
     const preservedTheta = typeof position.option_theta_per_share === 'number' ? position.option_theta_per_share : null;
+    const preservedDelta = typeof position.option_delta === 'number' ? position.option_delta : null;
+    const preservedGamma = typeof position.option_gamma === 'number' ? position.option_gamma : null;
     const refreshedTheta = typeof payload.theta_per_share === 'number' ? payload.theta_per_share : preservedTheta;
+    const refreshedDelta = typeof payload.delta === 'number' ? payload.delta : preservedDelta;
+    const refreshedGamma = typeof payload.gamma === 'number' ? payload.gamma : preservedGamma;
 
     setOptionPriceOverrides((current) => ({
       ...current,
       [position.id]: {
         price: refreshedOptionPrice,
         theta: refreshedTheta,
+        delta: refreshedDelta,
+        gamma: refreshedGamma,
         updatedAt
       }
     }));
@@ -2821,18 +2883,20 @@ function App() {
       }
     }));
 
-    setPuts((current) =>
-      current.map((item) =>
-        item.id === position.id
-          ? {
-              ...item,
-              option_market_price_per_share: refreshedOptionPrice,
-              option_market_price_updated: updatedAt,
-              option_theta_per_share: refreshedTheta
-            }
-          : item
-      )
+    const nextPuts = putsRef.current.map((item) =>
+      item.id === position.id
+        ? {
+            ...item,
+            option_market_price_per_share: refreshedOptionPrice,
+            option_market_price_updated: updatedAt,
+            option_theta_per_share: refreshedTheta,
+            option_delta: refreshedDelta,
+            option_gamma: refreshedGamma
+          }
+        : item
     );
+    putsRef.current = nextPuts;
+    setPuts(nextPuts);
 
     if (!silent) {
       setImportExportMessage(
@@ -2840,13 +2904,25 @@ function App() {
       );
     }
 
-    return payload;
+    return {
+      ...payload,
+      nextPuts
+    };
   }
 
   async function refreshSingleOptionPriceWithRetry(
     position: Pick<
       PutPosition,
-      'id' | 'ticker' | 'expiration_date' | 'put_strike' | 'option_side' | 'option_market_price_per_share' | 'option_market_price_updated' | 'option_theta_per_share'
+      | 'id'
+      | 'ticker'
+      | 'expiration_date'
+      | 'put_strike'
+      | 'option_side'
+      | 'option_market_price_per_share'
+      | 'option_market_price_updated'
+      | 'option_theta_per_share'
+      | 'option_delta'
+      | 'option_gamma'
     >,
     silent = false
   ) {
@@ -2904,6 +2980,19 @@ function App() {
           `${row.ticker} 期权价格已刷新，当前仍为 ${formatCurrency(refreshedPrice)}/share`
         );
       }
+
+      await persistAppStateSnapshot(
+        buildAppStateSnapshot({
+          config,
+          puts: payload.nextPuts,
+          closedTrades,
+          stockTrades,
+          tickerList,
+          scenario,
+          vixHistory,
+          accountValueHistory
+        })
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : '当前期权价格刷新失败';
       setImportExportMessage(message);
@@ -3005,6 +3094,21 @@ function App() {
           ? `已刷新 ${successCount} 笔期权，${failureCount} 笔失败：${failureMessages.slice(0, 3).join('；')}${failureMessages.length > 3 ? '……' : ''}`
           : `已刷新全部 ${successCount} 笔期权价格`
       );
+
+      if (successCount > 0) {
+        await persistAppStateSnapshot(
+          buildAppStateSnapshot({
+            config,
+            puts: putsRef.current,
+            closedTrades,
+            stockTrades,
+            tickerList,
+            scenario,
+            vixHistory,
+            accountValueHistory
+          })
+        );
+      }
     } finally {
       setRefreshAllOptionsProgress(null);
       setIsRefreshingAllOptions(false);
@@ -4041,9 +4145,9 @@ function App() {
         chartPoints[Math.floor((chartPoints.length - 1) / 2)],
         chartPoints[chartPoints.length - 1]
       ].filter((point, index, list) => list.findIndex((candidate) => candidate.timestamp === point.timestamp) === index);
-  const riskCurveMinCapital = Math.min(...riskCurvePoints.map((point) => point.capital), metrics.totalCapitalBase || overallCapitalAmount || 0);
-  const riskCurveMaxCapital = Math.max(...riskCurvePoints.map((point) => point.capital), metrics.totalCapitalBase || overallCapitalAmount || 0);
-  const riskCurveRange = Math.max(riskCurveMaxCapital - riskCurveMinCapital, Math.max((metrics.totalCapitalBase || overallCapitalAmount || 0) * 0.05, 1));
+  const riskCurveMinCapital = Math.min(...riskCurvePoints.map((point) => point.capital), riskCurveCapitalBase || 0);
+  const riskCurveMaxCapital = Math.max(...riskCurvePoints.map((point) => point.capital), riskCurveCapitalBase || 0);
+  const riskCurveRange = Math.max(riskCurveMaxCapital - riskCurveMinCapital, Math.max((riskCurveCapitalBase || 0) * 0.05, 1));
   const riskCurvePointsChart = riskCurvePoints.map((point, index) => {
     const x = riskCurvePoints.length === 1 ? chartLeft + plotWidth / 2 : chartLeft + (index / (riskCurvePoints.length - 1)) * plotWidth;
     const y = chartTop + ((riskCurveMaxCapital - point.capital) / riskCurveRange) * plotHeight;
@@ -4231,6 +4335,24 @@ function App() {
                                 </strong>
                               </span>
                             </div>
+                            <div className="stock-holding-summary-strip stock-holding-summary-strip-secondary">
+                              <span>
+                                <small>股票 Delta</small>
+                                <strong>{holding == null ? '-' : holding.stockDelta.toFixed(1)}</strong>
+                              </span>
+                              <span>
+                                <small>期权 Delta</small>
+                                <strong className={holding != null && holding.optionDelta < 0 ? 'value-negative' : holding != null && holding.optionDelta > 0 ? 'value-positive' : ''}>
+                                  {holding == null ? '-' : `${holding.optionDelta >= 0 ? '+' : ''}${holding.optionDelta.toFixed(1)}`}
+                                </strong>
+                              </span>
+                              <span>
+                                <small>总 Delta</small>
+                                <strong className={holding != null && holding.totalDelta < 0 ? 'value-negative' : holding != null && holding.totalDelta > 0 ? 'value-positive' : ''}>
+                                  {holding == null ? '-' : `${holding.totalDelta >= 0 ? '+' : ''}${holding.totalDelta.toFixed(1)}`}
+                                </strong>
+                              </span>
+                            </div>
 
                             {holding?.hasStockHolding ? (
                               <button
@@ -4338,6 +4460,10 @@ function App() {
                                               <strong>{currentPrice == null ? '-' : formatCurrency(currentPrice)}</strong>
                                               <small>Break Even</small>
                                               <strong>{formatCurrency(row.put_strike - row.premium_per_share)}</strong>
+                                              <small>Delta</small>
+                                              <strong>{row.optionDelta == null ? '-' : row.optionDelta.toFixed(3)}</strong>
+                                              <small>Gamma</small>
+                                              <strong>{row.optionGamma == null ? '-' : row.optionGamma.toFixed(4)}</strong>
                                               <small>距 Strike</small>
                                               <strong className={isItm || isNearStrike ? 'value-negative' : ''}>
                                                 {strikeDistancePct === null
@@ -4345,6 +4471,10 @@ function App() {
                                                   : strikeDistancePct < 0
                                                     ? `ITM ${formatPercent(Math.abs(strikeDistancePct))}`
                                                     : formatPercent(strikeDistancePct)}
+                                              </strong>
+                                              <small>Gamma / Theta 比例</small>
+                                              <strong className={row.gammaThetaRatio != null && row.gammaThetaRatio >= 12 ? 'value-negative' : ''}>
+                                                {row.gammaThetaRatio == null ? '-' : row.gammaThetaRatio.toFixed(2)}
                                               </strong>
                                               <small>权利金</small>
                                               <strong>{formatCurrency(row.premiumIncome)}</strong>
@@ -4444,6 +4574,10 @@ function App() {
                                               <strong>{holding.currentPrice == null ? '-' : formatCurrency(holding.currentPrice)}</strong>
                                               <small>Break Even</small>
                                               <strong>{formatCurrency(row.put_strike + row.premium_per_share)}</strong>
+                                              <small>Delta</small>
+                                              <strong>{row.optionDelta == null ? '-' : row.optionDelta.toFixed(3)}</strong>
+                                              <small>Gamma</small>
+                                              <strong>{row.optionGamma == null ? '-' : row.optionGamma.toFixed(4)}</strong>
                                               <small>距 Strike</small>
                                               <strong className={isItm || isNearStrike ? 'value-negative' : ''}>
                                                 {strikeDistancePct === null
@@ -4451,6 +4585,10 @@ function App() {
                                                   : strikeDistancePct < 0
                                                     ? `ITM ${formatPercent(Math.abs(strikeDistancePct))}`
                                                     : formatPercent(strikeDistancePct)}
+                                              </strong>
+                                              <small>Gamma / Theta 比例</small>
+                                              <strong className={row.gammaThetaRatio != null && row.gammaThetaRatio >= 12 ? 'value-negative' : ''}>
+                                                {row.gammaThetaRatio == null ? '-' : row.gammaThetaRatio.toFixed(2)}
                                               </strong>
                                               <small>权利金</small>
                                               <strong>{formatCurrency(row.premiumIncome)}</strong>
@@ -5077,16 +5215,22 @@ function App() {
           {copyMessage && <div className="copy-message">{copyMessage}</div>}
           <div className="summary-grid">
             <article className="summary-card">
-              <span>Cash</span>
+              <span>Current cash balance</span>
               <strong>{formatCurrency(config?.cash ?? 0)}</strong>
+            </article>
+            <article className="summary-card">
+              <span>Account equity</span>
+              <strong>{formatCurrency(accountEquity)}</strong>
+            </article>
+            <article className="summary-card">
+              <span>Unrealized option P/L</span>
+              <strong className={totalUnrealizedOptionPnl > 0 ? 'value-positive' : totalUnrealizedOptionPnl < 0 ? 'value-negative' : ''}>
+                {formatSignedCurrency(totalUnrealizedOptionPnl)}
+              </strong>
             </article>
             <article className="summary-card">
               <span>Total capital base</span>
               <strong>{formatCurrency(metrics.totalCapitalBase)}</strong>
-            </article>
-            <article className="summary-card">
-              <span>Total nominal put exposure</span>
-              <strong>{formatCurrency(metrics.totalNominalPutExposure)}</strong>
             </article>
             <article className="summary-card">
               <span>Weighted average beta</span>
@@ -5111,6 +5255,10 @@ function App() {
             <article className="summary-card">
               <span>Weighted average days</span>
               <strong>{metrics.weightedAverageDaysToExpiration.toFixed(1)}</strong>
+            </article>
+            <article className="summary-card">
+              <span>Total nominal put exposure</span>
+              <strong>{formatCurrency(metrics.totalNominalPutExposure)}</strong>
             </article>
             <article className="summary-card emphasized">
               <span>Total put risk</span>
@@ -5900,6 +6048,8 @@ function App() {
                     const optionPriceOverride = optionPriceOverrides[row.id];
                     const displayedOptionPrice = optionPriceOverride?.price ?? row.option_market_price_per_share ?? null;
                     const displayedOptionTheta = optionPriceOverride?.theta ?? row.option_theta_per_share ?? null;
+                    const displayedOptionDelta = optionPriceOverride?.delta ?? row.optionDelta ?? null;
+                    const displayedOptionGamma = optionPriceOverride?.gamma ?? row.optionGamma ?? null;
                     const displayedOptionUpdatedAt = optionPriceOverride?.updatedAt ?? row.option_market_price_updated ?? null;
                     const displayedOptionCloseCost =
                       typeof displayedOptionPrice === 'number' ? displayedOptionPrice * row.contracts * 100 : null;
@@ -5913,6 +6063,12 @@ function App() {
                         : null;
                     const displayedThetaIncomePerDay =
                       typeof displayedOptionTheta === 'number' ? Math.max(-displayedOptionTheta, 0) * row.contracts * 100 : null;
+                    const displayedGammaThetaRatio =
+                      typeof displayedOptionGamma === 'number' &&
+                      typeof displayedOptionTheta === 'number' &&
+                      Math.abs(displayedOptionTheta) > 0.000001
+                        ? Math.abs(displayedOptionGamma / displayedOptionTheta)
+                        : row.gammaThetaRatio ?? null;
                     const hasReachedTwoXLoss = isOptionLossAtTwoXCredit({
                       premiumIncome: row.premiumIncome,
                       unrealizedPnl: displayedUnrealizedPnl
@@ -6003,6 +6159,23 @@ function App() {
                     <div className="position-highlight">
                       <span>Estimated close cost</span>
                       <strong>{displayedOptionCloseCost == null ? '-' : formatCurrency(displayedOptionCloseCost)}</strong>
+                    </div>
+                  </div>
+
+                  <div className="position-highlights">
+                    <div className="position-highlight">
+                      <span>Delta</span>
+                      <strong>{displayedOptionDelta == null ? '-' : displayedOptionDelta.toFixed(3)}</strong>
+                    </div>
+                    <div className="position-highlight">
+                      <span>Gamma</span>
+                      <strong>{displayedOptionGamma == null ? '-' : displayedOptionGamma.toFixed(4)}</strong>
+                    </div>
+                    <div className="position-highlight">
+                      <span>Gamma / Theta 比例</span>
+                      <strong className={displayedGammaThetaRatio != null && displayedGammaThetaRatio >= 12 ? 'value-negative' : ''}>
+                        {displayedGammaThetaRatio == null ? '-' : displayedGammaThetaRatio.toFixed(2)}
+                      </strong>
                     </div>
                   </div>
 

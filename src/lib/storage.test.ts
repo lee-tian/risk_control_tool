@@ -139,6 +139,8 @@ describe('storage helpers', () => {
         option_market_price_per_share: 1.45,
         option_market_price_updated: '2026-04-01T18:00:00.000Z',
         option_theta_per_share: -0.06,
+        option_delta: 0.24,
+        option_gamma: 0.018,
         decision_rationale: '交易类型：Covered Call；当前 IV 判断：IV高，权利金有吸引力',
         decision_snapshot: {
           verdict: '可以考虑',
@@ -167,6 +169,8 @@ describe('storage helpers', () => {
         option_side: 'call',
         option_market_price_per_share: 1.45,
         option_theta_per_share: -0.06,
+        option_delta: 0.24,
+        option_gamma: 0.018,
         decision_snapshot: expect.objectContaining({
           summary: '适合收租',
           action: '继续检查',

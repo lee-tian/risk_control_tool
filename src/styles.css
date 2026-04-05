@@ -1428,6 +1428,12 @@ tbody tr:hover td {
   line-height: 1.15;
 }
 
+.stock-holding-summary-strip-secondary {
+  margin-top: 0;
+  padding-top: 2px;
+  border-top: 1px dashed rgba(147, 173, 194, 0.2);
+}
+
 .stock-holding-section {
   display: grid;
   gap: 6px;

@@ -7,6 +7,8 @@ export function pickOptionQuoteSample(data, targetStrike) {
   const midList = Array.isArray(data?.mid) ? data.mid : [];
   const lastList = Array.isArray(data?.last) ? data.last : [];
   const thetaList = Array.isArray(data?.theta) ? data.theta : [];
+  const deltaList = Array.isArray(data?.delta) ? data.delta : [];
+  const gammaList = Array.isArray(data?.gamma) ? data.gamma : [];
 
   let bestSample = null;
 
@@ -22,6 +24,8 @@ export function pickOptionQuoteSample(data, targetStrike) {
     const mid = Number(midList[index]);
     const last = Number(lastList[index]);
     const theta = Number(thetaList[index]);
+    const delta = Number(deltaList[index]);
+    const gamma = Number(gammaList[index]);
 
     let price = null;
     if (Number.isFinite(mid) && mid > 0) {
@@ -45,7 +49,9 @@ export function pickOptionQuoteSample(data, targetStrike) {
         strike,
         price,
         strikeDistance,
-        theta: Number.isFinite(theta) ? theta : null
+        theta: Number.isFinite(theta) ? theta : null,
+        delta: Number.isFinite(delta) ? delta : null,
+        gamma: Number.isFinite(gamma) ? gamma : null
       };
     }
   }
@@ -110,6 +116,16 @@ export function pickOptionQuoteTheta(data) {
   return theta;
 }
 
+export function pickOptionQuoteDelta(data) {
+  const delta = Array.isArray(data?.delta) ? Number(data.delta[0]) : Number.NaN;
+  return Number.isFinite(delta) ? delta : null;
+}
+
+export function pickOptionQuoteGamma(data) {
+  const gamma = Array.isArray(data?.gamma) ? Number(data.gamma[0]) : Number.NaN;
+  return Number.isFinite(gamma) ? gamma : null;
+}
+
 export function extractOptionQuoteFromSnapshot(data) {
   const price = pickOptionQuotePrice(data);
   if (price === null) {
@@ -118,7 +134,9 @@ export function extractOptionQuoteFromSnapshot(data) {
 
   return {
     price,
-    theta: pickOptionQuoteTheta(data)
+    theta: pickOptionQuoteTheta(data),
+    delta: pickOptionQuoteDelta(data),
+    gamma: pickOptionQuoteGamma(data)
   };
 }
 
@@ -130,6 +148,8 @@ export function extractOptionQuoteFromChain(data, targetStrike) {
 
   return {
     price: sample.price,
-    theta: sample.theta
+    theta: sample.theta,
+    delta: sample.delta,
+    gamma: sample.gamma
   };
 }

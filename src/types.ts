@@ -17,6 +17,8 @@ export type PutPosition = {
   option_market_price_per_share?: number | null;
   option_market_price_updated?: string | null;
   option_theta_per_share?: number | null;
+  option_delta?: number | null;
+  option_gamma?: number | null;
   decision_rationale?: string;
   decision_snapshot?: {
     verdict: string;
@@ -115,6 +117,9 @@ export type PutRiskRow = PutPosition & {
   unrealizedPnl: number | null;
   premiumCapturedPct: number | null;
   optionThetaPerShare: number | null;
+  optionDelta: number | null;
+  optionGamma: number | null;
+  gammaThetaRatio: number | null;
   thetaIncomePerDay: number | null;
 };
 

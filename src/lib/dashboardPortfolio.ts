@@ -23,6 +23,14 @@ export type TickerAllocationItem = {
   share: number;
 };
 
+export type TickerDeltaItem = {
+  ticker: string;
+  delta: number;
+  exposure: number;
+  color: string;
+  share: number;
+};
+
 export type RiskCalculatorRow = {
   ticker: string;
   stockChange: number;
@@ -54,6 +62,12 @@ export type RiskCurvePoint = {
   netChange: number;
 };
 
+export type HoldingDeltaSummary = {
+  stockDelta: number;
+  optionDelta: number;
+  totalDelta: number;
+};
+
 export function buildRiskCurvePoints(
   puts: PutPosition[],
   tickerList: TickerEntry[],
@@ -69,6 +83,28 @@ export function buildRiskCurvePoints(
       netChange: result.totalNetChange
     };
   });
+}
+
+export function buildHoldingDeltaSummary(
+  stockShares: number,
+  optionRows: Array<Pick<PutPosition, 'contracts' | 'option_delta'>>
+): HoldingDeltaSummary {
+  const stockDelta = stockShares;
+  const optionDelta = optionRows.reduce((sum, row) => {
+    if (typeof row.option_delta !== 'number') {
+      return sum;
+    }
+
+    // Stored deltas are contract greeks for a long option. These positions are sold,
+    // so the portfolio delta contribution is the inverse sign.
+    return sum - row.option_delta * row.contracts * 100;
+  }, 0);
+
+  return {
+    stockDelta,
+    optionDelta,
+    totalDelta: stockDelta + optionDelta
+  };
 }
 
 const TICKER_ALLOCATION_PALETTE = ['#124e66', '#1f7a8c', '#d6a300', '#7c9a92', '#6f9aa8', '#c97a63'];
@@ -164,6 +200,43 @@ export function buildTickerAllocationItems(
       ? [
           {
             ticker: 'Other positions',
+            exposure: otherExposure,
+            color: '#6f9aa8',
+            share: totalExposure > 0 ? otherExposure / totalExposure : 0
+          }
+        ]
+      : [])
+  ];
+}
+
+export function buildTickerDeltaItems(
+  holdings: Array<{ ticker: string; totalDelta: number }>
+): TickerDeltaItem[] {
+  const items = holdings
+    .filter((holding) => Math.abs(holding.totalDelta) > 0.0001)
+    .map((holding, index) => ({
+      ticker: holding.ticker,
+      delta: holding.totalDelta,
+      exposure: Math.abs(holding.totalDelta),
+      color: TICKER_ALLOCATION_PALETTE[index % TICKER_ALLOCATION_PALETTE.length]
+    }))
+    .sort((a, b) => b.exposure - a.exposure);
+
+  const topFive = items.slice(0, 5);
+  const totalExposure = items.reduce((sum, item) => sum + item.exposure, 0);
+  const otherExposure = Math.max(totalExposure - topFive.reduce((sum, item) => sum + item.exposure, 0), 0);
+  const otherDelta = items.slice(5).reduce((sum, item) => sum + item.delta, 0);
+
+  return [
+    ...topFive.map((item) => ({
+      ...item,
+      share: totalExposure > 0 ? item.exposure / totalExposure : 0
+    })),
+    ...(otherExposure > 0
+      ? [
+          {
+            ticker: 'Other positions',
+            delta: otherDelta,
             exposure: otherExposure,
             color: '#6f9aa8',
             share: totalExposure > 0 ? otherExposure / totalExposure : 0

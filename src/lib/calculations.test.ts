@@ -20,7 +20,9 @@ const puts: PutPosition[] = [
     date_sold: '2026-03-01',
     expiration_date: '2026-04-01',
     option_market_price_per_share: 1.5,
-    option_theta_per_share: -0.12
+    option_theta_per_share: -0.12,
+    option_delta: -0.22,
+    option_gamma: 0.96
   },
   {
     id: 'put-2',
@@ -32,7 +34,9 @@ const puts: PutPosition[] = [
     date_sold: '2026-03-01',
     expiration_date: '2026-05-01',
     option_market_price_per_share: 2,
-    option_theta_per_share: -0.05
+    option_theta_per_share: -0.05,
+    option_delta: -0.18,
+    option_gamma: 0.15
   },
   {
     id: 'call-1',
@@ -45,7 +49,9 @@ const puts: PutPosition[] = [
     date_sold: '2026-03-01',
     expiration_date: '2026-04-15',
     option_market_price_per_share: 1.2,
-    option_theta_per_share: -0.03
+    option_theta_per_share: -0.03,
+    option_delta: 0.27,
+    option_gamma: 0.18
   }
 ];
 
@@ -144,6 +150,9 @@ describe('calculatePortfolioMetrics', () => {
       optionCloseCost: 300,
       unrealizedPnl: 500,
       premiumCapturedPct: 0.625,
+      optionDelta: -0.22,
+      optionGamma: 0.96,
+      gammaThetaRatio: 8,
       thetaIncomePerDay: 24
     });
     expect(metrics.putRows[2]).toMatchObject({
@@ -154,7 +163,10 @@ describe('calculatePortfolioMetrics', () => {
       effectiveStressPct: 0,
       breakevenPrice: 222,
       netCostBasis: 22200,
-      putRisk: 0
+      putRisk: 0,
+      optionDelta: 0.27,
+      optionGamma: 0.18,
+      gammaThetaRatio: 6
     });
   });
 

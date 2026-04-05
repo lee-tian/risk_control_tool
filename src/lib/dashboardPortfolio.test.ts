@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import type { PutPosition, PutRiskRow, TickerEntry } from '../types';
-import { buildCapitalAllocationChart, buildRiskCalculator, buildRiskCurvePoints, buildTickerAllocationItems } from './dashboardPortfolio';
+import {
+  buildCapitalAllocationChart,
+  buildHoldingDeltaSummary,
+  buildRiskCalculator,
+  buildRiskCurvePoints,
+  buildTickerDeltaItems,
+  buildTickerAllocationItems
+} from './dashboardPortfolio';
 
 function makeTicker(overrides: Partial<TickerEntry>): TickerEntry {
   return {
@@ -58,6 +65,9 @@ function makePutRow(overrides: Partial<PutRiskRow>): PutRiskRow {
     unrealizedPnl: 0,
     premiumCapturedPct: 0,
     optionThetaPerShare: null,
+    optionDelta: null,
+    optionGamma: null,
+    gammaThetaRatio: null,
     thetaIncomePerDay: null,
     ...overrides
   };
@@ -116,6 +126,64 @@ describe('buildTickerAllocationItems', () => {
 
     expect(result.map((item) => item.ticker)).toEqual(['A', 'B', 'C', 'D', 'E', 'Other positions']);
     expect(result[result.length - 1]?.exposure).toBe(50);
+  });
+});
+
+describe('buildTickerDeltaItems', () => {
+  it('builds delta allocation shares from absolute total delta while preserving signed values', () => {
+    const result = buildTickerDeltaItems([
+      { ticker: 'MSFT', totalDelta: 42.7 },
+      { ticker: 'NVDA', totalDelta: -120.2 },
+      { ticker: 'AAPL', totalDelta: 0 }
+    ]);
+
+    expect(result.map((item) => [item.ticker, item.delta, item.exposure])).toEqual([
+      ['NVDA', -120.2, 120.2],
+      ['MSFT', 42.7, 42.7]
+    ]);
+    expect(result[0]?.share).toBeCloseTo(120.2 / (120.2 + 42.7), 6);
+  });
+
+  it('collapses remaining delta names into Other positions after top five', () => {
+    const result = buildTickerDeltaItems([
+      { ticker: 'A', totalDelta: 100 },
+      { ticker: 'B', totalDelta: 90 },
+      { ticker: 'C', totalDelta: 80 },
+      { ticker: 'D', totalDelta: 70 },
+      { ticker: 'E', totalDelta: 60 },
+      { ticker: 'F', totalDelta: -50 }
+    ]);
+
+    expect(result.map((item) => item.ticker)).toEqual(['A', 'B', 'C', 'D', 'E', 'Other positions']);
+    expect(result[result.length - 1]).toMatchObject({
+      ticker: 'Other positions',
+      delta: -50,
+      exposure: 50
+    });
+  });
+});
+
+describe('buildHoldingDeltaSummary', () => {
+  it('combines stock delta with short option deltas', () => {
+    const result = buildHoldingDeltaSummary(300, [
+      { contracts: 1, option_delta: -0.22 },
+      { contracts: 2, option_delta: 0.31 },
+      { contracts: 1, option_delta: null }
+    ]);
+
+    expect(result.stockDelta).toBe(300);
+    expect(result.optionDelta).toBeCloseTo(-40, 6);
+    expect(result.totalDelta).toBeCloseTo(260, 6);
+  });
+
+  it('returns stock-only delta when option greeks are unavailable', () => {
+    const result = buildHoldingDeltaSummary(100, [{ contracts: 1, option_delta: null }]);
+
+    expect(result).toEqual({
+      stockDelta: 100,
+      optionDelta: 0,
+      totalDelta: 100
+    });
   });
 });
 

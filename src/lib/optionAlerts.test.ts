@@ -49,6 +49,8 @@ describe('option alert helpers', () => {
     expect(getAttentionLevel({ daysToExpiration: 40, premiumCapturedPct: 0.55 })).toBe('yellow');
     expect(getAttentionLevel({ daysToExpiration: 6, premiumCapturedPct: 0.2 })).toBe('red');
     expect(getAttentionLevel({ daysToExpiration: 40, premiumCapturedPct: 0.75 })).toBe('red');
+    expect(getAttentionLevel({ daysToExpiration: 40, premiumCapturedPct: 0.2, gammaThetaRatio: 0.1 })).toBe('yellow');
+    expect(getAttentionLevel({ daysToExpiration: 40, premiumCapturedPct: 0.2, gammaThetaRatio: 0.13 })).toBe('red');
     expect(getAttentionLevel({ daysToExpiration: 30, premiumCapturedPct: 0.4 })).toBeNull();
   });
 
@@ -61,6 +63,10 @@ describe('option alert helpers', () => {
     expect(getAttentionReasons({ daysToExpiration: 18, premiumCapturedPct: 0.55 })).toEqual([
       '到期日小于 21 天',
       '盈利百分比超过 50%'
+    ]);
+
+    expect(getAttentionReasons({ daysToExpiration: 40, premiumCapturedPct: 0.2, gammaThetaRatio: 0.13 })).toEqual([
+      'Theta / Gamma 比例过低 (7.69)'
     ]);
   });
 });

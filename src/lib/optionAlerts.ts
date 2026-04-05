@@ -4,26 +4,44 @@ type OptionAlertLikeRow = {
   premiumCapturedPct: number | null;
   expiration_date: string;
   daysToExpiration?: number;
+  gammaThetaRatio?: number | null;
 };
 
-export function getAttentionLevel(row: Pick<OptionAlertLikeRow, 'daysToExpiration' | 'premiumCapturedPct'>): 'red' | 'yellow' | null {
+const THETA_GAMMA_YELLOW_THRESHOLD = 12;
+const THETA_GAMMA_RED_THRESHOLD = 8;
+
+function toThetaGammaRatio(gammaThetaRatio: number | null | undefined): number | null {
+  if (typeof gammaThetaRatio !== 'number' || !Number.isFinite(gammaThetaRatio) || gammaThetaRatio <= 0.000001) {
+    return null;
+  }
+
+  return 1 / gammaThetaRatio;
+}
+
+export function getAttentionLevel(
+  row: Pick<OptionAlertLikeRow, 'daysToExpiration' | 'premiumCapturedPct' | 'gammaThetaRatio'>
+): 'red' | 'yellow' | null {
   const daysToExpiration = row.daysToExpiration ?? Number.POSITIVE_INFINITY;
   const premiumCapturedPct = row.premiumCapturedPct ?? 0;
+  const thetaGammaRatio = toThetaGammaRatio(row.gammaThetaRatio);
 
-  if ((daysToExpiration >= 0 && daysToExpiration < 7) || premiumCapturedPct > 0.7) {
+  if ((daysToExpiration >= 0 && daysToExpiration < 7) || premiumCapturedPct > 0.7 || (thetaGammaRatio !== null && thetaGammaRatio <= THETA_GAMMA_RED_THRESHOLD)) {
     return 'red';
   }
 
-  if ((daysToExpiration >= 0 && daysToExpiration < 21) || premiumCapturedPct > 0.5) {
+  if ((daysToExpiration >= 0 && daysToExpiration < 21) || premiumCapturedPct > 0.5 || (thetaGammaRatio !== null && thetaGammaRatio <= THETA_GAMMA_YELLOW_THRESHOLD)) {
     return 'yellow';
   }
 
   return null;
 }
 
-export function getAttentionReasons(row: Pick<OptionAlertLikeRow, 'daysToExpiration' | 'premiumCapturedPct'>): string[] {
+export function getAttentionReasons(
+  row: Pick<OptionAlertLikeRow, 'daysToExpiration' | 'premiumCapturedPct' | 'gammaThetaRatio'>
+): string[] {
   const daysToExpiration = row.daysToExpiration ?? Number.POSITIVE_INFINITY;
   const premiumCapturedPct = row.premiumCapturedPct ?? 0;
+  const thetaGammaRatio = toThetaGammaRatio(row.gammaThetaRatio);
 
   return [
     ...(daysToExpiration >= 0 && daysToExpiration < 7
@@ -35,6 +53,11 @@ export function getAttentionReasons(row: Pick<OptionAlertLikeRow, 'daysToExpirat
       ? ['盈利百分比超过 70%']
       : premiumCapturedPct > 0.5
         ? ['盈利百分比超过 50%']
+        : []),
+    ...(thetaGammaRatio !== null && thetaGammaRatio <= THETA_GAMMA_RED_THRESHOLD
+      ? [`Theta / Gamma 比例过低 (${thetaGammaRatio.toFixed(2)})`]
+      : thetaGammaRatio !== null && thetaGammaRatio <= THETA_GAMMA_YELLOW_THRESHOLD
+        ? [`Theta / Gamma 比例偏低 (${thetaGammaRatio.toFixed(2)})`]
         : [])
   ];
 }
