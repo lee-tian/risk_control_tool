@@ -2396,6 +2396,8 @@ function App() {
     const nextPuts = upsertPutPosition(puts, directPosition, targetEditingPutId, generateId);
     const nextTickerList = ensureTickerExists(tickerList, directPosition.ticker);
     const nextConfig = applyOptionOpenCash(config, configForm ?? DEFAULT_CONFIG, directPosition, targetEditingPutId !== null);
+    
+
     const persistedPosition =
       nextPuts.find((item) => item.id === targetEditingPutId) ??
       nextPuts.find((item) => !puts.some((existing) => existing.id === item.id)) ??
@@ -2422,21 +2424,29 @@ function App() {
       targetEditingPutId ? '更新期权失败' : '保存期权失败'
     );
 
-    const persistedSnapshot = await waitForPersistedAppStateSnapshot(
-      (snapshot) => hasExpectedPersistedPositionState(snapshot.data.puts, nextPuts, persistedPosition.id),
-      targetEditingPutId ? '期权更新保存未生效，请重试' : '期权保存未生效，请重试'
-    );
-
-    setPuts(persistedSnapshot.data.puts);
-    setTickerList(persistedSnapshot.data.tickerList);
-    setConfig(persistedSnapshot.data.config);
-    setConfigForm(persistedSnapshot.data.config ?? DEFAULT_CONFIG);
+    // Optimistic update: update local state immediately after first success
+    setPuts(nextPuts);
+    setTickerList(nextTickerList);
+    setConfig(nextConfig);
+    setConfigForm(nextConfig);
     setConfigErrors({});
     setActiveTab('positions');
     window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, 'positions');
     setPutForm(createEmptyPut());
     setPutErrors({});
     setEditingPutId(null);
+
+    // Still wait for verification in the background to ensure consistency with server truth
+    const persistedSnapshot = await waitForPersistedAppStateSnapshot(
+      (snapshot) => hasExpectedPersistedPositionState(snapshot.data.puts, nextPuts, persistedPosition.id),
+      targetEditingPutId ? '期权更新保存确认超时，请刷新页面检查' : '期权保存确认超时，请刷新页面检查'
+    );
+
+    // Final sync with server truth
+    setPuts(persistedSnapshot.data.puts);
+    setTickerList(persistedSnapshot.data.tickerList);
+    setConfig(persistedSnapshot.data.config);
+    setConfigForm(persistedSnapshot.data.config ?? DEFAULT_CONFIG);
   }
 
   async function handleSavePut() {
@@ -2976,6 +2986,9 @@ function App() {
       }
       await persistAppStateSnapshot(nextSnapshot, successMessage, '平仓后保存失败');
 
+      setClosePreview(null);
+
+      // Verify in background
       const persistedSnapshot = await waitForPersistedAppStateSnapshot(
         (snapshot) =>
           hasExpectedPersistedPositionState(
@@ -2991,14 +3004,15 @@ function App() {
               expectedClosedTradeId
             )
           ),
-        '平仓保存未生效，请重试'
+        '平仓保存确认超时，请刷新页面检查'
       );
 
-      setClosedTrades(persistedSnapshot.data.closedTrades);
+      // Final sync with server truth
       setPuts(persistedSnapshot.data.puts);
+      setClosedTrades(persistedSnapshot.data.closedTrades);
+      setTickerList(persistedSnapshot.data.tickerList);
       setConfig(persistedSnapshot.data.config);
       setConfigForm(persistedSnapshot.data.config ?? DEFAULT_CONFIG);
-      setClosePreview(null);
     } catch (error) {
       setClosedTrades(previousClosedTrades);
       setPuts(previousPuts);
