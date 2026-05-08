@@ -114,7 +114,7 @@ describe('calculatePortfolioMetrics', () => {
     expect(metrics.weightedAverageBeta).toBeCloseTo(1.571428, 5);
     expect(metrics.weightedAverageEffectiveStressPct).toBeCloseTo(0.048571, 5);
     expect(metrics.weightedAverageDaysToExpiration).toBeCloseTo(44.179487, 5);
-    expect(metrics.portfolioAnnualizedYield).toBeCloseTo(0.164573, 5);
+    expect(metrics.portfolioAnnualizedYield).toBeCloseTo(0.149744, 5);
     expect(metrics.totalCapitalBase).toBe(133120);
     expect(metrics.annualizedYieldOnTotalCash).toBeCloseTo(0.080681, 5);
     expect(metrics.estimatedThetaIncomePerDay).toBe(32);
@@ -133,6 +133,10 @@ describe('calculatePortfolioMetrics', () => {
     expect(metrics.groupedTickerRisk).toEqual([
       { ticker: 'AAPL', risk: 1422 },
       { ticker: 'NVDA', risk: 1248 }
+    ]);
+    expect(metrics.groupedTickerTheta).toEqual([
+      { ticker: 'NVDA', dailyThetaIncome: 27 },
+      { ticker: 'AAPL', dailyThetaIncome: 5 }
     ]);
     expect(metrics.canAddMoreRisk).toBe(true);
 
@@ -155,6 +159,9 @@ describe('calculatePortfolioMetrics', () => {
       gammaThetaRatio: 8,
       thetaIncomePerDay: 24
     });
+    expect(metrics.putRows[0]?.annualizedYield).toBeCloseTo(0.27375, 5);
+    expect(metrics.putRows[1]?.annualizedYield).toBeCloseTo(0.076042, 5);
+    expect(metrics.putRows[2]?.annualizedYield).toBeCloseTo(0.049773, 5);
     expect(metrics.putRows[2]).toMatchObject({
       ticker: 'NVDA',
       option_side: 'call',
@@ -168,6 +175,50 @@ describe('calculatePortfolioMetrics', () => {
       optionGamma: 0.18,
       gammaThetaRatio: 6
     });
+  });
+
+  it('falls back to premium-based annualized yield when theta is unavailable', () => {
+    const metrics = calculatePortfolioMetrics(
+      config,
+      [
+        {
+          id: 'put-no-theta',
+          ticker: 'MSFT',
+          put_strike: 300,
+          premium_per_share: 5,
+          contracts: 1,
+          iv_rank: 20,
+          date_sold: '2026-03-01',
+          expiration_date: '2026-04-01'
+        }
+      ],
+      [
+        {
+          ticker: 'MSFT',
+          beta: 1,
+          shares: null,
+          average_cost_basis: null,
+          downside_tolerance_pct: null,
+          current_price: 310,
+          last_updated: null,
+          current_iv: null,
+          current_iv_updated: null,
+          put_call_ratio: null,
+          put_call_ratio_updated: null,
+          provider_exchange: null,
+          provider_mic_code: null,
+          rsi_14: null,
+          rsi_14_1h: null,
+          rsi_updated: null,
+          ma_21: null,
+          ma_200: null
+        }
+      ],
+      0.1
+    );
+
+    expect(metrics.putRows[0]?.thetaIncomePerDay).toBeNull();
+    expect(metrics.putRows[0]?.annualizedYield).toBeCloseTo((500 / 30000) * (365 / 31), 6);
   });
 
   it('flags overloaded risk when cash or limit is insufficient', () => {

@@ -1,5 +1,9 @@
 import type { TickerEntry } from '../types';
 
+const TICKER_ALIASES: Record<string, string> = {
+  BRKB: 'BRK.B'
+};
+
 export type TickerDraft = {
   ticker: string;
   beta: string;
@@ -11,7 +15,8 @@ export type TickerDraft = {
 };
 
 export function normalizeTickerSymbol(ticker: string): string {
-  return ticker.trim().toUpperCase();
+  const normalized = ticker.trim().toUpperCase();
+  return TICKER_ALIASES[normalized] ?? normalized;
 }
 
 function toNullableNumber(value: string): number | null {
@@ -83,7 +88,14 @@ export function updateTickerEntry(
   patch: Partial<
     Pick<
       TickerEntry,
-      'beta' | 'shares' | 'average_cost_basis' | 'downside_tolerance_pct' | 'provider_exchange' | 'provider_mic_code'
+      | 'beta'
+      | 'shares'
+      | 'average_cost_basis'
+      | 'downside_tolerance_pct'
+      | 'target_trim_price'
+      | 'provider_exchange'
+      | 'provider_mic_code'
+      | 'buy_rsi_alert'
     >
   >
 ): TickerEntry[] {

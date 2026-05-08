@@ -17,6 +17,7 @@ import {
   mergeClosedTradesPreservingLocal,
   mergePutPositionsPreservingLocal,
   mergeTickerListsPreservingManualFields,
+  normalizeImportedTickerList,
   parseAppStateSnapshot,
   parsePutPositionsImportPayload,
   reconcileHydratedOpenPositions,
@@ -124,6 +125,48 @@ describe('storage helpers', () => {
     ]);
   });
 
+  it('rebuilds tickerList from saved positions when the raw snapshot tickerList is empty', () => {
+    const snapshot = parseAppStateSnapshot(JSON.stringify({
+      version: 1,
+      exported_at: '2026-04-06T15:40:32.842Z',
+      data: {
+        config: null,
+        puts: [
+          {
+            id: 'put-1',
+            ticker: 'msft',
+            option_side: 'put',
+            put_strike: 390,
+            premium_per_share: 12.57,
+            contracts: 1,
+            iv_rank: 0,
+            date_sold: '2026-03-17',
+            expiration_date: '2026-05-01'
+          }
+        ],
+        closedTrades: [],
+        stockTrades: [
+          {
+            id: 'trade-1',
+            ticker: 'aapl',
+            action: 'buy',
+            shares: 100,
+            price_per_share: 200,
+            traded_at: '2026-04-01T15:00:00.000Z',
+            cash_change: -20000,
+            realized_pnl: 0
+          }
+        ],
+        tickerList: [],
+        scenario: null,
+        vixHistory: [],
+        accountValueHistory: []
+      }
+    }));
+
+    expect(snapshot.data.tickerList.map((entry) => entry.ticker)).toEqual(['AAPL', 'MSFT']);
+  });
+
   it('saves and reloads option positions with decision snapshots and option greeks intact', () => {
     savePuts([
       {
@@ -145,19 +188,20 @@ describe('storage helpers', () => {
         decision_snapshot: {
           verdict: '可以考虑',
           summary: '适合收租',
-          rationale_check: '计划清晰',
-          worst_case: '上涨收益受限',
-          fundamental_note: '关注利润率',
-          fundamental_events: ['2026-Q1 指引偏弱', 2 as never].filter((item): item is string => typeof item === 'string'),
           current_iv_rank: '41.2',
-          iv_rank_note: '中性偏高',
-          iv_rank_source: 'Barchart',
-          iv_rank_time: '2026-04-01T18:00:00.000Z',
-          iv_rank_link: 'https://example.com/ivr',
-          action: '继续检查',
+          recommended_expiration: '2026-05-15',
+          recommended_dte: '44',
+          premium_view: '中性偏高',
+          support_level: '205.00 (OI 8000)',
+          resistance_level: '235.00 (OI 9100)',
+          recommended_strike: '235',
+          recommended_premium: '2.94',
+          recommended_distance: '+6.40%',
+          recommendation_reason: '高于压力位更安全',
+          candidate_focus: 'US.AMZN260515C235000',
+          trade_action: '继续检查',
           key_risks: ['被提前行权'],
-          max_profit: '$882',
-          risk_at_10pct_drop: '$1200',
+          warnings: ['价差偏宽'],
           analyzed_at: '2026-04-01T18:05:00.000Z'
         }
       }
@@ -173,7 +217,9 @@ describe('storage helpers', () => {
         option_gamma: 0.018,
         decision_snapshot: expect.objectContaining({
           summary: '适合收租',
-          action: '继续检查',
+          recommended_expiration: '2026-05-15',
+          recommended_premium: '2.94',
+          trade_action: '继续检查',
           analyzed_at: '2026-04-01T18:05:00.000Z'
         })
       })
@@ -197,19 +243,16 @@ describe('storage helpers', () => {
           decision_snapshot: {
             verdict: '需要谨慎',
             summary: '测试',
-            rationale_check: '测试',
-            worst_case: '测试',
-            fundamental_note: '测试',
-            fundamental_events: ['事件A', 123, null],
             current_iv_rank: '28.0',
-            iv_rank_note: '测试',
-            iv_rank_source: 'Barchart',
-            iv_rank_time: '2026-04-01',
-            iv_rank_link: '',
-            action: '等待',
+            premium_view: '测试',
+            support_level: '190.00 (OI 1000)',
+            resistance_level: '220.00 (OI 1200)',
+            recommended_strike: '190',
+            recommendation_reason: '测试',
+            candidate_focus: 'US.TEST260515P190000',
+            trade_action: '等待',
             key_risks: ['风险A', { label: '风险B' }],
-            max_profit: '$420',
-            risk_at_10pct_drop: '$900',
+            warnings: ['事件A', 123, null],
             analyzed_at: '2026-04-01T18:00:00.000Z'
           }
         }
@@ -219,7 +262,7 @@ describe('storage helpers', () => {
     expect(loadPuts()).toEqual([
       expect.objectContaining({
         decision_snapshot: expect.objectContaining({
-          fundamental_events: ['事件A'],
+          warnings: ['事件A'],
           key_risks: ['风险A']
         })
       })
@@ -530,9 +573,9 @@ describe('storage helpers', () => {
   });
 
   it('saves and loads deleted tickers in normalized form', () => {
-    saveDeletedTickers([' nvda ', 'AAPL', 'nvda']);
+    saveDeletedTickers([' nvda ', 'AAPL', 'nvda', 'brkb']);
 
-    expect(loadDeletedTickers()).toEqual(['AAPL', 'NVDA']);
+    expect(loadDeletedTickers()).toEqual(['AAPL', 'BRK.B', 'NVDA']);
   });
 
   it('saves and loads deleted position ids in normalized form', () => {
@@ -614,6 +657,7 @@ describe('storage helpers', () => {
       'risk-tool-ticker-list',
       JSON.stringify([
         ' nvda ',
+        'brkb',
         'GLD',
         {
           ticker: 'aapl',
@@ -640,6 +684,8 @@ describe('storage helpers', () => {
         shares: null,
         average_cost_basis: null,
         downside_tolerance_pct: null,
+        target_trim_price: null,
+        buy_rsi_alert: null,
         current_price: 200,
         last_updated: null,
         next_earnings_date: null,
@@ -656,38 +702,16 @@ describe('storage helpers', () => {
         rsi_14_1h: null,
         rsi_updated: null,
         ma_21: null,
-        ma_200: null
+        ma_200: null,
+        atr_14: null
       },
       {
-        ticker: 'GLD',
-        beta: 0.19,
+        ticker: 'BRK.B',
+        beta: 0.36,
         shares: null,
         average_cost_basis: null,
         downside_tolerance_pct: null,
-        current_price: null,
-        last_updated: null,
-        next_earnings_date: null,
-        current_iv: null,
-        current_iv_updated: null,
-        historical_iv: null,
-        iv_rank: null,
-        iv_percentile: null,
-        put_call_ratio: null,
-        put_call_ratio_updated: null,
-        provider_exchange: 'NYSE',
-        provider_mic_code: 'ARCX',
-        rsi_14: null,
-        rsi_14_1h: null,
-        rsi_updated: null,
-        ma_21: null,
-        ma_200: null
-      },
-      {
-        ticker: 'NVDA',
-        beta: 2.17,
-        shares: null,
-        average_cost_basis: null,
-        downside_tolerance_pct: null,
+        target_trim_price: null,
         current_price: null,
         last_updated: null,
         next_earnings_date: null,
@@ -704,7 +728,60 @@ describe('storage helpers', () => {
         rsi_14_1h: null,
         rsi_updated: null,
         ma_21: null,
-        ma_200: null
+        ma_200: null,
+        atr_14: null
+      },
+      {
+        ticker: 'GLD',
+        beta: 0.19,
+        shares: null,
+        average_cost_basis: null,
+        downside_tolerance_pct: null,
+        target_trim_price: null,
+        current_price: null,
+        last_updated: null,
+        next_earnings_date: null,
+        current_iv: null,
+        current_iv_updated: null,
+        historical_iv: null,
+        iv_rank: null,
+        iv_percentile: null,
+        put_call_ratio: null,
+        put_call_ratio_updated: null,
+        provider_exchange: 'NYSE',
+        provider_mic_code: 'ARCX',
+        rsi_14: null,
+        rsi_14_1h: null,
+        rsi_updated: null,
+        ma_21: null,
+        ma_200: null,
+        atr_14: null
+      },
+      {
+        ticker: 'NVDA',
+        beta: 2.17,
+        shares: null,
+        average_cost_basis: null,
+        downside_tolerance_pct: null,
+        target_trim_price: null,
+        current_price: null,
+        last_updated: null,
+        next_earnings_date: null,
+        current_iv: null,
+        current_iv_updated: null,
+        historical_iv: null,
+        iv_rank: null,
+        iv_percentile: null,
+        put_call_ratio: null,
+        put_call_ratio_updated: null,
+        provider_exchange: null,
+        provider_mic_code: null,
+        rsi_14: null,
+        rsi_14_1h: null,
+        rsi_updated: null,
+        ma_21: null,
+        ma_200: null,
+        atr_14: null
       }
     ]);
   });
@@ -712,11 +789,40 @@ describe('storage helpers', () => {
   it('saves ticker list in normalized sorted uppercase form', () => {
     saveTickerList([
       {
+        ticker: 'brkb',
+        beta: 0.36,
+        shares: 10,
+        average_cost_basis: 470,
+        downside_tolerance_pct: 0.1,
+        target_trim_price: null,
+        buy_rsi_alert: null,
+        current_price: 480,
+        last_updated: '2026-03-26T22:55:00.000Z',
+        next_earnings_date: null,
+        current_iv: null,
+        current_iv_updated: null,
+        historical_iv: null,
+        iv_rank: null,
+        iv_percentile: null,
+        put_call_ratio: null,
+        put_call_ratio_updated: null,
+        provider_exchange: null,
+        provider_mic_code: null,
+        rsi_14: null,
+        rsi_14_1h: null,
+        rsi_updated: null,
+        ma_21: null,
+        ma_200: null,
+        atr_14: null
+      },
+      {
         ticker: ' nvda ',
         beta: 2.17,
         shares: 100,
         average_cost_basis: 150,
         downside_tolerance_pct: 0.3,
+        target_trim_price: null,
+        buy_rsi_alert: null,
         current_price: 171.24,
         last_updated: '2026-03-26T22:55:00.000Z',
         next_earnings_date: null,
@@ -759,11 +865,40 @@ describe('storage helpers', () => {
 
     expect(JSON.parse(localStorage.getItem('risk-tool-ticker-list') ?? '[]')).toEqual([
       {
+        ticker: 'BRK.B',
+        beta: 0.36,
+        shares: 10,
+        average_cost_basis: 470,
+        downside_tolerance_pct: 0.1,
+        target_trim_price: null,
+        buy_rsi_alert: null,
+        current_price: 480,
+        last_updated: '2026-03-26T22:55:00.000Z',
+        next_earnings_date: null,
+        current_iv: null,
+        current_iv_updated: null,
+        historical_iv: null,
+        iv_rank: null,
+        iv_percentile: null,
+        put_call_ratio: null,
+        put_call_ratio_updated: null,
+        provider_exchange: null,
+        provider_mic_code: null,
+        rsi_14: null,
+        rsi_14_1h: null,
+        rsi_updated: null,
+        ma_21: null,
+        ma_200: null,
+        atr_14: null
+      },
+      {
         ticker: 'NVDA',
         beta: 2.17,
         shares: 100,
         average_cost_basis: 150,
         downside_tolerance_pct: 0.3,
+        target_trim_price: null,
+        buy_rsi_alert: null,
         current_price: 171.24,
         last_updated: '2026-03-26T22:55:00.000Z',
         next_earnings_date: null,
@@ -780,7 +915,8 @@ describe('storage helpers', () => {
         rsi_14_1h: 52,
         rsi_updated: '2026-03-26T22:55:00.000Z',
         ma_21: 190,
-        ma_200: 180
+        ma_200: 180,
+        atr_14: null
       }
     ]);
   });
@@ -1191,6 +1327,62 @@ describe('storage helpers', () => {
     ]);
   });
 
+  it('normalizes a populated raw ticker list without dropping entries', () => {
+    const normalized = normalizeImportedTickerList([
+      {
+        ticker: 'AAPL',
+        beta: 0.87,
+        shares: null,
+        average_cost_basis: null,
+        downside_tolerance_pct: null,
+        current_price: 255.92,
+        last_updated: '2026-04-06T04:43:03.407Z',
+        next_earnings_date: '2026-05-07',
+        current_iv: 0.2748,
+        current_iv_updated: '2026-04-06T04:43:03.407Z',
+        historical_iv: 0.205,
+        iv_rank: 21.2,
+        iv_percentile: 58,
+        put_call_ratio: 0.69,
+        put_call_ratio_updated: '2026-04-06T04:43:03.407Z',
+        provider_exchange: null,
+        provider_mic_code: null,
+        rsi_14: 50.3,
+        rsi_14_1h: 56.1,
+        rsi_updated: '2026-04-06T04:43:03.407Z',
+        ma_21: 253.73,
+        ma_200: 248.8
+      },
+      {
+        ticker: 'TSLA',
+        beta: 1.92,
+        shares: null,
+        average_cost_basis: null,
+        downside_tolerance_pct: null,
+        current_price: null,
+        last_updated: null,
+        next_earnings_date: null,
+        current_iv: null,
+        current_iv_updated: null,
+        historical_iv: null,
+        iv_rank: null,
+        iv_percentile: null,
+        put_call_ratio: null,
+        put_call_ratio_updated: null,
+        provider_exchange: null,
+        provider_mic_code: null,
+        rsi_14: null,
+        rsi_14_1h: null,
+        rsi_updated: null,
+        ma_21: null,
+        ma_200: null
+      }
+    ]);
+
+    expect(normalized).toHaveLength(2);
+    expect(normalized.map((entry) => entry.ticker)).toEqual(['AAPL', 'TSLA']);
+  });
+
   it('keeps local manual fields when they are already populated and includes local-only tickers', () => {
     expect(
       mergeTickerListsPreservingManualFields(
@@ -1271,6 +1463,23 @@ describe('storage helpers', () => {
         ticker: 'NVDA',
         shares: 100,
         average_cost_basis: 150
+      })
+    ]);
+  });
+
+  it('drops stale past earnings dates while normalizing imported ticker data', () => {
+    const normalized = normalizeImportedTickerList([
+      {
+        ticker: 'GOOGL',
+        beta: 0.72,
+        next_earnings_date: '2026-02-04'
+      }
+    ]);
+
+    expect(normalized).toEqual([
+      expect.objectContaining({
+        ticker: 'GOOGL',
+        next_earnings_date: null
       })
     ]);
   });

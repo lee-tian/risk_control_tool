@@ -1,10 +1,20 @@
+.DS_Store
 .env
+env
 
-# Local dependencies and caches
 node_modules/
-.vite/
 dist/
+
 *.tsbuildinfo
 
-# Local runtime data
-data/*.json
+data/
+*.sqlite
+*.sqlite-*
+app_state.json
+temp_state.json
+api/app_state.json
+api/temp_state.json
+api/state.sqlite
+
+.vercel/
+.omx/

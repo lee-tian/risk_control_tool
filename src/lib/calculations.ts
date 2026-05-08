@@ -125,7 +125,13 @@ export function calculatePortfolioMetrics(
     const nominalExposure = put.put_strike * put.contracts * 100;
     const premiumIncome = put.premium_per_share * put.contracts * 100;
     const daysToExpiration = getDaysBetween(put.date_sold, put.expiration_date);
-    const annualizedYield = safeDivide(premiumIncome, nominalExposure) * safeDivide(365, daysToExpiration);
+    const optionThetaPerShare = typeof put.option_theta_per_share === 'number' ? put.option_theta_per_share : null;
+    const thetaIncomePerDay =
+      typeof optionThetaPerShare === 'number' ? Math.max(-optionThetaPerShare, 0) * put.contracts * 100 : null;
+    const annualizedYield =
+      typeof thetaIncomePerDay === 'number' && thetaIncomePerDay > 0
+        ? safeDivide(thetaIncomePerDay * 365, nominalExposure)
+        : safeDivide(premiumIncome, nominalExposure) * safeDivide(365, daysToExpiration);
     const breakevenPrice =
       optionSide === 'call' ? put.put_strike + put.premium_per_share : put.put_strike - put.premium_per_share;
     const netCostBasis = breakevenPrice * put.contracts * 100;
@@ -141,7 +147,6 @@ export function calculatePortfolioMetrics(
       typeof put.option_market_price_per_share === 'number'
         ? safeDivide(put.premium_per_share - put.option_market_price_per_share, put.premium_per_share)
         : null;
-    const optionThetaPerShare = typeof put.option_theta_per_share === 'number' ? put.option_theta_per_share : null;
     const optionDelta = typeof put.option_delta === 'number' ? put.option_delta : null;
     const optionGamma = typeof put.option_gamma === 'number' ? put.option_gamma : null;
     const gammaThetaRatio =
@@ -150,9 +155,6 @@ export function calculatePortfolioMetrics(
       Math.abs(optionThetaPerShare) > 0.000001
         ? Math.abs(optionGamma / optionThetaPerShare)
         : null;
-    const thetaIncomePerDay =
-      typeof optionThetaPerShare === 'number' ? Math.max(-optionThetaPerShare, 0) * put.contracts * 100 : null;
-
     return {
       ...put,
       option_side: optionSide,
@@ -272,10 +274,21 @@ export function calculatePortfolioMetrics(
   for (const row of putOnlyRows) {
     groupedTickerMap.set(row.ticker, (groupedTickerMap.get(row.ticker) ?? 0) + row.putRisk);
   }
+  const groupedTickerThetaMap = new Map<string, number>();
+  for (const row of putRows) {
+    if (typeof row.thetaIncomePerDay !== 'number' || !Number.isFinite(row.thetaIncomePerDay) || row.thetaIncomePerDay <= 0) {
+      continue;
+    }
+
+    groupedTickerThetaMap.set(row.ticker, (groupedTickerThetaMap.get(row.ticker) ?? 0) + row.thetaIncomePerDay);
+  }
 
   const groupedTickerRisk = [...groupedTickerMap.entries()]
     .map(([ticker, risk]) => ({ ticker, risk }))
     .sort((a, b) => b.risk - a.risk);
+  const groupedTickerTheta = [...groupedTickerThetaMap.entries()]
+    .map(([ticker, dailyThetaIncome]) => ({ ticker, dailyThetaIncome }))
+    .sort((a, b) => b.dailyThetaIncome - a.dailyThetaIncome);
 
   return {
     weightedAverageBeta,
@@ -307,6 +320,7 @@ export function calculatePortfolioMetrics(
     putRows,
     highestRiskTicker: groupedTickerRisk[0]?.ticker ?? '暂无',
     groupedTickerRisk,
+    groupedTickerTheta,
     canAddMoreRisk: remainingRiskBudget > 0
   };
 }

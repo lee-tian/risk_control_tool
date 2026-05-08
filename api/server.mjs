@@ -1,16 +1,33 @@
 import http from 'node:http';
-import { calculateRsi, calculateSma, extractCloseSeries } from './marketIndicators.mjs';
+import crypto from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { calculateAtr, calculateRsi, calculateSma, extractCloseSeries, extractMoomooKlineRows } from './marketIndicators.mjs';
+import {
+  fetchMoomooOptionChainSnapshot,
+  fetchMoomooOptionExpirations,
+  fetchRecommendedMoomooOptionPlan,
+  rankExpirationCandidates,
+} from './moomooOptionAnalysis.mjs';
+import { fetchMoomooOptionQuote } from './moomooOptionQuotes.mjs';
+import { fetchMoomooStockQuote, fetchMoomooKline } from './moomooStockQuotes.mjs';
+import { getMoomooUnderlying } from './moomooScripts.mjs';
 import { readJsonFromResponse } from './httpResponses.mjs';
 import {
   describeStorageTarget,
   readAppState,
+  readOptionDailySnapshots,
   readRefreshStatus,
+  readStockDailySnapshots,
   readVixCache,
   writeAppState,
+  writeOptionDailySnapshot,
   writeRefreshStatus,
+  writeStockDailySnapshot,
   writeVixCache
 } from './lib/storage/index.mjs';
 import {
+  extractOptionQuoteFromBarchart,
   extractOptionQuoteFromChain,
   extractOptionQuoteFromSnapshot,
   formatOptionSymbol
@@ -18,10 +35,52 @@ import {
 import { buildPutEntryChecks } from './putCheckRules.mjs';
 import { normalizeProviderSymbol } from './providerSymbols.mjs';
 
+function loadLocalEnvFile() {
+  if (process.env.NODE_ENV === 'test' || process.env.VITEST) {
+    return;
+  }
+
+  const envPath = path.join(process.cwd(), '.env');
+  if (!existsSync(envPath)) {
+    return;
+  }
+
+  const lines = readFileSync(envPath, 'utf8').split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) {
+      continue;
+    }
+
+    const normalized = trimmed.startsWith('export ') ? trimmed.slice(7).trim() : trimmed;
+    const separatorIndex = normalized.indexOf('=');
+    if (separatorIndex <= 0) {
+      continue;
+    }
+
+    const key = normalized.slice(0, separatorIndex).trim();
+    let value = normalized.slice(separatorIndex + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+
+    if (key && process.env[key] == null) {
+      process.env[key] = value;
+    }
+  }
+}
+
+loadLocalEnvFile();
+
 const PORT = Number(process.env.PORT ?? 3001);
 const API_KEY = process.env.TWELVE_DATA_API_KEY ?? '';
 const MARKETDATA_TOKEN = process.env.MARKETDATA_TOKEN ?? '';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? '';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? '';
+const OPENAI_PRETRADE_MODEL = process.env.OPENAI_PRETRADE_MODEL ?? 'gpt-4.1-mini';
 const REQUEST_GAP_MS = Number(process.env.TWELVE_DATA_REQUEST_GAP_MS ?? 350);
 const CURRENT_IV_TARGET_DTE = Number(process.env.CURRENT_IV_TARGET_DTE ?? 45);
 const CURRENT_IV_TARGET_DELTA = Number(process.env.CURRENT_IV_TARGET_DELTA ?? 0.3);
@@ -32,6 +91,7 @@ const AUTO_PRICE_REFRESH_CHECK_MS = Number(process.env.AUTO_PRICE_REFRESH_CHECK_
 const AUTO_OPTION_REFRESH_CHECK_MS = Number(process.env.AUTO_OPTION_REFRESH_CHECK_MS ?? 30 * 60 * 1000);
 const BARCHART_BASE_URL = 'https://www.barchart.com';
 const BARCHART_DEFAULT_PAGE = 'put-call-ratios';
+const FINVIZ_BASE_URL = 'https://finviz.com';
 const BARCHART_BROWSER_HEADERS = {
   Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   'Accept-Language': 'en-US,en;q=0.9',
@@ -40,9 +100,41 @@ const BARCHART_BROWSER_HEADERS = {
   'User-Agent':
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 };
+const FINVIZ_BROWSER_HEADERS = {
+  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Cache-Control': 'no-cache',
+  Pragma: 'no-cache',
+  Referer: `${FINVIZ_BASE_URL}/`,
+  'User-Agent': BARCHART_BROWSER_HEADERS['User-Agent']
+};
+const FINVIZ_TECHNICAL_CACHE_MS = 5 * 60 * 1000;
+let appStateMutationQueue = Promise.resolve();
+const finvizTechnicalSnapshotCache = new Map();
+
+function enqueueAppStateMutation(task) {
+  const taskPromise = appStateMutationQueue.then(task, task);
+  appStateMutationQueue = taskPromise.catch(() => {});
+  return taskPromise;
+}
 
 function isMarketDataQuotaErrorMessage(message) {
   return typeof message === 'string' && message.toLowerCase().includes('daily request limit');
+}
+
+function isGeminiLimitedErrorMessage(message) {
+  if (typeof message !== 'string') {
+    return false;
+  }
+
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('high demand') ||
+    normalized.includes('rate limit') ||
+    normalized.includes('resource exhausted') ||
+    normalized.includes('quota') ||
+    normalized.includes('429')
+  );
 }
 
 function sendJson(res, status, payload) {
@@ -347,6 +439,181 @@ function normalizeBarchartQuoteRecord(payload) {
   return records.length > 0 && typeof records[0] === 'object' && records[0] !== null ? records[0] : null;
 }
 
+function extractFinvizCloses(html) {
+  if (typeof html !== 'string' || html.trim() === '') {
+    return [];
+  }
+
+  const closeMatch = html.match(/"close":\[(.*?)\],"lastOpen"/su);
+  if (!closeMatch?.[1]) {
+    return [];
+  }
+
+  try {
+    const values = JSON.parse(`[${closeMatch[1]}]`);
+    return Array.isArray(values) ? values.map((value) => Number(value)).filter((value) => Number.isFinite(value)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function extractFinvizLastTime(html) {
+  if (typeof html !== 'string' || html.trim() === '') {
+    return null;
+  }
+
+  const match = html.match(/"lastTime":(\d{10})/u);
+  if (!match?.[1]) {
+    return null;
+  }
+
+  return toIsoStringFromUnix(Number(match[1]));
+}
+
+function parseFinvizMonthDayDate(value, referenceDate = new Date()) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  const match = trimmed.match(/^([A-Za-z]{3})\s+(\d{1,2})(?:\s+'?(\d{2,4}))?$/u);
+  if (!match) {
+    return null;
+  }
+
+  const [, monthLabel, dayLabel, yearLabel] = match;
+  const monthIndex = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(
+    monthLabel.toLowerCase()
+  );
+  if (monthIndex === -1) {
+    return null;
+  }
+
+  const baseYear = referenceDate.getUTCFullYear();
+  const parsedYear = yearLabel
+    ? yearLabel.length === 2
+      ? 2000 + Number(yearLabel)
+      : Number(yearLabel)
+    : baseYear;
+  if (!Number.isFinite(parsedYear)) {
+    return null;
+  }
+
+  const parsed = new Date(Date.UTC(parsedYear, monthIndex, Number(dayLabel)));
+  if (!Number.isFinite(parsed.getTime())) {
+    return null;
+  }
+
+  if (!yearLabel) {
+    const sixMonthsAgo = new Date(referenceDate);
+    sixMonthsAgo.setUTCMonth(sixMonthsAgo.getUTCMonth() - 6);
+    if (parsed < sixMonthsAgo) {
+      parsed.setUTCFullYear(parsed.getUTCFullYear() + 1);
+    }
+  }
+
+  return parsed.toISOString().slice(0, 10);
+}
+
+function isFutureOrTodayDate(value, referenceDate = new Date()) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return false;
+  }
+
+  const parsed = new Date(`${value.trim()}T00:00:00.000Z`);
+  if (!Number.isFinite(parsed.getTime())) {
+    return false;
+  }
+
+  const referenceDay = new Date(
+    Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth(), referenceDate.getUTCDate())
+  );
+  return parsed.getTime() >= referenceDay.getTime();
+}
+
+export function extractFinvizEarningsInfo(html, referenceDate = new Date()) {
+  if (typeof html !== 'string' || html.trim() === '') {
+    return {
+      next_earnings_date: null,
+      earnings_time_code: null
+    };
+  }
+
+  const tableMatch = html.match(
+    /snapshot-td-label[^>]*>\s*(?:<a[^>]*>)?\s*Earnings\s*(?:<\/a>)?\s*<\/div>[\s\S]{0,240}?snapshot-td-content[^>]*>[\s\S]{0,120}?<b[^>]*>\s*(?:<small[^>]*>)?([^<]+?)(?:<\/small>)?\s*<\/b>/iu
+  );
+  const rawValue = tableMatch?.[1]?.replace(/\s+/gu, ' ').trim() ?? '';
+  if (rawValue === '') {
+    return {
+      next_earnings_date: null,
+      earnings_time_code: null
+    };
+  }
+
+  const timeCodeMatch = rawValue.match(/\b(BMO|AMC)\b/iu);
+  const normalizedDate = parseFinvizMonthDayDate(
+    rawValue.replace(/\b(BMO|AMC)\b/giu, '').trim(),
+    referenceDate
+  );
+
+  return {
+    next_earnings_date: isFutureOrTodayDate(normalizedDate, referenceDate) ? normalizedDate : null,
+    earnings_time_code: timeCodeMatch?.[1]?.toUpperCase() ?? null
+  };
+}
+
+async function fetchFinvizTechnicalSnapshot(symbol) {
+  const normalizedSymbol = String(symbol ?? '').trim().toUpperCase();
+  if (normalizedSymbol === '') {
+    throw new Error('Finviz symbol is required');
+  }
+
+  const now = Date.now();
+  const cached = finvizTechnicalSnapshotCache.get(normalizedSymbol);
+  if (cached && now - cached.fetchedAt < FINVIZ_TECHNICAL_CACHE_MS) {
+    return cached.promise;
+  }
+
+  const snapshotPromise = (async () => {
+    const url = new URL('/quote.ashx', FINVIZ_BASE_URL);
+    url.searchParams.set('t', normalizedSymbol);
+
+    const response = await fetchWithTimeout(url, {
+      headers: FINVIZ_BROWSER_HEADERS
+    });
+    const html = await response.text();
+
+    if (!response.ok) {
+      throw new Error(`Finviz page request failed (${response.status})`);
+    }
+
+    const closes = extractFinvizCloses(html);
+    if (closes.length === 0) {
+      throw new Error(`Finviz technical series unavailable for ${normalizedSymbol}`);
+    }
+
+    return {
+      symbol: normalizedSymbol,
+      closes,
+      asOf: extractFinvizLastTime(html),
+      earnings: extractFinvizEarningsInfo(html),
+      source: 'Finviz HTML'
+    };
+  })();
+
+  finvizTechnicalSnapshotCache.set(normalizedSymbol, {
+    fetchedAt: now,
+    promise: snapshotPromise
+  });
+
+  try {
+    return await snapshotPromise;
+  } catch (error) {
+    finvizTechnicalSnapshotCache.delete(normalizedSymbol);
+    throw error;
+  }
+}
+
 async function fetchBarchartBootstrap(symbol, pagePath = BARCHART_DEFAULT_PAGE) {
   const pageUrl = `${BARCHART_BASE_URL}/stocks/quotes/${encodeURIComponent(symbol)}/${pagePath}`;
   const response = await fetchWithTimeout(pageUrl, {
@@ -415,6 +682,67 @@ async function fetchBarchartProxyJson(symbol, fields, pagePath = BARCHART_DEFAUL
   return {
     payload,
     bootstrap
+  };
+}
+
+async function fetchBarchartOptionQuote(symbol, expirationDate, strike, side = 'put') {
+  const pagePath = 'options';
+  const bootstrap = await fetchBarchartBootstrap(symbol, pagePath);
+  const endpoint = new URL(`${BARCHART_BASE_URL}/proxies/core-api/v1/options/get`);
+  endpoint.searchParams.set('symbol', symbol);
+  endpoint.searchParams.set(
+    'fields',
+    [
+      'symbol',
+      'optionType',
+      'strikePrice',
+      'expirationDate',
+      'lastPrice',
+      'bidPrice',
+      'askPrice',
+      'tradeTime',
+      'delta',
+      'gamma',
+      'theta',
+      'expirationType'
+    ].join(',')
+  );
+  endpoint.searchParams.set('raw', '1');
+  endpoint.searchParams.set('expirationDate', expirationDate);
+  endpoint.searchParams.set('meta', 'field.shortName,field.description,field.type');
+  endpoint.searchParams.set('orderBy', 'strikePrice');
+  endpoint.searchParams.set('orderDir', 'asc');
+
+  const response = await fetchWithTimeout(endpoint, {
+    headers: {
+      Accept: 'application/json',
+      'Accept-Language': 'en-US,en;q=0.9',
+      Cookie: bootstrap.cookies,
+      Referer: bootstrap.pageUrl,
+      'User-Agent': BARCHART_BROWSER_HEADERS['User-Agent'],
+      'X-Requested-With': 'XMLHttpRequest',
+      ...(bootstrap.xsrfToken ? { 'X-XSRF-TOKEN': bootstrap.xsrfToken } : {})
+    }
+  });
+
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`Barchart option quote request failed (${response.status})`);
+  }
+
+  const payload = JSON.parse(text);
+  if (payload?.error) {
+    throw new Error(payload.error?.message || 'Barchart option quote returned an error');
+  }
+
+  const quote = extractOptionQuoteFromBarchart(payload, strike, expirationDate, side);
+  if (!quote) {
+    throw new Error(`Barchart option quote unavailable for ${symbol} ${expirationDate} ${strike} ${side}`);
+  }
+
+  return {
+    ...quote,
+    source: 'Barchart options/get'
   };
 }
 
@@ -593,6 +921,157 @@ function hasMeaningfulSnapshotData(snapshot) {
   );
 }
 
+function mergeSnapshotPreservingExistingCoreState(incomingSnapshot, existingSnapshot, saveMode = 'replace') {
+  const incomingData =
+    typeof incomingSnapshot?.data === 'object' && incomingSnapshot.data !== null ? incomingSnapshot.data : {};
+  const existingData =
+    typeof existingSnapshot?.data === 'object' && existingSnapshot.data !== null ? existingSnapshot.data : {};
+  const incomingClosedTrades = Array.isArray(incomingData.closedTrades) ? incomingData.closedTrades : [];
+  const existingClosedTrades = Array.isArray(existingData.closedTrades) ? existingData.closedTrades : [];
+  const incomingStockTrades = Array.isArray(incomingData.stockTrades) ? incomingData.stockTrades : [];
+  const existingStockTrades = Array.isArray(existingData.stockTrades) ? existingData.stockTrades : [];
+  const incomingAccountValueHistory = Array.isArray(incomingData.accountValueHistory) ? incomingData.accountValueHistory : [];
+  const existingAccountValueHistory = Array.isArray(existingData.accountValueHistory) ? existingData.accountValueHistory : [];
+  const incomingPuts = Array.isArray(incomingData.puts) ? incomingData.puts : [];
+  const existingPuts = Array.isArray(existingData.puts) ? existingData.puts : [];
+
+  const hasSamePositionMembership = compareObjectArrayMembership(incomingPuts, existingPuts, (item) => item?.id);
+  const hasClosedTradeSuperset = hasObjectArraySuperset(incomingClosedTrades, existingClosedTrades, (item) => item?.id);
+  const hasStockTradeSuperset = hasObjectArraySuperset(incomingStockTrades, existingStockTrades, (item) => item?.id);
+  const hasAccountHistorySuperset = hasObjectArraySuperset(
+    incomingAccountValueHistory,
+    existingAccountValueHistory,
+    (item) => item?.date
+  );
+
+  return {
+    ...incomingSnapshot,
+    data: {
+      ...incomingData,
+      config: incomingData.config ?? existingData.config ?? null,
+      puts:
+        saveMode === 'replace' || hasSamePositionMembership
+          ? incomingPuts
+          : existingPuts,
+      closedTrades:
+        saveMode === 'replace' || hasClosedTradeSuperset || existingClosedTrades.length === 0
+          ? incomingClosedTrades
+          : existingClosedTrades,
+      stockTrades:
+        saveMode === 'replace' || hasStockTradeSuperset || existingStockTrades.length === 0
+          ? incomingStockTrades
+          : existingStockTrades,
+      accountValueHistory:
+        saveMode === 'replace' || hasAccountHistorySuperset || existingAccountValueHistory.length === 0
+          ? incomingAccountValueHistory
+          : existingAccountValueHistory
+    }
+  };
+}
+
+function buildMembershipSet(items, getKey) {
+  return new Set(
+    (Array.isArray(items) ? items : [])
+      .map((item) => getKey(item))
+      .filter((value) => typeof value === 'string' && value.trim() !== '')
+  );
+}
+
+function compareObjectArrayMembership(incomingItems, existingItems, getKey) {
+  const incomingKeys = buildMembershipSet(incomingItems, getKey);
+  const existingKeys = buildMembershipSet(existingItems, getKey);
+
+  if (incomingKeys.size !== existingKeys.size) {
+    return false;
+  }
+
+  return [...incomingKeys].every((key) => existingKeys.has(key));
+}
+
+function hasObjectArraySuperset(incomingItems, existingItems, getKey) {
+  const incomingKeys = buildMembershipSet(incomingItems, getKey);
+  const existingKeys = buildMembershipSet(existingItems, getKey);
+
+  if (existingKeys.size === 0) {
+    return true;
+  }
+
+  return [...existingKeys].every((key) => incomingKeys.has(key));
+}
+
+function mergeTickerListsPreservingExistingEntries(incomingTickerList, existingTickerList) {
+  const incomingEntries = Array.isArray(incomingTickerList) ? incomingTickerList : [];
+  const existingEntries = Array.isArray(existingTickerList) ? existingTickerList : [];
+  const incomingByTicker = new Map(
+    incomingEntries
+      .filter((entry) => typeof entry?.ticker === 'string' && entry.ticker.trim() !== '')
+      .map((entry) => [entry.ticker, entry])
+  );
+  const existingByTicker = new Map(
+    existingEntries
+      .filter((entry) => typeof entry?.ticker === 'string' && entry.ticker.trim() !== '')
+      .map((entry) => [entry.ticker, entry])
+  );
+  const tickers = new Set([...existingByTicker.keys(), ...incomingByTicker.keys()]);
+
+  return [...tickers]
+    .map((ticker) => {
+      const incomingEntry = incomingByTicker.get(ticker);
+      const existingEntry = existingByTicker.get(ticker);
+
+      if (!incomingEntry) {
+        return existingEntry ?? null;
+      }
+
+      if (!existingEntry) {
+        return incomingEntry;
+      }
+
+      return {
+        ...existingEntry,
+        ...incomingEntry
+      };
+    })
+    .filter((entry) => entry !== null)
+    .sort((a, b) => (a.ticker ?? '').localeCompare(b.ticker ?? ''));
+}
+
+function buildCoreSnapshotStats(snapshot) {
+  const data = typeof snapshot?.data === 'object' && snapshot.data !== null ? snapshot.data : {};
+  return {
+    puts: Array.isArray(data.puts) ? data.puts.length : 0,
+    closedTrades: Array.isArray(data.closedTrades) ? data.closedTrades.length : 0,
+    stockTrades: Array.isArray(data.stockTrades) ? data.stockTrades.length : 0,
+    tickerList: Array.isArray(data.tickerList) ? data.tickerList.length : 0,
+    accountValueHistory: Array.isArray(data.accountValueHistory) ? data.accountValueHistory.length : 0
+  };
+}
+
+function findSuspiciousSnapshotShrink(incomingSnapshot, existingSnapshot, saveMode, allowDestructiveWrite) {
+  if (saveMode !== 'replace' || allowDestructiveWrite) {
+    return [];
+  }
+
+  const incoming = buildCoreSnapshotStats(incomingSnapshot);
+  const existing = buildCoreSnapshotStats(existingSnapshot);
+  const issues = [];
+
+  if (existing.closedTrades > 0 && incoming.closedTrades === 0) {
+    issues.push(`closedTrades ${existing.closedTrades} -> 0`);
+  }
+  if (existing.stockTrades > 0 && incoming.stockTrades === 0) {
+    issues.push(`stockTrades ${existing.stockTrades} -> 0`);
+  }
+  if (existing.accountValueHistory > 1 && incoming.accountValueHistory === 0) {
+    issues.push(`accountValueHistory ${existing.accountValueHistory} -> 0`);
+  }
+  if (existing.tickerList >= 3 && incoming.tickerList <= Math.floor(existing.tickerList / 2)) {
+    issues.push(`tickerList ${existing.tickerList} -> ${incoming.tickerList}`);
+  }
+
+  return issues;
+}
+
 function getDateKey(date = new Date()) {
   return date.toISOString().slice(0, 10);
 }
@@ -603,6 +1082,34 @@ async function loadVixCache() {
 
 async function saveVixCache(payload) {
   await writeVixCache(payload);
+}
+
+function buildCachedVixSnapshot(cached) {
+  if (!cached || typeof cached.value !== 'number' || !Number.isFinite(cached.value)) {
+    return null;
+  }
+
+  return {
+    value: cached.value,
+    as_of: typeof cached.as_of === 'string' ? cached.as_of : null,
+    source: 'Cboe official daily close',
+    cached: true,
+    fear_greed_score: typeof cached.fear_greed_score === 'number' ? cached.fear_greed_score : null,
+    fear_greed_rating: typeof cached.fear_greed_rating === 'string' ? cached.fear_greed_rating : null,
+    fear_greed_status: 'cached',
+    fear_greed_error: null,
+    storage_driver: describeStorageTarget().driver,
+    cache_write_ok: null,
+    cache_write_error: null
+  };
+}
+
+function shouldRefreshVixWithMarketData({ cached, force, includeVix, marketOpen, now, staleTickerCount }) {
+  if (!includeVix || staleTickerCount <= 0 || (!marketOpen && !force)) {
+    return false;
+  }
+
+  return cached?.fetched_on !== getDateKey(now);
 }
 
 async function loadRefreshStatus() {
@@ -816,360 +1323,265 @@ function formatPromptMetric(value, formatter = (input) => String(input)) {
   return formatter(value);
 }
 
-function buildPreTradeGeminiPrompt(payload, marketContext) {
-  const {
-    option_side,
-    ticker,
-    contracts,
-    put_strike,
-    premium_per_share,
-    expiration_date,
-    date_sold,
-    current_price,
-    beta,
-    rsi_14,
-    ma_21,
-    ma_200,
-    current_iv,
-    user_rationale
-  } = payload;
-  const optionSide = option_side === 'call' ? 'Covered Call' : 'Sell Put';
-  const isCall = option_side === 'call';
-
-  const currentIvPct = formatPromptMetric(marketContext.current_iv, (value) => `${(Number(value) * 100).toFixed(2)}%`);
-  const historicalIvPct = formatPromptMetric(marketContext.historical_iv, (value) => `${(Number(value) * 100).toFixed(2)}%`);
-  const ivRankDisplay = formatPromptMetric(marketContext.iv_rank, (value) => Number(value).toFixed(1));
-  const ivPercentileDisplay = formatPromptMetric(marketContext.iv_percentile, (value) => Number(value).toFixed(1));
-  const putCallRatioDisplay = formatPromptMetric(marketContext.put_call_ratio, (value) => Number(value).toFixed(2));
-  const currentPriceDisplay = formatPromptMetric(marketContext.current_price, (value) => Number(value).toFixed(2));
-  const priceDateDisplay = formatPromptMetric(marketContext.current_price_date, (value) => String(value));
-  const earningsDateDisplay = formatPromptMetric(marketContext.next_earnings_date, (value) => String(value));
-  const rsiDisplay = typeof rsi_14 === 'string' && rsi_14.trim() !== '' ? rsi_14 : '未确认';
-  const ma21Display = typeof ma_21 === 'string' && ma_21.trim() !== '' ? ma_21 : '未确认';
-  const ma200Display = typeof ma_200 === 'string' && ma_200.trim() !== '' ? ma_200 : '未确认';
-  const strike = Number(put_strike);
-  const premium = Number(premium_per_share);
-  const currentPrice = Number(marketContext.current_price ?? current_price);
-  const expiration = typeof expiration_date === 'string' ? expiration_date : '';
-  const soldDate = typeof date_sold === 'string' ? date_sold : '';
-  const expirationTimestamp = Date.parse(`${expiration}T00:00:00Z`);
-  const soldTimestamp = Date.parse(`${soldDate}T00:00:00Z`);
-  const dte =
-    Number.isFinite(expirationTimestamp) && Number.isFinite(soldTimestamp)
-      ? Math.max(0, Math.round((expirationTimestamp - soldTimestamp) / (24 * 60 * 60 * 1000)))
-      : null;
-  const breakeven =
-    Number.isFinite(strike) && Number.isFinite(premium) ? (isCall ? strike + premium : strike - premium) : null;
-  const strikeBufferPct =
-    Number.isFinite(currentPrice) && currentPrice > 0 && Number.isFinite(strike)
-      ? ((isCall ? strike - currentPrice : currentPrice - strike) / currentPrice) * 100
-      : null;
-  const breakevenBufferPct =
-    Number.isFinite(currentPrice) && currentPrice > 0 && Number.isFinite(breakeven)
-      ? ((isCall ? breakeven - currentPrice : currentPrice - breakeven) / currentPrice) * 100
-      : null;
-  const priceVsMa21Pct =
-    Number.isFinite(currentPrice) && Number.isFinite(Number(ma_21)) && Number(ma_21) > 0
-      ? ((currentPrice - Number(ma_21)) / Number(ma_21)) * 100
-      : null;
-  const priceVsMa200Pct =
-    Number.isFinite(currentPrice) && Number.isFinite(Number(ma_200)) && Number(ma_200) > 0
-      ? ((currentPrice - Number(ma_200)) / Number(ma_200)) * 100
-      : null;
-  const importantSignals = [
-    `现价 ${currentPriceDisplay}，价格日期 ${priceDateDisplay}`,
-    `行权价 ${put_strike}，权利金 ${premium_per_share}，Breakeven ${formatPromptMetric(breakeven, (value) => Number(value).toFixed(2))}`,
-    `距离行权价 ${formatPromptMetric(strikeBufferPct, (value) => `${Number(value).toFixed(2)}%`)}`,
-    `距离 Breakeven ${formatPromptMetric(breakevenBufferPct, (value) => `${Number(value).toFixed(2)}%`)}`,
-    `DTE ${formatPromptMetric(dte, (value) => String(value))}`,
-    `MA21 ${ma21Display}，现价相对 MA21 ${formatPromptMetric(priceVsMa21Pct, (value) => `${Number(value).toFixed(2)}%`)}`,
-    `MA200 ${ma200Display}，现价相对 MA200 ${formatPromptMetric(priceVsMa200Pct, (value) => `${Number(value).toFixed(2)}%`)}`,
-    `RSI(14) ${rsiDisplay}`,
-    `Beta ${typeof beta === 'string' && beta.trim() !== '' ? beta : '未确认'}`,
-    `Current IV ${currentIvPct} / Historical IV ${historicalIvPct} / IV Rank ${ivRankDisplay} / IV Percentile ${ivPercentileDisplay}`,
-    `PCR(OI) ${putCallRatioDisplay}`,
-    `下个财报日 ${earningsDateDisplay}`
-  ];
-
-  return [
-    `你是一位严谨的 ${optionSide} 交易前风险分析师。请用中文回答。`,
-    '请只输出严格 JSON，不要输出 Markdown，不要输出代码块，不要有额外解释。',
-    '不要联网搜索，不要使用搜索结果，不要假设你看到了实时网页。',
-    '你只能基于下面“服务器已抓取的数据快照”和用户输入来分析。',
-    `把下面这些项目视为 ${optionSide} 最重要的信息：现价、价格日期、DTE、行权价距离、Breakeven 距离、MA21、MA200、RSI、Beta、Current IV、Historical IV、IV Rank、IV Percentile、PCR、财报日。`,
-    `目标：在卖出前，让交易者清晰知道这笔 ${optionSide} 的执行计划、风险、最坏情况、公司基本面。`,
-    'JSON schema:',
-    '{',
-    '  "verdict": "可以考虑 | 需要谨慎 | 不建议卖",',
-    '  "summary": "一句话总结，不超过35字",',
-    '  "rationale_check": "点评用户对接货、止损、最大亏损边界的计划是否清晰可执行，不超过50字",',
-    '  "key_risks": ["最多3条，每条不超过30字"],',
-    '  "worst_case": "最坏情况，不超过60字",',
-    '  "fundamental_note": "最需要注意的基本面问题，不超过60字",',
-    '  "fundamental_events": ["如果基本面有风险，列出最多3个具体事件，带简短日期或季度信息"],',
-    '  "current_iv_rank": "当前 IV Rank，返回 0-100 的数字字符串；如果无法确认则写 未确认",',
-    `  "iv_rank_note": "简短说明当前 IV Rank 所处区间及其对${optionSide}的含义，不超过40字",`,
-    '  "iv_rank_source": "IV Rank 的具体出处名称，例如 Market Chameleon / Barchart / tastytrade；无法确认则写 未确认",',
-    '  "iv_rank_time": "这条 IV Rank 数据的时间，尽量保留原网页日期或时间；无法确认则写 未确认",',
-    '  "iv_rank_link": "这条 IV Rank 的公开原始网页链接，必须是用户可直接打开的网页，不要返回 Google/Vertex grounding 中转链接；无法确认则写 空字符串",',
-    '  "current_iv_check": "基于已提供的 Current IV / Historical IV / IV Percentile 做一句判断，不超过45字",',
-    '  "marsi_check": "结合 RSI(14)、MA21、MA200 做一句技术面判断，不超过45字",',
-    '  "rsi_check": "基于当前 RSI(14) 判断是否超卖，格式示例：RSI(14) 28.4，已超卖 / RSI(14) 43.2，未超卖，不超过40字",',
-    '  "ma200_check": "结合当前价与 MA200 给出一句判断，格式示例：MA200 261.17，现价高于 MA200 / MA200 261.17，现价低于 MA200，不超过40字",',
-    '  "next_earnings_date": "下一个财报日，格式 YYYY-MM-DD；如果无法确认则写 未确认",',
-    '  "earnings_warning": "判断这笔期权到期前是否会跨财报，并给出简短预警，例如 会跨财报，需谨慎 / 到期早于财报，相对更安全，不超过40字",',
-    '  "action": "给出交易动作建议，不超过35字"',
-    '}',
-    '如果你判断基本面有问题，只能基于你已有常识和下面数据推断；没有把握就返回保守表述。',
-    'IV Rank、Current IV、Historical IV、IV Percentile、财报日优先使用服务器已提供的数据，不要自行改写成其他来源。',
-    'iv_rank_source 固定写 Barchart 或 MarketData.app；iv_rank_link 优先返回 Barchart 的原始链接。',
-    '请明确比较：下一次财报日 是否落在 这笔期权的到期日之前或之内。',
-    '如果这笔期权会跨财报，请在 earnings_warning 里明确指出这是财报风险。',
-    'fundamental_events 如果没有足够确定的具体事件，就返回空数组。',
-    '',
-    '服务器已抓取的数据快照：',
-    `Barchart Overview Link: ${BARCHART_BASE_URL}/stocks/quotes/${encodeURIComponent(ticker)}/overview`,
-    `Barchart Put/Call Link: ${BARCHART_BASE_URL}/stocks/quotes/${encodeURIComponent(ticker)}/put-call-ratios`,
-    `Current price: ${currentPriceDisplay}`,
-    `Current price date: ${priceDateDisplay}`,
-    `Current IV: ${currentIvPct}`,
-    `Historical IV: ${historicalIvPct}`,
-    `IV Rank: ${ivRankDisplay}`,
-    `IV Percentile: ${ivPercentileDisplay}`,
-    `Put/Call Ratio(OI): ${putCallRatioDisplay}`,
-    `Next earnings date: ${earningsDateDisplay}`,
-    `Current IV source: ${marketContext.source.current_iv ?? '未确认'}`,
-    `Historical IV source: ${marketContext.source.historical_iv ?? '未确认'}`,
-    `IV Rank source: ${marketContext.source.iv_rank ?? '未确认'}`,
-    `IV Percentile source: ${marketContext.source.iv_percentile ?? '未确认'}`,
-    `Earnings date source: ${marketContext.source.next_earnings_date ?? '未确认'}`,
-    `RSI(14): ${rsiDisplay}`,
-    `MA21: ${ma21Display}`,
-    `MA200: ${ma200Display}`,
-    '重要信息快照：',
-    ...importantSignals.map((item) => `- ${item}`),
-    '',
-    `Ticker: ${ticker}`,
-    `Contracts: ${contracts}`,
-    `Strike: ${put_strike}`,
-    `Premium per share: ${premium_per_share}`,
-    `Date sold: ${date_sold}`,
-    `Expiration date: ${expiration_date}`,
-    `Current price: ${current_price}`,
-    `Beta: ${beta}`,
-    `RSI(14) from app snapshot: ${rsiDisplay}`,
-    `MA21 from app snapshot: ${ma21Display}`,
-    `MA200 from app snapshot: ${ma200Display}`,
-    `Current IV from app snapshot: ${current_iv}`,
-    `User plan after strike breaks / stop-loss boundary: ${user_rationale}`
-  ].join('\n');
+function formatDecimalAsPercent(value) {
+  return formatPromptMetric(value, (input) => `${(Number(input) * 100).toFixed(2)}%`);
 }
 
-function buildPreTradeContextPrompt(payload, marketContext) {
-  const ticker = typeof payload?.ticker === 'string' ? payload.ticker.trim().toUpperCase() : '';
-  const optionSide = payload?.option_side === 'call' ? 'Covered Call' : 'Sell Put';
-  const earningsDateDisplay = formatPromptMetric(marketContext.next_earnings_date, (value) => String(value));
-  const currentIvPct = formatPromptMetric(marketContext.current_iv, (value) => `${(Number(value) * 100).toFixed(2)}%`);
-  const historicalIvPct = formatPromptMetric(marketContext.historical_iv, (value) => `${(Number(value) * 100).toFixed(2)}%`);
-  const ivRankDisplay = formatPromptMetric(marketContext.iv_rank, (value) => Number(value).toFixed(1));
-  const ivPercentileDisplay = formatPromptMetric(marketContext.iv_percentile, (value) => Number(value).toFixed(1));
-  const expirationDate = typeof payload?.expiration_date === 'string' ? payload.expiration_date : '未确认';
-
-  return [
-    `你是一位 ${optionSide} 卖前事件摘要助手。请用中文回答。`,
-    '请只输出严格 JSON，不要输出 Markdown，不要输出代码块。',
-    '你可以使用 Google Search，但要优先总结财报日、监管消息、公司重大事件、宏观事件窗口。',
-    'JSON schema:',
-    '{',
-    '  "iv_assessment": "一句话判断当前 IV / IV Rank / 权利金环境，不超过40字",',
-    '  "earnings_assessment": "一句话判断财报日与本次到期日的关系，不超过40字",',
-    '  "special_window_assessment": "一句话判断近期是否处于特殊事件窗口，不超过45字",',
-    '  "macro_regulatory_assessment": "一句话总结宏观或监管层面的近期风险，不超过45字",',
-    '  "key_flags": ["最多4条，每条不超过28字"]',
-    '}',
-    '如果没有明确证据，请保守表述，不要编造具体日期。',
-    '如果到期日前后有 FOMC、财报、产品发布、监管调查、反垄断、行业政策等，应在 key_flags 中提示。',
-    '',
-    `Ticker: ${ticker}`,
-    `Trade type: ${optionSide}`,
-    `Expiration date: ${expirationDate}`,
-    `Current IV: ${currentIvPct}`,
-    `Historical IV: ${historicalIvPct}`,
-    `IV Rank: ${ivRankDisplay}`,
-    `IV Percentile: ${ivPercentileDisplay}`,
-    `Next earnings date: ${earningsDateDisplay}`,
-    `Current IV source: ${marketContext.source.current_iv ?? '未确认'}`,
-    `IV Rank source: ${marketContext.source.iv_rank ?? '未确认'}`,
-    `Earnings date source: ${marketContext.source.next_earnings_date ?? '未确认'}`,
-    `Barchart Overview Link: ${BARCHART_BASE_URL}/stocks/quotes/${encodeURIComponent(ticker)}/overview`,
-    `Barchart Put/Call Link: ${BARCHART_BASE_URL}/stocks/quotes/${encodeURIComponent(ticker)}/put-call-ratios`
-  ].join('\n');
+function formatNumericPercent(value) {
+  return formatPromptMetric(value, (input) => `${Number(input).toFixed(2)}%`);
 }
 
-function buildFallbackSearchPrompt({ ticker, topic, expirationDate }) {
-  return [
-    `请用中文总结 ${ticker} 在 ${expirationDate || '未来几周'} 前后的 ${topic}。`,
-    '只输出严格 JSON，不要 Markdown。',
-    '{',
-    '  "summary": "一句话概括，不超过60字",',
-    '  "event_date": "最近最相关事件或新闻日期，尽量 YYYY-MM-DD；拿不到就写 未确认",',
-    '  "headline": "这条最相关事件/新闻的短标题，不超过40字",',
-    '  "key_flags": ["最多3条短提醒"]',
-    '}',
-    '必须基于可公开访问的网站信息；如果不确定，请保守表述。',
-    '优先找最近的相关新闻、公司事件、宏观或监管事件，并给出对应日期。'
-  ].join('\n');
-}
-
-async function runGeminiSearchFallback({ ticker, topic, expirationDate }) {
-  if (!GEMINI_API_KEY) {
-    return {
-      summary: `${topic} 暂未补充`,
-      eventDate: '未确认',
-      headline: '',
-      keyFlags: [],
-      sources: []
-    };
-  }
-
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [{ text: buildFallbackSearchPrompt({ ticker, topic, expirationDate }) }]
-          }
-        ],
-        tools: [{ google_search: {} }],
-        generationConfig: {
-          temperature: 0.2
-        }
-      })
-    }
-  );
-
-  const data = await readJsonFromResponse(response, `Gemini ${topic} fallback failed`);
-  if (!response.ok || data?.error) {
-    throw new Error(data?.error?.message ?? `Gemini ${topic} fallback failed`);
-  }
-
-  const text =
-    data?.candidates?.[0]?.content?.parts
-      ?.map((part) => part?.text)
-      .filter((value) => typeof value === 'string')
-      .join('\n')
-      .trim() ?? '';
-
-  if (text === '') {
-    return {
-      summary: `${topic} 暂未补充`,
-      eventDate: '未确认',
-      headline: '',
-      keyFlags: [],
-      sources: []
-    };
-  }
-
-  const parsed = parseGeminiJson(text);
-  const rawSources = buildGroundingSources(data).slice(0, 3);
-  const sources = rawSources
-    .map((item) => {
-      const directUrl = getReadableSourceUrl(item);
-      return directUrl === ''
-        ? null
-        : {
-            title: item.title,
-            url: directUrl
-          };
-    })
-    .filter((item) => item !== null);
-
-  const keyFlags = Array.isArray(parsed.key_flags)
-    ? parsed.key_flags
-        .map(formatGeminiKeyFlag)
-        .filter((item) => typeof item === 'string' && item.trim() !== '')
-        .slice(0, 4)
-    : [];
-
-  const eventDate =
-    typeof parsed.event_date === 'string' && parsed.event_date.trim() !== ''
-      ? parsed.event_date
-      : extractEventDateFromKeyFlags(parsed.key_flags);
-
-  return {
-    summary: typeof parsed.summary === 'string' ? parsed.summary : `${topic} 暂未补充`,
-    eventDate,
-    headline: typeof parsed.headline === 'string' ? parsed.headline : '',
-    keyFlags,
-    sources: sources.filter((item, index, list) => list.findIndex((candidate) => candidate.url === item.url) === index)
-  };
-}
-
-function getReadableSourceUrl(source) {
-  const directFromPublicUrl = normalizePublicWebUrl(source?.publicUrl);
-  if (isDirectWebUrl(directFromPublicUrl)) {
-    return directFromPublicUrl;
-  }
-
-  const directFromUrl = normalizePublicWebUrl(source?.url);
-  if (isDirectWebUrl(directFromUrl)) {
-    return directFromUrl;
-  }
-
-  const title = typeof source?.title === 'string' ? source.title.trim().toLowerCase() : '';
-  if (/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(title)) {
-    return `https://${title}`;
-  }
-
-  return '';
-}
-
-function isDirectWebUrl(rawUrl) {
-  if (typeof rawUrl !== 'string' || rawUrl === '') {
-    return false;
-  }
-
-  try {
-    const parsed = new URL(rawUrl);
-    return !parsed.hostname.toLowerCase().includes('vertexaisearch.cloud.google.com');
-  } catch {
-    return false;
-  }
-}
-
-function formatGeminiKeyFlag(flag) {
-  if (typeof flag === 'string') {
-    return flag.trim();
-  }
-
-  if (!flag || typeof flag !== 'object') {
-    return '';
-  }
-
-  const eventName = typeof flag.event_name === 'string' ? flag.event_name.trim() : '';
-  const eventDate = typeof flag.event_date === 'string' ? flag.event_date.trim() : '';
-  const tag = typeof flag.flag === 'string' ? flag.flag.trim() : '';
-
-  return [eventDate, eventName, tag ? `(${tag})` : ''].filter(Boolean).join(' ');
-}
-
-function extractEventDateFromKeyFlags(keyFlags) {
-  if (!Array.isArray(keyFlags)) {
+function formatStrikeLevel(cluster) {
+  if (!cluster || !Number.isFinite(cluster.strike)) {
     return '未确认';
   }
 
-  for (const item of keyFlags) {
-    if (item && typeof item === 'object' && typeof item.event_date === 'string' && item.event_date.trim() !== '') {
-      return item.event_date.trim();
-    }
+  return `${cluster.strike.toFixed(2)} (OI ${Math.round(cluster.openInterest ?? 0)})`;
+}
+
+function formatTechnicalLevel(level) {
+  if (!level || !Number.isFinite(level.price)) {
+    return '未确认';
   }
 
+  const label =
+    typeof level.label === 'string' && level.label.trim() !== ''
+      ? level.label.trim()
+      : typeof level.source === 'string' && level.source.trim() !== ''
+        ? level.source.trim()
+        : '日K关键位';
+  const strength =
+    typeof level.strength === 'number' && Number.isFinite(level.strength) ? `, 强度 ${level.strength.toFixed(1)}` : '';
+  return `${level.price.toFixed(2)} (${label}${strength})`;
+}
+
+function getPreferredSupportResistanceLabel(technicalLevel, cluster) {
+  const technicalLabel = formatTechnicalLevel(technicalLevel);
+  if (technicalLabel !== '未确认') {
+    return technicalLabel;
+  }
+
+  return formatStrikeLevel(cluster);
+}
+
+function formatCandidateForPrompt(candidate) {
+  return {
+    code: candidate.code,
+    strike: Number(candidate.strike.toFixed(2)),
+    delta: candidate.delta === null ? '未确认' : Number(candidate.delta.toFixed(4)),
+    delta_abs: candidate.deltaAbs === null || candidate.deltaAbs === undefined ? '未确认' : Number(candidate.deltaAbs.toFixed(4)),
+    open_interest: Math.round(candidate.openInterest),
+    volume: Math.round(candidate.volume),
+    bid: candidate.bid === null ? '未确认' : Number(candidate.bid.toFixed(2)),
+    ask: candidate.ask === null ? '未确认' : Number(candidate.ask.toFixed(2)),
+    spread_pct: candidate.spreadPct === null ? '未确认' : Number(candidate.spreadPct.toFixed(2)),
+    implied_volatility_pct:
+      candidate.impliedVolatility === null ? '未确认' : Number(candidate.impliedVolatility.toFixed(2)),
+    otm_pct: candidate.distancePct === null || candidate.distancePct === undefined ? '未确认' : Number(candidate.distancePct.toFixed(2)),
+    outside_key_level:
+      typeof candidate.outsideLevel === 'boolean'
+        ? candidate.outsideLevel
+        : '未确认',
+    key_level_buffer_pct:
+      candidate.levelDistancePct === null || candidate.levelDistancePct === undefined
+        ? '未确认'
+        : Number(candidate.levelDistancePct.toFixed(2)),
+    selection_basis: Array.isArray(candidate.selectionBasis) ? candidate.selectionBasis : []
+  };
+}
+
+function formatRecommendedPremium(candidate) {
+  if (!candidate) {
+    return '未确认';
+  }
+
+  const price = typeof candidate.price === 'number' && Number.isFinite(candidate.price) ? candidate.price : null;
+  const bid = typeof candidate.bid === 'number' && Number.isFinite(candidate.bid) ? candidate.bid : null;
+  const ask = typeof candidate.ask === 'number' && Number.isFinite(candidate.ask) ? candidate.ask : null;
+
+  if (price !== null) {
+    return price.toFixed(2);
+  }
+  if (bid !== null && ask !== null) {
+    return ((bid + ask) / 2).toFixed(2);
+  }
+  if (ask !== null) {
+    return ask.toFixed(2);
+  }
+  if (bid !== null) {
+    return bid.toFixed(2);
+  }
   return '未确认';
+}
+
+function formatRecommendedDistance(candidate, currentPrice) {
+  if (!candidate || currentPrice === null || !Number.isFinite(currentPrice) || currentPrice <= 0) {
+    return '未确认';
+  }
+
+  const distancePct =
+    candidate.side === 'call'
+      ? ((candidate.strike - currentPrice) / currentPrice) * 100
+      : ((currentPrice - candidate.strike) / currentPrice) * 100;
+
+  return `${distancePct >= 0 ? '+' : ''}${distancePct.toFixed(2)}%`;
+}
+
+function buildKlineRationale(analysisContext) {
+  const optionSide = analysisContext.optionSide === 'call' ? 'call' : 'put';
+  const candidate = analysisContext.optionChain.recommended_candidate;
+  const supportLevel = getPreferredSupportResistanceLabel(
+    analysisContext.optionChain.technical_support,
+    analysisContext.optionChain.support_cluster
+  );
+  const resistanceLevel = getPreferredSupportResistanceLabel(
+    analysisContext.optionChain.technical_resistance,
+    analysisContext.optionChain.resistance_cluster
+  );
+
+  if (!candidate) {
+    return optionSide === 'call'
+      ? `日K压力参考 ${resistanceLevel}；当前没有找到同时满足 45 DTE 优先、OTM 和关键位外侧条件的 Call 候选。`
+      : `日K支撑参考 ${supportLevel}；当前没有找到同时满足 45 DTE 优先、OTM 和关键位外侧条件的 Put 候选。`;
+  }
+
+  const sideText = optionSide === 'call' ? 'Call' : 'Put';
+  const anchorText = optionSide === 'call' ? `日K压力 ${resistanceLevel}` : `日K支撑 ${supportLevel}`;
+  const outsideText =
+    candidate.outsideLevel == null ? '尚未确认是否位于关键位外侧' : candidate.outsideLevel ? '位于关键位外侧' : '仍在关键位内侧';
+  const bufferText =
+    candidate.levelDistancePct == null
+      ? '未确认关键位缓冲'
+      : `距关键位缓冲 ${candidate.levelDistancePct >= 0 ? '+' : ''}${candidate.levelDistancePct.toFixed(2)}%`;
+  const basisText = Array.isArray(candidate.selectionBasis) && candidate.selectionBasis.length > 0
+    ? `满足 ${candidate.selectionBasis.join(' / ')}`
+    : '满足量化筛选条件';
+
+  return `${anchorText}；推荐 ${candidate.strike.toFixed(2)} ${sideText}，${outsideText}，${bufferText}，${basisText}。`;
+}
+
+function buildSideSpecificPromptInstructions(optionSide, optionChain) {
+  const recommendedCandidate = optionChain.recommended_candidate;
+  const technicalSupport = optionChain.technical_support?.price ?? optionChain.support_cluster?.strike;
+  const technicalResistance = optionChain.technical_resistance?.price ?? optionChain.resistance_cluster?.strike;
+  const sideLabel = optionSide === 'call' ? 'Sell Call' : 'Sell Put';
+  const anchorLevel = optionSide === 'call' ? '日K 压力位' : '日K 支撑位';
+  const anchorCandidateSide = optionSide === 'call' ? 'call' : 'put';
+  const candidateAnchorText = recommendedCandidate
+    ? `${recommendedCandidate.code} @ ${recommendedCandidate.strike.toFixed(2)}`
+    : '暂无满足 Delta 0.10-0.20 / 5%-10% OTM / 关键位外侧条件的候选';
+  const strikeGuardrail =
+    optionSide === 'call'
+      ? `如果推荐卖 Call，推荐行权价原则上应不低于日K压力位 ${Number.isFinite(technicalResistance) ? technicalResistance.toFixed(2) : '未确认'}，除非明确说明是在更激进地卖出。`
+      : `如果推荐卖 Put，推荐行权价原则上应不高于日K支撑位 ${Number.isFinite(technicalSupport) ? technicalSupport.toFixed(2) : '未确认'}，除非明确说明是在更激进地卖出。`;
+
+  return [
+    `当前方向是 ${sideLabel}。请严格按这个方向分析，不要按另一个方向写结论。`,
+    optionSide === 'call'
+      ? 'Sell Call 先看历史日K压力位外侧，再用 35-60 DTE、45 DTE 优先、Delta 0.10-0.20、5%-10% OTM 和 OI/价差做排序。'
+      : 'Sell Put 先看历史日K支撑位外侧，再用 35-60 DTE、45 DTE 优先、Delta 0.10-0.20、5%-10% OTM 和 OI/价差做排序。',
+    `当前最值得优先参考的主锚点是 ${anchorLevel}。`,
+    `候选合约也只能优先围绕 ${anchorCandidateSide} 侧候选展开，当前首选候选: ${candidateAnchorText}。`,
+    strikeGuardrail,
+    optionSide === 'call'
+      ? '如果 summary、recommendation_reason、trade_action 提到“支撑位更安全的 Put”之类表述，说明方向错了，必须改写。'
+      : '如果 summary、recommendation_reason、trade_action 提到“压力位更安全的 Call”之类表述，说明方向错了，必须改写。'
+  ];
+}
+
+function buildPreTradeGeminiPrompt(payload, analysisContext) {
+  const optionSide = payload.option_side === 'call' ? 'call' : 'put';
+  const optionSideLabel = optionSide === 'call' ? 'Sell Call' : 'Sell Put';
+  const {
+    ticker,
+    date_sold,
+    user_rationale
+  } = payload;
+  const { marketContext, optionChain } = analysisContext;
+  const sideSpecificInstructions = buildSideSpecificPromptInstructions(optionSide, optionChain);
+  const recommendedCandidate = optionChain.recommended_candidate;
+
+  return [
+    '你是一位资深的衍生品量化策略师，擅长结合正股历史日K线、期权链 OI 和流动性数据做美股期权卖方决策。',
+    '请用中文回答。',
+    '请只输出严格 JSON，不要输出 Markdown，不要输出代码块，不要输出额外解释。',
+    '你只能基于我提供的 moomoo API 历史 K 线、期权链摘要、当前 VIX/VXN 状态和用户交易计划来分析，不要自行联网搜索。',
+    '',
+    'Analysis Framework:',
+    '1. 先用 moomoo 历史日K线识别正股关键支撑位和压力位。',
+    '2. 到期日优先选择 35-60 DTE 中最接近 45 天的一档；如果没有，再取最近的一档。',
+    '3. 候选合约优先选择更远一点的 OTM 行权价。',
+    '4. 候选合约至少满足以下之一：Delta 0.10-0.20，或距现价 5%-10% OTM，或位于关键支撑/压力外侧。',
+    '5. 再结合 OI、成交量、买卖价差和 IV Rank 判断执行质量。',
+    '6. 必须根据当前交易方向使用对应侧候选，不要串用另一侧逻辑。',
+    '',
+    '请输出以下 JSON schema:',
+    '{',
+    '  "verdict": "可以卖 | 需要谨慎 | 暂不卖",',
+    '  "summary": "一句话总结，不超过40字",',
+    '  "recommended_expiration": "推荐到期日，格式 YYYY-MM-DD",',
+    '  "recommended_dte": "推荐 DTE 数字，不带单位",',
+    '  "premium_view": "基于 IV Rank / IV / 权利金环境的判断，不超过45字",',
+    '  "support_level": "明确写出日K支撑位价格和原因，不超过30字",',
+    '  "resistance_level": "明确写出日K压力位价格和原因，不超过30字",',
+    '  "recommended_strike": "建议的最安全行权价；没有合适候选则写 暂无合适合约",',
+    '  "recommended_premium": "建议关注的权利金/股；没有合适候选则写 未确认",',
+    '  "recommended_distance": "建议行权价距离现价的百分比；没有则写 未确认",',
+    '  "recommendation_reason": "解释为什么选择这个行权价，不超过70字",',
+    '  "candidate_focus": "点名最值得关注的候选合约并说明其满足了哪些量化条件，不超过60字",',
+    '  "trade_action": "明确的交易决策，不超过35字",',
+    '  "key_risks": ["最多3条，每条不超过28字"],',
+    '  "warnings": ["如果成交量异常放大或价差过大必须提醒；最多4条"]',
+    '}',
+    '',
+    '用户计划:',
+    `- 标的: ${ticker}`,
+    `- 方向: ${optionSideLabel}`,
+    `- 建议基准日: ${date_sold}`,
+    `- 用户自述计划: ${typeof user_rationale === 'string' && user_rationale.trim() !== '' ? user_rationale : '未提供'}`,
+    '',
+    '市场上下文:',
+    `- 现价: ${formatPromptMetric(marketContext.current_price, (value) => Number(value).toFixed(2))}`,
+    `- 现价时间: ${formatPromptMetric(marketContext.current_price_date)}`,
+    `- Current IV: ${formatDecimalAsPercent(marketContext.current_iv)}`,
+    `- IV Rank: ${formatPromptMetric(marketContext.iv_rank, (value) => Number(value).toFixed(1))}`,
+    `- Next earnings date: ${formatPromptMetric(marketContext.next_earnings_date)}`,
+    `- VIX: ${formatPromptMetric(marketContext.vix?.value, (value) => Number(value).toFixed(2))} (as of ${formatPromptMetric(marketContext.vix?.as_of)})`,
+    `- VXN: ${formatPromptMetric(marketContext.vxn?.value, (value) => Number(value).toFixed(2))} (as of ${formatPromptMetric(marketContext.vxn?.as_of)})`,
+    '',
+    'moomoo 历史日K摘要:',
+    `- 日K 支撑位: ${formatTechnicalLevel(optionChain.technical_support)}`,
+    `- 日K 压力位: ${formatTechnicalLevel(optionChain.technical_resistance)}`,
+    `- K线分析日期: ${formatPromptMetric(optionChain.kline_as_of)}`,
+    '',
+    'moomoo 期权链摘要:',
+    `- 推荐到期日: ${formatPromptMetric(optionChain.expiration_date)}`,
+    `- 推荐 DTE: ${formatPromptMetric(optionChain.recommended_dte, (value) => String(Math.round(value)))}`,
+    `- Put OI 支撑峰值: ${formatStrikeLevel(optionChain.support_cluster)}`,
+    `- Call OI 压力峰值: ${formatStrikeLevel(optionChain.resistance_cluster)}`,
+    `- 当前首选候选行权价: ${recommendedCandidate ? recommendedCandidate.strike.toFixed(2) : '未确认'}`,
+    `- 当前首选候选权利金/股: ${formatRecommendedPremium(recommendedCandidate)}`,
+    `- 当前首选候选距现价: ${formatRecommendedDistance(recommendedCandidate, marketContext.current_price)}`,
+    `- 目标方向候选合约: ${JSON.stringify(optionChain.candidate_contracts.map(formatCandidateForPrompt), null, 2)}`,
+    `- 预警: ${JSON.stringify(optionChain.warnings)}`,
+    '',
+    '方向专属约束:',
+    ...sideSpecificInstructions.map((line) => `- ${line}`),
+    '',
+    '请根据以上信息给出卖方交易决策。'
+  ].join('\n');
+}
+
+function sanitizeStringList(value, limit = 4) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((item) => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, limit);
 }
 
 function parseGeminiJson(text) {
@@ -1196,97 +1608,6 @@ function parseGeminiJson(text) {
   throw new Error('Gemini returned invalid JSON');
 }
 
-function normalizePublicWebUrl(rawUrl) {
-  if (typeof rawUrl !== 'string' || rawUrl.trim() === '') {
-    return '';
-  }
-
-  try {
-    const parsed = new URL(rawUrl.trim());
-    const hostname = parsed.hostname.toLowerCase();
-    const href = parsed.toString();
-
-    if (!['http:', 'https:'].includes(parsed.protocol)) {
-      return '';
-    }
-
-    return href;
-  } catch {
-    return '';
-  }
-}
-
-async function validatePublicWebUrl(rawUrl) {
-  const normalizedInput = normalizePublicWebUrl(rawUrl);
-  if (normalizedInput === '') {
-    return '';
-  }
-
-  const isGroundingRedirect =
-    normalizedInput.includes('vertexaisearch.cloud.google.com') || normalizedInput.includes('/grounding-api-redirect/');
-
-  if (isGroundingRedirect) {
-    try {
-      const response = await fetch(normalizedInput, {
-        method: 'GET',
-        redirect: 'follow',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; RiskExposureTool/1.0)',
-          Accept: 'text/html,application/xhtml+xml'
-        },
-        signal: AbortSignal.timeout(5000)
-      });
-
-      if (!response.ok) {
-        return '';
-      }
-
-      const resolved = normalizePublicWebUrl(response.url || '');
-      if (resolved === '' || resolved.includes('vertexaisearch.cloud.google.com')) {
-        return '';
-      }
-
-      return resolved;
-    } catch {
-      return '';
-    }
-  }
-
-  const attempt = async (method) => {
-    try {
-      const response = await fetch(normalizedInput, {
-        method,
-        redirect: 'follow',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; RiskExposureTool/1.0)',
-          Accept: 'text/html,application/xhtml+xml'
-        },
-        signal: AbortSignal.timeout(4000)
-      });
-
-      if (!response.ok) {
-        return '';
-      }
-
-      const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
-      if (contentType !== '' && !contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) {
-        return '';
-      }
-
-      return normalizePublicWebUrl(response.url || normalizedInput);
-    } catch {
-      return '';
-    }
-  };
-
-  const headResult = await attempt('HEAD');
-  if (headResult !== '') {
-    return headResult;
-  }
-
-  return attempt('GET');
-}
-
 function buildGroundingSources(data) {
   const groundingChunks = data?.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
   return groundingChunks
@@ -1298,61 +1619,9 @@ function buildGroundingSources(data) {
     }))
     .map((item) => ({
       ...item,
-      publicUrl: normalizePublicWebUrl(item.url)
+      publicUrl: typeof item.url === 'string' ? item.url : ''
     }))
     .filter((item, index, list) => list.findIndex((candidate) => candidate.url === item.url) === index);
-}
-
-function pickBestPublicSourceLink(preferredSourceName, sources) {
-  const publicSources = Array.isArray(sources) ? sources.filter((item) => item.publicUrl !== '') : [];
-  if (publicSources.length === 0) {
-    return '';
-  }
-
-  const preferred = typeof preferredSourceName === 'string' ? preferredSourceName.trim().toLowerCase() : '';
-  if (preferred !== '' && preferred !== '未确认') {
-    const matched = publicSources.find((item) => {
-      const title = item.title.toLowerCase();
-      const url = item.publicUrl.toLowerCase();
-      return title.includes(preferred) || url.includes(preferred.replace(/\s+/g, ''));
-    });
-
-    if (matched) {
-      return matched.publicUrl;
-    }
-  }
-
-  return publicSources[0].publicUrl;
-}
-
-async function resolveValidPublicSourceLink(preferredSourceName, sources, initialUrl = '') {
-  const candidates = [];
-
-  const normalizedInitial = normalizePublicWebUrl(initialUrl);
-  if (normalizedInitial !== '') {
-    candidates.push(normalizedInitial);
-  }
-
-  const preferred = pickBestPublicSourceLink(preferredSourceName, sources);
-  if (preferred !== '' && !candidates.includes(preferred)) {
-    candidates.push(preferred);
-  }
-
-  const publicSources = Array.isArray(sources) ? sources.filter((item) => item.publicUrl !== '') : [];
-  for (const item of publicSources) {
-    if (!candidates.includes(item.publicUrl)) {
-      candidates.push(item.publicUrl);
-    }
-  }
-
-  for (const candidate of candidates) {
-    const validated = await validatePublicWebUrl(candidate);
-    if (validated !== '') {
-      return validated;
-    }
-  }
-
-  return '';
 }
 
 async function analyzePositionWithGemini(payload) {
@@ -1435,17 +1704,225 @@ async function analyzePositionWithGemini(payload) {
   };
 }
 
-async function analyzePreTradeWithGemini(payload) {
-  if (!GEMINI_API_KEY) {
-    throw new Error('GEMINI_API_KEY is not configured');
+async function fetchLatestOfficialVolatilityIndexDailyClose(symbol) {
+  const response = await fetchWithTimeout(`https://cdn.cboe.com/api/global/us_indices/daily_prices/${symbol}_History.csv`);
+  const csv = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch official ${symbol} history`);
   }
 
+  const rows = csv
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.split(',').map((cell) => cell.trim()))
+    .filter((cells) => cells.length >= 5);
+
+  if (rows.length < 2) {
+    throw new Error(`Official ${symbol} history is empty`);
+  }
+
+  const header = rows[0].map((value) => value.toUpperCase());
+  const dateIndex = header.findIndex((value) => value === 'DATE');
+  const closeIndex = header.findIndex((value) => value === 'CLOSE');
+
+  if (dateIndex === -1 || closeIndex === -1) {
+    throw new Error(`Unexpected ${symbol} history format`);
+  }
+
+  const latestRow = rows[rows.length - 1];
+  const date = latestRow[dateIndex];
+  const value = Number(latestRow[closeIndex]);
+
+  if (!date || !Number.isFinite(value)) {
+    throw new Error(`Invalid official ${symbol} daily close`);
+  }
+
+  return {
+    value,
+    asOf: date,
+    source: 'Cboe official daily close'
+  };
+}
+
+function buildPreTradeAnalysisPayload(parsed, analysisContext) {
+  const optionSide = analysisContext.optionSide === 'call' ? 'call' : 'put';
+  const sideLabel = optionSide === 'call' ? 'Call' : 'Put';
+  const supportLevel = getPreferredSupportResistanceLabel(
+    analysisContext.optionChain.technical_support,
+    analysisContext.optionChain.support_cluster
+  );
+  const resistanceLevel = getPreferredSupportResistanceLabel(
+    analysisContext.optionChain.technical_resistance,
+    analysisContext.optionChain.resistance_cluster
+  );
+  const recommendedCandidate = analysisContext.optionChain.recommended_candidate;
+  const fallbackReason =
+    optionSide === 'call'
+      ? '请优先选择 35-60 DTE 内最接近 45 天、位于日K压力位外侧且更远 OTM 的 call 合约。'
+      : '请优先选择 35-60 DTE 内最接近 45 天、位于日K支撑位外侧且更远 OTM 的 put 合约。';
+  const fallbackTradeAction =
+    optionSide === 'call' ? '优先考虑更高行权价、位于压力位外侧的 Call。' : '优先考虑更低行权价、位于支撑位外侧的 Put。';
+  const fallbackSummary =
+    optionSide === 'call'
+      ? '请结合 45 DTE、日K压力位外侧与 call 候选再确认。'
+      : '请结合 45 DTE、日K支撑位外侧与 put 候选再确认。';
+  const candidateFallback =
+    recommendedCandidate
+      ? `${recommendedCandidate.code} 是当前更贴近 ${sideLabel} 侧筛选条件的候选。`
+      : `当前没有满足 Delta 0.10-0.20 / 5%-10% OTM / 关键位外侧条件的 ${sideLabel.toLowerCase()} 候选合约。`;
+  const fallbackExpiration = analysisContext.optionChain.expiration_date || '未确认';
+  const fallbackRecommendedDte =
+    typeof analysisContext.optionChain.recommended_dte === 'number' && Number.isFinite(analysisContext.optionChain.recommended_dte)
+      ? String(Math.round(analysisContext.optionChain.recommended_dte))
+      : '未确认';
+  const fallbackPremium = formatRecommendedPremium(recommendedCandidate);
+  const fallbackDistance = formatRecommendedDistance(recommendedCandidate, analysisContext.marketContext.current_price);
+  const klineRationale = buildKlineRationale(analysisContext);
+  const containsWrongSideBias = (value) => {
+    if (typeof value !== 'string') {
+      return false;
+    }
+    const normalized = value.trim();
+    if (normalized === '') {
+      return false;
+    }
+    if (optionSide === 'put') {
+      return /(?:卖\s*call|sell\s*call|covered\s*call|(?:优先考虑|考虑|选择)\s*\d+(?:\.\d+)?\s*call|call\s+oi\s*(?:峰值|压力位)|call\s*峰值|压力位更安全的call|US\.[A-Z.]+\d{6}C\d+)/iu.test(
+        normalized
+      );
+    }
+    return /(?:卖\s*put|sell\s*put|(?:优先考虑|考虑|选择)\s*\d+(?:\.\d+)?\s*put|put\s+oi\s*(?:峰值|支撑位)|put\s*峰值|支撑位更安全的put|US\.[A-Z.]+\d{6}P\d+)/iu.test(
+      normalized
+    );
+  };
+  const sanitizeDirectionalText = (value, fallback) => {
+    if (typeof value !== 'string') {
+      return fallback;
+    }
+    const normalized = value.trim();
+    if (normalized === '' || containsWrongSideBias(normalized)) {
+      return fallback;
+    }
+    return normalized;
+  };
+  const sanitizeDirectionalWarnings = (warnings) =>
+    sanitizeStringList(warnings, 4).filter((warning) => !containsWrongSideBias(warning));
+
+  return {
+    verdict:
+      typeof parsed.verdict === 'string' && parsed.verdict.trim() !== '' ? parsed.verdict.trim() : '需要谨慎',
+    summary: sanitizeDirectionalText(parsed.summary, fallbackSummary),
+    recommended_expiration:
+      typeof parsed.recommended_expiration === 'string' && parsed.recommended_expiration.trim() !== ''
+        ? parsed.recommended_expiration.trim()
+        : fallbackExpiration,
+    recommended_dte:
+      typeof parsed.recommended_dte === 'string' && parsed.recommended_dte.trim() !== ''
+        ? parsed.recommended_dte.trim()
+        : fallbackRecommendedDte,
+    premium_view:
+      typeof parsed.premium_view === 'string' && parsed.premium_view.trim() !== ''
+        ? parsed.premium_view.trim()
+        : 'IV Rank 未完全确认，权利金吸引力需谨慎判断。',
+    support_level: supportLevel,
+    resistance_level: resistanceLevel,
+    recommended_strike:
+      typeof parsed.recommended_strike === 'string' && parsed.recommended_strike.trim() !== ''
+        ? parsed.recommended_strike.trim()
+        : recommendedCandidate
+          ? recommendedCandidate.strike.toFixed(2)
+          : '暂无合适合约',
+    recommended_premium:
+      typeof parsed.recommended_premium === 'string' && parsed.recommended_premium.trim() !== ''
+        ? parsed.recommended_premium.trim()
+        : fallbackPremium,
+    recommended_distance:
+      typeof parsed.recommended_distance === 'string' && parsed.recommended_distance.trim() !== ''
+        ? parsed.recommended_distance.trim()
+        : fallbackDistance,
+    recommendation_reason: sanitizeDirectionalText(parsed.recommendation_reason, fallbackReason),
+    candidate_focus: sanitizeDirectionalText(
+      parsed.candidate_focus,
+      recommendedCandidate && recommendedCandidate.selectionBasis?.length
+        ? `${candidateFallback} 满足 ${recommendedCandidate.selectionBasis.join(' / ')}。`
+        : candidateFallback
+    ),
+    kline_rationale: klineRationale,
+    trade_action: sanitizeDirectionalText(parsed.trade_action, fallbackTradeAction),
+    key_risks: sanitizeStringList(parsed.key_risks, 3),
+    warnings: [...sanitizeDirectionalWarnings(parsed.warnings), ...analysisContext.optionChain.warnings].filter(
+      (item, index, list) => list.indexOf(item) === index
+    )
+  };
+}
+
+async function analyzePreTradeWithGemini(payload) {
   const ticker = typeof payload?.ticker === 'string' ? payload.ticker.trim().toUpperCase() : '';
   if (ticker === '') {
     throw new Error('Ticker is required');
   }
 
-  const marketContext = await fetchMarketMetrics(ticker);
+  const analysisContext = await buildPreTradeAnalysisContext(payload, ticker);
+  return runPreTradeAnalysisWithGemini(payload, analysisContext);
+}
+
+async function buildPreTradeAnalysisContext(payload, ticker) {
+  const optionSide = payload?.option_side === 'call' ? 'call' : 'put';
+  const marketMetrics = await fetchMarketMetrics(ticker);
+  const tradeDate =
+    typeof payload?.date_sold === 'string' && /^\d{4}-\d{2}-\d{2}$/u.test(payload.date_sold.trim())
+      ? payload.date_sold.trim()
+      : new Date().toISOString().slice(0, 10);
+  const recommendedPlan = await fetchRecommendedMoomooOptionPlan(
+    ticker,
+    optionSide,
+    tradeDate,
+    marketMetrics.current_price ?? parseNumericValue(payload.current_price)
+  );
+  const [optionSnapshot, vixResult, vxnResult] = await Promise.all([
+    Promise.resolve(recommendedPlan.snapshot),
+    fetchLatestOfficialVolatilityIndexDailyClose('VIX').catch(() => null),
+    fetchLatestOfficialVolatilityIndexDailyClose('VXN').catch(() => null)
+  ]);
+  const currentPrice =
+    marketMetrics.current_price ??
+    parseNumericValue(payload.current_price) ??
+    recommendedPlan.klineSnapshot?.rows?.at(-1)?.close ??
+    null;
+  const optionSummary = recommendedPlan.summary;
+  const analysisContext = {
+    optionSide,
+    marketContext: {
+      ...marketMetrics,
+      current_price: currentPrice,
+      current_price_date: marketMetrics.current_price_date ?? recommendedPlan.klineSnapshot?.endDate ?? null,
+      vix: vixResult,
+      vxn: vxnResult
+    },
+    optionChain: {
+      underlying: optionSnapshot.underlying,
+      expiration_date: optionSnapshot.expirationDate,
+      recommended_dte: recommendedPlan.dte,
+      total_contracts: optionSnapshot.rows.length,
+      support_cluster: optionSummary.supportCluster,
+      resistance_cluster: optionSummary.resistanceCluster,
+      technical_support: optionSummary.klineLevels?.nearestSupport ?? null,
+      technical_resistance: optionSummary.klineLevels?.nearestResistance ?? null,
+      kline_as_of: optionSummary.klineLevels?.asOf ?? recommendedPlan.klineSnapshot?.endDate ?? null,
+      recommended_candidate: optionSummary.recommendedCandidate,
+      candidate_contracts: optionSummary.candidates,
+      warnings: optionSummary.warnings
+    }
+  };
+
+  return analysisContext;
+}
+
+async function runPreTradeAnalysisWithGemini(payload, analysisContext) {
+  if (!GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY is not configured');
+  }
 
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
@@ -1457,7 +1934,7 @@ async function analyzePreTradeWithGemini(payload) {
       body: JSON.stringify({
         contents: [
           {
-            parts: [{ text: buildPreTradeGeminiPrompt(payload, marketContext) }]
+            parts: [{ text: buildPreTradeGeminiPrompt(payload, analysisContext) }]
           }
         ],
         generationConfig: {
@@ -1484,188 +1961,100 @@ async function analyzePreTradeWithGemini(payload) {
   }
 
   const parsed = parseGeminiJson(text);
-  const currentPrice = Number(payload.current_price);
-  const strike = Number(payload.put_strike);
-  const premiumPerShare = Number(payload.premium_per_share);
-  const contracts = Number(payload.contracts);
-  const breakeven = strike - premiumPerShare;
-  const netCostBasis = breakeven * contracts * 100;
-  const maxProfit = premiumPerShare * contracts * 100;
-  const riskAtTenPctDrop = netCostBasis * 0.1;
-
-  parsed.calc = {
-    max_profit: Number.isFinite(maxProfit) ? maxProfit.toFixed(2) : '0.00',
-    risk_at_10pct_drop: Number.isFinite(riskAtTenPctDrop) ? riskAtTenPctDrop.toFixed(2) : '0.00'
-  };
-
-  if (!Array.isArray(parsed.fundamental_events)) {
-    parsed.fundamental_events = [];
-  }
-  if (typeof parsed.current_iv_rank === 'number' && Number.isFinite(parsed.current_iv_rank)) {
-    parsed.current_iv_rank = parsed.current_iv_rank.toFixed(1);
-  } else if (typeof parsed.current_iv_rank !== 'string') {
-    parsed.current_iv_rank = '未确认';
-  }
-  if (typeof parsed.iv_rank_note !== 'string') {
-    parsed.iv_rank_note = '未获取到 IV Rank 说明';
-  }
-  if (typeof parsed.iv_rank_source !== 'string') {
-    parsed.iv_rank_source = '未确认';
-  }
-  if (typeof parsed.iv_rank_time !== 'string') {
-    parsed.iv_rank_time = '未确认';
-  }
-  if (typeof parsed.iv_rank_link !== 'string') {
-    parsed.iv_rank_link = '';
-  }
-  if (typeof parsed.current_iv_check !== 'string') {
-    parsed.current_iv_check = '未获取到 Current IV 判断';
-  }
-  if (typeof parsed.marsi_check !== 'string') {
-    parsed.marsi_check = '未获取到 MA/RSI 判断';
-  }
-  if (typeof parsed.rsi_check !== 'string') {
-    parsed.rsi_check = '未获取到 RSI 超卖判断';
-  }
-  if (typeof parsed.ma200_check !== 'string') {
-    parsed.ma200_check = '未获取到 MA200 判断';
-  }
-  if (typeof parsed.next_earnings_date !== 'string') {
-    parsed.next_earnings_date = '未确认';
-  }
-  if (typeof parsed.earnings_warning !== 'string') {
-    parsed.earnings_warning = '未获取到财报日预警';
-  }
-  const ivRankLink = `${BARCHART_BASE_URL}/stocks/quotes/${encodeURIComponent(ticker)}/overview`;
-  parsed.current_iv_rank =
-    marketContext.iv_rank === null || !Number.isFinite(marketContext.iv_rank)
-      ? parsed.current_iv_rank
-      : marketContext.iv_rank.toFixed(1);
-  parsed.iv_rank_source = marketContext.source.iv_rank ?? 'Barchart';
-  parsed.iv_rank_time = marketContext.current_price_date ?? '未确认';
-  parsed.iv_rank_link = ivRankLink;
-  parsed.next_earnings_date = marketContext.next_earnings_date ?? parsed.next_earnings_date;
-
-  const sources = [
-    {
-      title: `${ticker} Overview - Barchart`,
-      url: ivRankLink
-    },
-    {
-      title: `${ticker} Put/Call Ratios - Barchart`,
-      url: `${BARCHART_BASE_URL}/stocks/quotes/${encodeURIComponent(ticker)}/put-call-ratios`
-    }
-  ];
 
   return {
-    analysis: parsed,
-    sources,
-    market_context: marketContext
+    analysis: buildPreTradeAnalysisPayload(parsed, analysisContext),
+    market_context: {
+      current_price: analysisContext.marketContext.current_price,
+      current_price_date: analysisContext.marketContext.current_price_date,
+      current_iv: analysisContext.marketContext.current_iv,
+      iv_rank: analysisContext.marketContext.iv_rank,
+      next_earnings_date: analysisContext.marketContext.next_earnings_date,
+      vix: analysisContext.marketContext.vix,
+      vxn: analysisContext.marketContext.vxn
+    },
+    option_chain: analysisContext.optionChain,
+    provider: 'Gemini 2.5 Flash'
   };
 }
 
-async function analyzePreTradeContextWithGemini(payload) {
+async function runPreTradeAnalysisWithOpenAI(payload, analysisContext) {
+  if (!OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY is not configured');
+  }
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: OPENAI_PRETRADE_MODEL,
+      temperature: 0.2,
+      messages: [
+        {
+          role: 'user',
+          content: buildPreTradeGeminiPrompt(payload, analysisContext)
+        }
+      ]
+    })
+  });
+
+  const data = await readJsonFromResponse(response, 'OpenAI pre-trade analysis failed');
+  if (!response.ok || data?.error) {
+    throw new Error(data?.error?.message ?? 'OpenAI pre-trade analysis failed');
+  }
+
+  const rawContent = data?.choices?.[0]?.message?.content ?? '';
+  const text = Array.isArray(rawContent)
+    ? rawContent
+        .map((part) => (typeof part?.text === 'string' ? part.text : typeof part === 'string' ? part : ''))
+        .join('\n')
+        .trim()
+    : typeof rawContent === 'string'
+      ? rawContent.trim()
+      : '';
+
+  if (text === '') {
+    throw new Error('OpenAI returned empty analysis');
+  }
+
+  const parsed = parseGeminiJson(text);
+  return {
+    analysis: buildPreTradeAnalysisPayload(parsed, analysisContext),
+    market_context: {
+      current_price: analysisContext.marketContext.current_price,
+      current_price_date: analysisContext.marketContext.current_price_date,
+      current_iv: analysisContext.marketContext.current_iv,
+      iv_rank: analysisContext.marketContext.iv_rank,
+      next_earnings_date: analysisContext.marketContext.next_earnings_date,
+      vix: analysisContext.marketContext.vix,
+      vxn: analysisContext.marketContext.vxn
+    },
+    option_chain: analysisContext.optionChain,
+    provider: `OpenAI ${OPENAI_PRETRADE_MODEL}`
+  };
+}
+
+async function analyzePreTradeWithLlmFallback(payload) {
   const ticker = typeof payload?.ticker === 'string' ? payload.ticker.trim().toUpperCase() : '';
   if (ticker === '') {
     throw new Error('Ticker is required');
   }
 
-  const marketContext = await fetchMarketMetrics(ticker);
-  const overviewUrl = `${BARCHART_BASE_URL}/stocks/quotes/${encodeURIComponent(ticker)}/overview`;
-  const pcrUrl = `${BARCHART_BASE_URL}/stocks/quotes/${encodeURIComponent(ticker)}/put-call-ratios`;
-  const expirationDate = typeof payload?.expiration_date === 'string' ? payload.expiration_date : '';
-  const includeSearch = payload?.include_search === true;
+  const analysisContext = await buildPreTradeAnalysisContext(payload, ticker);
 
-  const ivAssessment =
-    marketContext.current_iv == null && marketContext.iv_rank == null
-      ? '网站暂未拿到 IV 与 IV Rank'
-      : `Current IV ${marketContext.current_iv == null ? '未确认' : `${(marketContext.current_iv * 100).toFixed(2)}%`}，IV Rank ${marketContext.iv_rank == null ? '未确认' : marketContext.iv_rank.toFixed(1)}，IV Percentile ${marketContext.iv_percentile == null ? '未确认' : marketContext.iv_percentile.toFixed(1)}`;
-
-  const earningsAssessment =
-    marketContext.next_earnings_date == null
-      ? '网站暂未拿到财报日'
-      : expirationDate !== '' && marketContext.next_earnings_date <= expirationDate
-        ? `财报日 ${marketContext.next_earnings_date} 早于或落在到期日前，存在财报风险`
-        : `财报日 ${marketContext.next_earnings_date} 晚于到期日，财报风险相对较小`;
-
-  let specialWindowAssessment = '网站暂未直接提供特殊事件摘要';
-  let fundamentalRiskAssessment = '网站暂未直接提供基本面风险摘要';
-  let specialWindowSources = [];
-  let fundamentalSources = [];
-  let keyFlags = [];
-
-  if (includeSearch && GEMINI_API_KEY) {
-    const emptyFallback = { summary: '网站暂未直接提供摘要', keyFlags: [], sources: [] };
-    const [specialWindowFallback, fundamentalFallback] = await Promise.all([
-      withTimeout(
-        runGeminiSearchFallback({
-          ticker,
-          topic: '公司事件窗口（财报、产品发布、促销、资本开支、组织调整）',
-          expirationDate
-        }),
-        20000,
-        emptyFallback
-      ),
-      withTimeout(
-        runGeminiSearchFallback({
-          ticker,
-          topic: '基本面风险（最近利空新闻、需求放缓、利润率压力、竞争、执行或诉讼影响）',
-          expirationDate
-        }),
-        20000,
-        emptyFallback
-      )
-    ]);
-
-    specialWindowAssessment =
-      specialWindowFallback.eventDate && specialWindowFallback.eventDate !== '未确认'
-        ? `${specialWindowFallback.summary}（${specialWindowFallback.eventDate}）`
-        : specialWindowFallback.summary;
-    fundamentalRiskAssessment =
-      fundamentalFallback.eventDate && fundamentalFallback.eventDate !== '未确认'
-        ? `${fundamentalFallback.summary}（${fundamentalFallback.eventDate}）`
-        : fundamentalFallback.summary;
-    specialWindowSources = specialWindowFallback.sources.slice(0, 1);
-    fundamentalSources = fundamentalFallback.sources.slice(0, 1);
-    keyFlags = [...specialWindowFallback.keyFlags, ...fundamentalFallback.keyFlags];
-
-    if (specialWindowFallback.headline) {
-      keyFlags.unshift(`相关新闻：${specialWindowFallback.headline}`);
+  try {
+    return await runPreTradeAnalysisWithGemini(payload, analysisContext);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Gemini pre-trade analysis failed';
+    if (!isGeminiLimitedErrorMessage(message) || !OPENAI_API_KEY) {
+      throw error;
     }
-    if (fundamentalFallback.headline) {
-      keyFlags.unshift(`基本面风险：${fundamentalFallback.headline}`);
-    }
+
+    return runPreTradeAnalysisWithOpenAI(payload, analysisContext);
   }
-
-  if (marketContext.next_earnings_date) {
-    keyFlags.unshift(`财报日 ${marketContext.next_earnings_date}`);
-  }
-
-  keyFlags = keyFlags.filter((item, index, list) => typeof item === 'string' && item.trim() !== '' && list.indexOf(item) === index).slice(0, 6);
-
-  return {
-    summary: {
-      iv_assessment: ivAssessment,
-      earnings_assessment: earningsAssessment,
-      special_window_assessment: specialWindowAssessment,
-      fundamental_risk_assessment: fundamentalRiskAssessment,
-      key_flags: keyFlags
-    },
-    partial: !includeSearch,
-    sources: [
-      { title: `${ticker} Overview - Barchart`, url: overviewUrl },
-      { title: `${ticker} Put/Call Ratios - Barchart`, url: pcrUrl },
-      ...specialWindowSources,
-      ...fundamentalSources
-    ].filter((item, index, list) => list.findIndex((candidate) => candidate.url === item.url) === index),
-    source_map: {
-      iv_assessment: [{ title: `${ticker} Overview - Barchart`, url: overviewUrl }],
-      earnings_assessment: [{ title: `${ticker} Overview - Barchart`, url: overviewUrl }],
-      special_window_assessment: specialWindowSources,
-      fundamental_risk_assessment: fundamentalSources
-    },
-    marketContext
-  };
 }
 
 async function fetchMarketDataJson(url, { allowNoData = false } = {}) {
@@ -1796,7 +2185,96 @@ async function fetchNextEarningsDateFromMarketData(symbol) {
   return date === '' ? null : date.slice(0, 10);
 }
 
+const OPTION_SNAPSHOT_DELTA_TARGETS = [0.20, 0.30, 0.50];
+const OPTION_SNAPSHOT_SIDES = ['put', 'call'];
+
+/**
+ * Fetch option snapshots for a single ticker from moomoo.
+ * Finds the expiration closest to DTE 45 and returns rows for each
+ * combination of side × delta_target (0.20, 0.30, 0.50).
+ *
+ * @param {string} ticker  Underlying symbol, e.g. 'AAPL'.
+ * @param {number|null} currentPrice  Current stock price (used for OTM pct).
+ * @returns {Promise<Array<object>>}  Rows ready for writeOptionDailySnapshot.
+ */
+async function fetchOptionSnapshotForTicker(ticker, currentPrice = null) {
+  const tradeDate = new Date().toISOString().slice(0, 10);
+
+  // 1. Get available expirations and pick the one closest to DTE 45.
+  const expirationPayload = await fetchMoomooOptionExpirations(ticker);
+  const ranked = rankExpirationCandidates(expirationPayload.expirations, tradeDate);
+  if (ranked.length === 0) {
+    throw new Error(`No future expirations available for ${ticker}`);
+  }
+  const best = ranked[0];
+
+  // 2. Fetch option chain snapshot for that expiration.
+  const chainSnapshot = await fetchMoomooOptionChainSnapshot(ticker, best.expirationDate);
+  const rows = chainSnapshot.rows; // normalizeSnapshotRow already applied
+
+  // 3. For each side × delta_target, find the closest-delta contract.
+  const result = [];
+  for (const side of OPTION_SNAPSHOT_SIDES) {
+    const sideRows = rows.filter((row) => row.side === side);
+    if (sideRows.length === 0) {
+      continue;
+    }
+
+    for (const deltaTarget of OPTION_SNAPSHOT_DELTA_TARGETS) {
+      // delta on puts is negative, use abs value for comparison.
+      const withDeltaAbs = sideRows
+        .filter((row) => row.delta !== null)
+        .map((row) => ({
+          ...row,
+          _deltaAbs: Math.abs(row.delta ?? 0)
+        }));
+      if (withDeltaAbs.length === 0) {
+        continue;
+      }
+
+      // Sort by closest delta, then by highest OI for ties.
+      withDeltaAbs.sort((a, b) => {
+        const distA = Math.abs(a._deltaAbs - deltaTarget);
+        const distB = Math.abs(b._deltaAbs - deltaTarget);
+        if (distA !== distB) {
+          return distA - distB;
+        }
+        return (b.openInterest ?? 0) - (a.openInterest ?? 0);
+      });
+
+      const contract = withDeltaAbs[0];
+      const bid = contract.bid ?? null;
+      const ask = contract.ask ?? null;
+      const midPrice = bid !== null && ask !== null ? (bid + ask) / 2 : contract.price ?? null;
+
+      result.push({
+        side,
+        deltaTarget,
+        expirationDate: best.expirationDate,
+        dte: best.dte,
+        strike: contract.strike,
+        delta: contract.delta,
+        deltaAbs: contract._deltaAbs,
+        gamma: contract.gamma,
+        theta: contract.theta,
+        impliedVolatility: contract.impliedVolatility,
+        bid,
+        ask,
+        lastPrice: contract.lastPrice,
+        midPrice,
+        openInterest: contract.openInterest,
+        volume: contract.volume,
+        spreadPct: contract.spreadPct,
+        code: contract.code
+      });
+    }
+  }
+
+  return result;
+}
+
 async function fetchMarketMetrics(symbol) {
+  const referenceDate = new Date();
   const metrics = {
     symbol,
     current_price: null,
@@ -1826,7 +2304,11 @@ async function fetchMarketMetrics(symbol) {
       metrics.current_price_date = barchartSnapshot.current_price_date;
       metrics.source.current_price = barchartSnapshot.source ?? 'Barchart';
     }
-    if (typeof barchartSnapshot.next_earnings_date === 'string' && barchartSnapshot.next_earnings_date !== '') {
+    if (
+      typeof barchartSnapshot.next_earnings_date === 'string' &&
+      barchartSnapshot.next_earnings_date !== '' &&
+      isFutureOrTodayDate(barchartSnapshot.next_earnings_date, referenceDate)
+    ) {
       metrics.next_earnings_date = barchartSnapshot.next_earnings_date;
       metrics.earnings_time_code = barchartSnapshot.earnings_time_code;
       metrics.source.next_earnings_date = barchartSnapshot.source ?? 'Barchart';
@@ -1869,9 +2351,29 @@ async function fetchMarketMetrics(symbol) {
   if (metrics.next_earnings_date === null) {
     try {
       const earningsDate = await fetchNextEarningsDateFromMarketData(symbol);
-      if (earningsDate) {
+      if (earningsDate && isFutureOrTodayDate(earningsDate, referenceDate)) {
         metrics.next_earnings_date = earningsDate;
         metrics.source.next_earnings_date = 'MarketData.app /stocks/earnings';
+      }
+    } catch {
+      // Leave empty.
+    }
+  }
+
+  if (metrics.next_earnings_date === null) {
+    try {
+      const finvizSnapshot = await fetchFinvizTechnicalSnapshot(symbol);
+      if (
+        typeof finvizSnapshot.earnings?.next_earnings_date === 'string' &&
+        finvizSnapshot.earnings.next_earnings_date !== '' &&
+        isFutureOrTodayDate(finvizSnapshot.earnings.next_earnings_date, referenceDate)
+      ) {
+        metrics.next_earnings_date = finvizSnapshot.earnings.next_earnings_date;
+        metrics.earnings_time_code =
+          typeof finvizSnapshot.earnings.earnings_time_code === 'string' && finvizSnapshot.earnings.earnings_time_code !== ''
+            ? finvizSnapshot.earnings.earnings_time_code
+            : metrics.earnings_time_code;
+        metrics.source.next_earnings_date = 'Finviz HTML';
       }
     } catch {
       // Leave empty.
@@ -1900,7 +2402,23 @@ async function fetchMarketMetrics(symbol) {
   return metrics;
 }
 
-async function fetchCurrentOptionQuote(symbol, expirationDate, strike, side = 'put') {
+export async function fetchCurrentOptionQuote(symbol, expirationDate, strike, side = 'put') {
+  try {
+    return await fetchMoomooOptionQuote(symbol, expirationDate, strike, side);
+  } catch (error) {
+    if (!(error instanceof Error)) {
+      throw error;
+    }
+  }
+
+  try {
+    return await fetchBarchartOptionQuote(symbol, expirationDate, strike, side);
+  } catch (error) {
+    if (!(error instanceof Error)) {
+      throw error;
+    }
+  }
+
   if (!MARKETDATA_TOKEN) {
     throw new Error('MARKETDATA_TOKEN is not configured');
   }
@@ -1914,7 +2432,10 @@ async function fetchCurrentOptionQuote(symbol, expirationDate, strike, side = 'p
     if (quoteData?.s !== 'no_data') {
       const snapshotQuote = extractOptionQuoteFromSnapshot(quoteData);
       if (snapshotQuote) {
-        return snapshotQuote;
+        return {
+          ...snapshotQuote,
+          source: 'MarketData.app /options/quotes'
+        };
       }
     }
   } catch (error) {
@@ -1967,7 +2488,8 @@ async function fetchCurrentOptionQuote(symbol, expirationDate, strike, side = 'p
     price: sample.price,
     theta: sample.theta,
     delta: sample.delta,
-    gamma: sample.gamma
+    gamma: sample.gamma,
+    source: 'MarketData.app /options/chain'
   };
 }
 
@@ -2053,42 +2575,10 @@ function normalizeQuoteRequest(item) {
 }
 
 async function fetchLatestOfficialVixDailyClose() {
-  const response = await fetchWithTimeout('https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv');
-  const csv = await response.text();
-
-  if (!response.ok) {
-    throw new Error('Failed to fetch official VIX history');
-  }
-
-  const rows = csv
-    .trim()
-    .split(/\r?\n/)
-    .map((line) => line.split(',').map((cell) => cell.trim()))
-    .filter((cells) => cells.length >= 5);
-
-  if (rows.length < 2) {
-    throw new Error('Official VIX history is empty');
-  }
-
-  const header = rows[0].map((value) => value.toUpperCase());
-  const dateIndex = header.findIndex((value) => value === 'DATE');
-  const closeIndex = header.findIndex((value) => value === 'CLOSE');
-
-  if (dateIndex === -1 || closeIndex === -1) {
-    throw new Error('Unexpected VIX history format');
-  }
-
-  const latestRow = rows[rows.length - 1];
-  const date = latestRow[dateIndex];
-  const value = Number(latestRow[closeIndex]);
-
-  if (!date || !Number.isFinite(value)) {
-    throw new Error('Invalid official VIX daily close');
-  }
-
+  const snapshot = await fetchLatestOfficialVolatilityIndexDailyClose('VIX');
   return {
-    value,
-    asOf: date
+    value: snapshot.value,
+    asOf: snapshot.asOf
   };
 }
 
@@ -2187,6 +2677,19 @@ async function fetchFearGreedIndex() {
 
 async function fetchQuote(requestItem) {
   try {
+    const moomooQuote = await fetchMoomooStockQuote(getMoomooUnderlying(requestItem.symbol));
+    return {
+      symbol: requestItem.symbol,
+      ok: true,
+      price: moomooQuote.last_price,
+      as_of: new Date().toISOString(),
+      source: 'Moomoo API'
+    };
+  } catch {
+    // Fall back to Barchart quick quote
+  }
+
+  try {
     const quickQuote = await fetchBarchartQuickQuote(requestItem.symbol);
     return {
       symbol: requestItem.symbol,
@@ -2256,6 +2759,63 @@ async function fetchQuote(requestItem) {
 }
 
 async function fetchRsi(requestItem, interval = '1day') {
+  if (interval === '1day') {
+    try {
+      const moomooKlinePayload = await fetchMoomooKline(getMoomooUnderlying(requestItem.symbol), '1d', 100);
+      const rows = extractMoomooKlineRows(moomooKlinePayload);
+      const closes = rows.map(r => r.close);
+      const rsi = calculateRsi(closes, 14);
+
+      if (typeof rsi === 'number' && Number.isFinite(rsi)) {
+        return {
+          symbol: requestItem.symbol,
+          ok: true,
+          rsi,
+          interval,
+          source: 'Moomoo 1D Kline'
+        };
+      }
+    } catch {
+      // Fall through to Finviz API backed sources below
+    }
+
+    try {
+      const finvizSnapshot = await fetchFinvizTechnicalSnapshot(requestItem.symbol);
+      const rsi = calculateRsi(finvizSnapshot.closes, 14);
+
+      if (typeof rsi === 'number' && Number.isFinite(rsi)) {
+        return {
+          symbol: requestItem.symbol,
+          ok: true,
+          rsi,
+          interval,
+          source: finvizSnapshot.source
+        };
+      }
+    } catch {
+      // Fall through to API-backed sources below.
+    }
+  } else if (interval === '1h') {
+    try {
+      const moomooKlinePayload = await fetchMoomooKline(getMoomooUnderlying(requestItem.symbol), '60m', 80);
+      const rows = extractMoomooKlineRows(moomooKlinePayload);
+      const closes = rows.map(r => r.close);
+      const rsi = calculateRsi(closes, 14);
+
+      if (typeof rsi === 'number' && Number.isFinite(rsi)) {
+        return {
+          symbol: requestItem.symbol,
+          ok: true,
+          rsi,
+          interval,
+          source: 'Moomoo 60m Kline'
+        };
+      }
+    } catch {
+      // Fall through to API-backed sources below
+    }
+  }
+
   try {
     const marketDataInterval = interval === '1h' ? '1H' : 'D';
     const countback = interval === '1h' ? 80 : 100;
@@ -2337,6 +2897,40 @@ async function fetchRsi(requestItem, interval = '1day') {
 
 async function fetchSma(requestItem, timePeriod) {
   try {
+    const moomooKlinePayload = await fetchMoomooKline(getMoomooUnderlying(requestItem.symbol), '1d', Math.max(timePeriod + 20, 240));
+    const rows = extractMoomooKlineRows(moomooKlinePayload);
+    const closes = rows.map(r => r.close);
+    const sma = calculateSma(closes, timePeriod);
+
+    if (typeof sma === 'number' && Number.isFinite(sma)) {
+      return {
+        symbol: requestItem.symbol,
+        ok: true,
+        sma,
+        source: 'Moomoo 1D Kline'
+      };
+    }
+  } catch {
+    // Fall through to Finviz API backed sources below
+  }
+
+  try {
+    const finvizSnapshot = await fetchFinvizTechnicalSnapshot(requestItem.symbol);
+    const sma = calculateSma(finvizSnapshot.closes, timePeriod);
+
+    if (typeof sma === 'number' && Number.isFinite(sma)) {
+      return {
+        symbol: requestItem.symbol,
+        ok: true,
+        sma,
+        source: finvizSnapshot.source
+      };
+    }
+  } catch {
+    // Fall through to API-backed sources below.
+  }
+
+  try {
     const closes = await fetchMarketDataCandlesCloses(requestItem.symbol, 'D', {
       from: '2yearsago',
       to: 'today',
@@ -2411,6 +3005,64 @@ async function fetchSma(requestItem, timePeriod) {
       message: error instanceof Error ? error.message : `Failed to fetch SMA${timePeriod}`
     };
   }
+}
+
+async function fetchAtr(requestItem, period = 14) {
+  try {
+    const moomooKlinePayload = await fetchMoomooKline(getMoomooUnderlying(requestItem.symbol), '1d', Math.max(period + 30, 60));
+    const rows = extractMoomooKlineRows(moomooKlinePayload);
+    const atr = calculateAtr(rows, period);
+
+    if (typeof atr === 'number' && Number.isFinite(atr)) {
+      return {
+        symbol: requestItem.symbol,
+        ok: true,
+        atr,
+        period,
+        source: 'Moomoo 1D Kline'
+      };
+    }
+  } catch {
+    // Fall through to MarketData.app candles
+  }
+
+  try {
+    const url = new URL(`https://api.marketdata.app/v1/stocks/candles/D/${encodeURIComponent(normalizeProviderSymbol(requestItem.symbol))}/`);
+    url.searchParams.set('from', '3monthsago');
+    url.searchParams.set('to', 'today');
+    url.searchParams.set('countback', String(Math.max(period + 30, 60)));
+    const response = await fetchWithTimeout(url, {
+      headers: { Authorization: `Token ${MARKETDATA_TOKEN}` }
+    });
+    if (response.ok) {
+      const data = await readJsonFromResponse(response, 'MarketData candles for ATR');
+      if (data?.s === 'ok' && Array.isArray(data.h) && Array.isArray(data.l) && Array.isArray(data.c)) {
+        const rows = data.c.map((close, i) => ({
+          high: data.h[i],
+          low: data.l[i],
+          close
+        }));
+        const atr = calculateAtr(rows, period);
+        if (typeof atr === 'number' && Number.isFinite(atr)) {
+          return {
+            symbol: requestItem.symbol,
+            ok: true,
+            atr,
+            period,
+            source: 'MarketData.app candles'
+          };
+        }
+      }
+    }
+  } catch {
+    // Fall through
+  }
+
+  return {
+    symbol: requestItem.symbol,
+    ok: false,
+    message: `Failed to fetch ATR(${period})`
+  };
 }
 
 async function fetchMarketDataCandlesCloses(symbol, resolution, { from, to, countback }) {
@@ -2495,6 +3147,14 @@ async function fetchQuoteBundle(requestItem) {
     ma200Result = await fetchSma(requestItem, 200);
   }
 
+  let atrResult;
+  if (!includeMa) {
+    atrResult = { symbol: requestItem.symbol, ok: true, skipped: true };
+  } else {
+    await sleep(REQUEST_GAP_MS);
+    atrResult = await fetchAtr(requestItem, 14);
+  }
+
   let currentIvResult;
   if (!includeCurrentIv) {
     currentIvResult = {
@@ -2550,6 +3210,7 @@ async function fetchQuoteBundle(requestItem) {
     rsi1hResult,
     ma21Result,
     ma200Result,
+    atrResult,
     currentIvResult,
     marketMetricsResult
   };
@@ -2646,7 +3307,7 @@ function coerceSnapshot(snapshot, now = new Date()) {
   };
 }
 
-function computeSnapshotTotalCapital(snapshotData) {
+function computeSnapshotAccountEquity(snapshotData) {
   const cash = typeof snapshotData?.config?.cash === 'number' ? snapshotData.config.cash : 0;
   const stockValue = Array.isArray(snapshotData?.tickerList)
     ? snapshotData.tickerList.reduce((sum, entry) => {
@@ -2655,17 +3316,20 @@ function computeSnapshotTotalCapital(snapshotData) {
         return sum + shares * currentPrice;
       }, 0)
     : 0;
-  const optionValue = Array.isArray(snapshotData?.puts)
+  const unrealizedOptionPnl = Array.isArray(snapshotData?.puts)
     ? snapshotData.puts.reduce((sum, position) => {
-        const marketPrice = typeof position?.option_market_price_per_share === 'number'
-          ? position.option_market_price_per_share
-          : 0;
+        const premiumPerShare = typeof position?.premium_per_share === 'number' ? position.premium_per_share : 0;
+        const marketPrice =
+          typeof position?.option_market_price_per_share === 'number' ? position.option_market_price_per_share : null;
         const contracts = typeof position?.contracts === 'number' ? position.contracts : 0;
-        return sum + marketPrice * contracts * 100;
+        if (marketPrice === null) {
+          return sum;
+        }
+        return sum + (premiumPerShare - marketPrice) * contracts * 100;
       }, 0)
     : 0;
 
-  return cash + stockValue + optionValue;
+  return cash + stockValue + unrealizedOptionPnl;
 }
 
 function upsertDailyAccountValueHistory(history, totalCapital, now = new Date()) {
@@ -2738,6 +3402,9 @@ export async function refreshAppStateSnapshot(
   const nowMs = now.getTime();
   const nextTickerList = normalizedSnapshot.data.tickerList.map((entry) => ({ ...entry }));
   const nextPuts = normalizedSnapshot.data.puts.map((position) => ({ ...position }));
+  const nextHistory = Array.isArray(normalizedSnapshot.data.history) ? normalizedSnapshot.data.history.map((entry) => ({ ...entry })) : [];
+  const nextStockTrades = Array.isArray(normalizedSnapshot.data.stockTrades) ? normalizedSnapshot.data.stockTrades.map((entry) => ({ ...entry })) : [];
+  const nextConfig = normalizedSnapshot.data.config ? { ...normalizedSnapshot.data.config } : { cash: 0, risk_limit_pct: 0.01, warning_threshold_pct: 0.8 };
   const staleTickerIndexes =
     marketOpen || force
       ? nextTickerList
@@ -2763,7 +3430,16 @@ export async function refreshAppStateSnapshot(
           )
           .map(({ index }) => index)
       : [];
-  const totalSteps = staleTickerIndexes.length + staleOptionIndexes.length + (includeVix ? 1 : 0);
+  const cachedVix = includeVix ? await loadVixCache() : null;
+  const shouldRefreshVix = shouldRefreshVixWithMarketData({
+    cached: cachedVix,
+    force,
+    includeVix,
+    marketOpen,
+    now,
+    staleTickerCount: staleTickerIndexes.length
+  });
+  const totalSteps = staleTickerIndexes.length + staleOptionIndexes.length + (shouldRefreshVix ? 1 : 0);
   const tickerResults = [];
   const optionResults = [];
   let completedSteps = 0;
@@ -2781,7 +3457,7 @@ export async function refreshAppStateSnapshot(
       updated_at: new Date().toISOString(),
       market_open: marketOpen,
       force,
-      include_vix: includeVix,
+      include_vix: shouldRefreshVix,
       total_steps: totalSteps,
       completed_steps: completedSteps,
       refreshed_tickers: tickerResults.filter((item) => item.ok).length,
@@ -2804,7 +3480,7 @@ export async function refreshAppStateSnapshot(
       });
 
       try {
-        const { quoteResult, rsiResult, rsi1hResult, ma21Result, ma200Result, currentIvResult, marketMetricsResult } =
+        const { quoteResult, rsiResult, rsi1hResult, ma21Result, ma200Result, atrResult, currentIvResult, marketMetricsResult } =
           await fetchQuoteBundleFn({
             symbol: entry.ticker,
             exchange: entry.provider_exchange ?? null,
@@ -2830,6 +3506,9 @@ export async function refreshAppStateSnapshot(
         }
         if (ma200Result.ok) {
           entry.ma_200 = ma200Result.sma;
+        }
+        if (atrResult && atrResult.ok && typeof atrResult.atr === 'number') {
+          entry.atr_14 = atrResult.atr;
         }
         if (currentIvResult.ok && typeof currentIvResult.currentIv === 'number') {
           entry.current_iv = currentIvResult.currentIv;
@@ -2891,11 +3570,14 @@ export async function refreshAppStateSnapshot(
           position.put_strike,
           position.option_side === 'call' ? 'call' : 'put'
         );
+        const preservedTheta = typeof position.option_theta_per_share === 'number' ? position.option_theta_per_share : null;
+        const preservedDelta = typeof position.option_delta === 'number' ? position.option_delta : null;
+        const preservedGamma = typeof position.option_gamma === 'number' ? position.option_gamma : null;
         position.option_market_price_per_share = optionQuote.price;
         position.option_market_price_updated = nowIso;
-        position.option_theta_per_share = optionQuote.theta;
-        position.option_delta = optionQuote.delta;
-        position.option_gamma = optionQuote.gamma;
+        position.option_theta_per_share = typeof optionQuote.theta === 'number' ? optionQuote.theta : preservedTheta;
+        position.option_delta = typeof optionQuote.delta === 'number' ? optionQuote.delta : preservedDelta;
+        position.option_gamma = typeof optionQuote.gamma === 'number' ? optionQuote.gamma : preservedGamma;
         optionResults.push({
           id: position.id,
           ticker: position.ticker,
@@ -2922,7 +3604,7 @@ export async function refreshAppStateSnapshot(
   }
 
   let vixResult = null;
-  if (includeVix) {
+  if (shouldRefreshVix) {
     await emitProgress({
       current_label: '正在刷新 VIX / Fear & Greed'
     });
@@ -2937,13 +3619,23 @@ export async function refreshAppStateSnapshot(
     await emitProgress({
       current_label: 'VIX / Fear & Greed 刷新完成'
     });
+  } else if (includeVix && cachedVix?.fetched_on === getDateKey(now)) {
+    vixResult = {
+      skipped: true,
+      reason: 'already-refreshed-today'
+    };
+  } else if (includeVix && staleTickerIndexes.length === 0) {
+    vixResult = {
+      skipped: true,
+      reason: 'no-stock-refresh'
+    };
   }
 
   let nextAccountValueHistory = normalizedSnapshot.data.accountValueHistory;
   try {
     nextAccountValueHistory = upsertDailyAccountValueHistory(
       normalizedSnapshot.data.accountValueHistory,
-      computeSnapshotTotalCapital({
+      computeSnapshotAccountEquity({
         ...normalizedSnapshot.data,
         tickerList: nextTickerList,
         puts: nextPuts
@@ -2956,6 +3648,86 @@ export async function refreshAppStateSnapshot(
       : [];
   }
 
+  const activePuts = [];
+  for (const position of nextPuts) {
+    if (isExpiredDateInput(position.expiration_date, now)) {
+      const realizedPnl = (position.premium_per_share || 0) * (position.contracts || 0) * 100;
+      nextHistory.push({
+        id: `closed_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`,
+        position_id: position.id,
+        ticker: position.ticker,
+        option_side: position.option_side || 'put',
+        put_strike: position.put_strike,
+        premium_sold_per_share: position.premium_per_share || 0,
+        premium_bought_back_per_share: 0,
+        contracts: position.contracts,
+        date_sold: position.date_sold,
+        expiration_date: position.expiration_date,
+        closed_at: nowIso,
+        close_reason: 'expired',
+        realized_pnl: realizedPnl
+      });
+
+      const tickerIndex = nextTickerList.findIndex(t => t.ticker === position.ticker);
+      if (tickerIndex !== -1) {
+        const tickerEntry = nextTickerList[tickerIndex];
+        const currentPrice = tickerEntry.current_price;
+        if (typeof currentPrice === 'number' && Number.isFinite(currentPrice)) {
+          const isCall = position.option_side === 'call';
+          const isPut = position.option_side === 'put' || !position.option_side;
+          
+          let assigned = false;
+          let tradeAction = null;
+          
+          if (isCall && currentPrice >= position.put_strike) {
+            assigned = true;
+            tradeAction = 'sell';
+          } else if (isPut && currentPrice <= position.put_strike) {
+            assigned = true;
+            tradeAction = 'buy';
+          }
+
+          if (assigned) {
+            const sharesToTrade = (position.contracts || 0) * 100;
+            const cashImpact = sharesToTrade * position.put_strike;
+            
+            if (tradeAction === 'sell') {
+              tickerEntry.shares = (tickerEntry.shares || 0) - sharesToTrade;
+              nextConfig.cash = (nextConfig.cash || 0) + cashImpact;
+            } else if (tradeAction === 'buy') {
+              const currentShares = tickerEntry.shares || 0;
+              const currentCost = tickerEntry.average_cost_basis || 0;
+              const newTotalShares = currentShares + sharesToTrade;
+              
+              if (newTotalShares > 0) {
+                const newTotalCost = (currentShares * currentCost) + cashImpact;
+                tickerEntry.average_cost_basis = newTotalCost / newTotalShares;
+              }
+              
+              tickerEntry.shares = newTotalShares;
+              nextConfig.cash = (nextConfig.cash || 0) - cashImpact;
+            }
+
+            nextStockTrades.push({
+              id: `trade_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`,
+              ticker: position.ticker,
+              action: tradeAction,
+              shares: sharesToTrade,
+              price_per_share: position.put_strike,
+              traded_at: nowIso,
+              cash_change: tradeAction === 'sell' ? cashImpact : -cashImpact,
+              realized_pnl: 0
+            });
+          }
+        }
+      }
+    } else {
+      activePuts.push(position);
+    }
+  }
+
+  nextPuts.splice(0, nextPuts.length, ...activePuts);
+
   const updatedSnapshot = {
     ...normalizedSnapshot,
     exported_at: nowIso,
@@ -2963,6 +3735,9 @@ export async function refreshAppStateSnapshot(
       ...normalizedSnapshot.data,
       tickerList: nextTickerList,
       puts: nextPuts,
+      history: nextHistory,
+      stockTrades: nextStockTrades,
+      config: nextConfig,
       accountValueHistory: nextAccountValueHistory
     }
   };
@@ -2971,7 +3746,8 @@ export async function refreshAppStateSnapshot(
     snapshot: updatedSnapshot,
     marketOpen,
     force,
-    includeVix,
+    includeVix: shouldRefreshVix,
+    requestedIncludeVix: includeVix,
     tickerResults,
     optionResults,
     vixResult,
@@ -3018,32 +3794,15 @@ export async function handleApiRequest(req, res) {
   if (url.pathname === '/api/pre-trade-analysis' && req.method === 'POST') {
     try {
       const payload = await readJsonBody(req);
-      const result = await analyzePreTradeWithGemini(payload);
+      const result = await analyzePreTradeWithLlmFallback(payload);
       sendJson(res, 200, {
         ...result,
         as_of: new Date().toISOString(),
-        source: 'Gemini 2.5 Flash + Barchart/MarketData structured snapshot'
+        source: `${result.provider} + moomoo option snapshots + historical kline`
       });
     } catch (error) {
       sendJson(res, 502, {
-        error: error instanceof Error ? error.message : 'Gemini pre-trade analysis failed'
-      });
-    }
-    return;
-  }
-
-  if (url.pathname === '/api/pre-trade-context' && req.method === 'POST') {
-    try {
-      const payload = await readJsonBody(req);
-      const result = await analyzePreTradeContextWithGemini(payload);
-      sendJson(res, 200, {
-        ...result,
-        as_of: new Date().toISOString(),
-        source: 'Gemini 2.5 Flash + Google Search + Barchart/MarketData'
-      });
-    } catch (error) {
-      sendJson(res, 502, {
-        error: error instanceof Error ? error.message : 'Gemini pre-trade context failed'
+        error: error instanceof Error ? error.message : 'Pre-trade analysis failed'
       });
     }
     return;
@@ -3051,6 +3810,17 @@ export async function handleApiRequest(req, res) {
 
   if (url.pathname === '/api/vix' && req.method === 'GET') {
     try {
+      if (url.searchParams.get('cache_only') === 'true') {
+        const cachedSnapshot = buildCachedVixSnapshot(await loadVixCache());
+        if (!cachedSnapshot) {
+          sendJson(res, 404, { error: 'VIX cache is empty' });
+          return;
+        }
+
+        sendJson(res, 200, cachedSnapshot);
+        return;
+      }
+
       const snapshot = await computeVixSnapshot();
       sendJson(res, 200, snapshot);
     } catch (error) {
@@ -3106,7 +3876,19 @@ export async function handleApiRequest(req, res) {
           await saveRefreshStatusSafely(status);
         }
       });
-      await saveSnapshot(refreshResult.snapshot);
+      await enqueueAppStateMutation(async () => {
+        const latestSnapshot = await loadSavedSnapshot();
+        const mergedSnapshot = mergeSnapshotPreservingExistingCoreState(
+          refreshResult.snapshot,
+          latestSnapshot,
+          'merge'
+        );
+        mergedSnapshot.data.tickerList = mergeTickerListsPreservingExistingEntries(
+          refreshResult.snapshot?.data?.tickerList,
+          latestSnapshot?.data?.tickerList
+        );
+        await saveSnapshot(mergedSnapshot);
+      });
       const successStatusError = await saveRefreshStatusSafely({
         status: 'success',
         source,
@@ -3115,13 +3897,13 @@ export async function handleApiRequest(req, res) {
         updated_at: new Date().toISOString(),
         market_open: refreshResult.marketOpen,
         force,
-        include_vix: includeVix,
-        total_steps: refreshResult.tickerResults.length + refreshResult.optionResults.length + (includeVix ? 1 : 0),
-        completed_steps: refreshResult.tickerResults.length + refreshResult.optionResults.length + (includeVix ? 1 : 0),
+        include_vix: refreshResult.includeVix,
+        total_steps: refreshResult.tickerResults.length + refreshResult.optionResults.length + (refreshResult.includeVix ? 1 : 0),
+        completed_steps: refreshResult.tickerResults.length + refreshResult.optionResults.length + (refreshResult.includeVix ? 1 : 0),
         refreshed_tickers: refreshResult.refreshedTickers,
         refreshed_options: refreshResult.refreshedOptions,
         current_label: null,
-        message: refreshResult.marketOpen || force ? '后台刷新完成' : '当前非盘中，仅刷新了 VIX / Fear & Greed',
+        message: refreshResult.marketOpen || force ? '后台刷新完成' : '当前非盘中，跳过股票、期权和 VIX / Fear & Greed',
         error: runningStatusError ?? null
       });
 
@@ -3130,7 +3912,8 @@ export async function handleApiRequest(req, res) {
         ran_at: new Date().toISOString(),
         market_open: refreshResult.marketOpen,
         force,
-        include_vix: includeVix,
+        include_vix: refreshResult.includeVix,
+        requested_include_vix: refreshResult.requestedIncludeVix,
         refreshed_tickers: refreshResult.refreshedTickers,
         refreshed_options: refreshResult.refreshedOptions,
         ticker_failures: refreshResult.tickerResults.filter((item) => !item.ok),
@@ -3390,24 +4173,136 @@ export async function handleApiRequest(req, res) {
     try {
       const payload = await readJsonBody(req);
       const incomingSnapshot = coerceSnapshot(payload);
-      const existingSnapshot = await loadSavedSnapshot();
+      const saveMode = req.headers['x-app-state-save-mode'] === 'replace' ? 'replace' : 'merge';
+      const allowDestructiveWrite = req.headers['x-app-state-allow-destructive'] === 'true';
+      const saveResult = await enqueueAppStateMutation(async () => {
+        const existingSnapshot = await loadSavedSnapshot();
 
-      if (!hasMeaningfulSnapshotData(incomingSnapshot) && hasMeaningfulSnapshotData(existingSnapshot)) {
-        sendJson(res, 409, {
-          error: 'Refusing to overwrite existing app state with an empty snapshot'
-        });
+        if (!hasMeaningfulSnapshotData(incomingSnapshot) && hasMeaningfulSnapshotData(existingSnapshot)) {
+          return {
+            ok: false,
+            status: 409,
+            payload: {
+              error: 'Refusing to overwrite existing app state with an empty snapshot'
+            }
+          };
+        }
+
+        const suspiciousShrinkIssues = findSuspiciousSnapshotShrink(
+          incomingSnapshot,
+          existingSnapshot,
+          saveMode,
+          allowDestructiveWrite
+        );
+        if (suspiciousShrinkIssues.length > 0) {
+          return {
+            ok: false,
+            status: 409,
+            payload: {
+              error: `Refusing suspicious destructive app-state overwrite: ${suspiciousShrinkIssues.join(', ')}`,
+              code: 'SUSPICIOUS_SNAPSHOT_SHRINK',
+              issues: suspiciousShrinkIssues
+            }
+          };
+        }
+
+        const mergedSnapshot = mergeSnapshotPreservingExistingCoreState(incomingSnapshot, existingSnapshot, saveMode);
+        if (saveMode === 'merge') {
+          mergedSnapshot.data.tickerList = mergeTickerListsPreservingExistingEntries(
+            incomingSnapshot?.data?.tickerList,
+            existingSnapshot?.data?.tickerList
+          );
+        }
+        await saveSnapshot(mergedSnapshot);
+        console.info(
+          '[app-state] saved',
+          JSON.stringify({
+            saveMode,
+            puts: Array.isArray(mergedSnapshot?.data?.puts) ? mergedSnapshot.data.puts.length : 0,
+            closedTrades: Array.isArray(mergedSnapshot?.data?.closedTrades) ? mergedSnapshot.data.closedTrades.length : 0,
+            stockTrades: Array.isArray(mergedSnapshot?.data?.stockTrades) ? mergedSnapshot.data.stockTrades.length : 0,
+            storage: describeStorageTarget()
+          })
+        );
+        return { ok: true };
+      });
+
+      if (!saveResult.ok) {
+        sendJson(res, saveResult.status, saveResult.payload);
         return;
       }
 
-      await saveSnapshot(payload);
+      // Fire-and-forget: persist stock daily snapshot on every merge-mode save
+      // (merge mode is exclusively used by quote refresh operations).
+      if (saveMode === 'merge') {
+        const tickerEntries = Array.isArray(incomingSnapshot?.data?.tickerList)
+          ? incomingSnapshot.data.tickerList
+          : [];
+        if (tickerEntries.length > 0) {
+          writeStockDailySnapshot(tickerEntries).catch((err) => {
+            console.warn('[stock-snapshots] write failed:', err instanceof Error ? err.message : err);
+          });
+
+          // Fire-and-forget: fetch moomoo option snapshots for enabled tickers.
+          for (const entry of tickerEntries) {
+            if (entry?.option_snapshot_enabled !== true) {
+              continue;
+            }
+            const entryTicker = typeof entry?.ticker === 'string' ? entry.ticker.trim().toUpperCase() : '';
+            if (entryTicker === '') {
+              continue;
+            }
+            const currentPrice = typeof entry?.current_price === 'number' && Number.isFinite(entry.current_price)
+              ? entry.current_price
+              : null;
+            fetchOptionSnapshotForTicker(entryTicker, currentPrice)
+              .then((rows) => writeOptionDailySnapshot(entryTicker, rows))
+              .catch((err) => {
+                console.warn(
+                  `[option-snapshots] ${entryTicker} failed:`,
+                  err instanceof Error ? err.message : err
+                );
+              });
+          }
+        }
+      }
+
       const storageTarget = describeStorageTarget();
       sendJson(res, 200, {
         ok: true,
         saved_at: new Date().toISOString(),
-        storage: storageTarget
+        storage: storageTarget,
+        save_mode: saveMode
       });
     } catch (error) {
       sendJson(res, 500, { error: error instanceof Error ? error.message : 'Failed to save app state' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/stock-snapshots' && req.method === 'GET') {
+    try {
+      const ticker = url.searchParams.get('ticker') ?? undefined;
+      const startDate = url.searchParams.get('start') ?? undefined;
+      const endDate = url.searchParams.get('end') ?? undefined;
+      const rows = await readStockDailySnapshots({ ticker, startDate, endDate });
+      sendJson(res, 200, { rows, count: rows.length });
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : 'Failed to read stock snapshots' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/option-snapshots' && req.method === 'GET') {
+    try {
+      const ticker = url.searchParams.get('ticker') ?? undefined;
+      const startDate = url.searchParams.get('start') ?? undefined;
+      const endDate = url.searchParams.get('end') ?? undefined;
+      const side = url.searchParams.get('side') ?? undefined;
+      const rows = await readOptionDailySnapshots({ ticker, startDate, endDate, side });
+      sendJson(res, 200, { rows, count: rows.length });
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : 'Failed to read option snapshots' });
     }
     return;
   }
@@ -3457,7 +4352,7 @@ export async function handleApiRequest(req, res) {
           delta: optionQuote.delta,
           gamma: optionQuote.gamma,
           as_of: new Date().toISOString(),
-          source: 'MarketData.app /options/quotes'
+          source: optionQuote.source ?? 'MarketData.app /options/quotes'
         });
       } catch (error) {
         sendJson(res, 502, {
@@ -3532,6 +4427,7 @@ export async function handleApiRequest(req, res) {
     const rsi1h = {};
     const ma21 = {};
     const ma200 = {};
+    const atr14 = {};
     const currentIv = {};
     const nextEarningsDate = {};
     const historicalIv = {};
@@ -3541,7 +4437,8 @@ export async function handleApiRequest(req, res) {
     const errors = {};
 
     for (const requestItem of requests) {
-      const { quoteResult, rsiResult, rsi1hResult, ma21Result, ma200Result, currentIvResult, marketMetricsResult } = await fetchQuoteBundle(requestItem);
+      const { quoteResult, rsiResult, rsi1hResult, ma21Result, ma200Result, atrResult, currentIvResult, marketMetricsResult } = await fetchQuoteBundle(requestItem);
+
 
       if (quoteResult.ok) {
         quotes[quoteResult.symbol] = quoteResult.price;
@@ -3577,6 +4474,10 @@ export async function handleApiRequest(req, res) {
         ma200[ma200Result.symbol] = ma200Result.sma;
       } else if (!(ma200Result.symbol in errors)) {
         errors[ma200Result.symbol] = ma200Result.message;
+      }
+
+      if (atrResult && atrResult.ok && typeof atrResult.atr === 'number') {
+        atr14[atrResult.symbol] = atrResult.atr;
       }
 
       if (currentIvResult.ok) {
@@ -3617,6 +4518,7 @@ export async function handleApiRequest(req, res) {
       rsi1h,
       ma21,
       ma200,
+      atr14,
       currentIv,
       nextEarningsDate,
       historicalIv,

@@ -5,9 +5,9 @@ This project now supports a storage adapter so Docker and Vercel can use differe
 ## Current behavior
 
 - Docker / local API:
-  - `APP_STORAGE_DRIVER=file`
-  - Persists to `data/app-state.json` and `data/vix-cache.json`
-- Future Vercel deployment:
+  - `APP_STORAGE_DRIVER=sqlite` by default
+  - Persists local state to `data/risk-tool.sqlite`
+- Vercel deployment:
   - `APP_STORAGE_DRIVER=blob-json`
   - Persists the same JSON payloads to Vercel Blob
   - Current implementation uses public blob access because the server-side SDK path in this project writes through `put()`
@@ -24,13 +24,13 @@ This project now supports a storage adapter so Docker and Vercel can use differe
 
 ## Migration path
 
-1. Keep Docker deployment unchanged.
-2. Move HTTP route logic into shared handlers that can be used by both:
-   - the existing Node server
-   - Vercel Functions
-3. Add Vercel function entrypoints that call the shared handlers.
-4. Point the frontend `/api/*` traffic to the Vercel Functions in the Vercel deployment.
+1. Keep Docker deployment on sqlite.
+2. HTTP route logic is shared by both:
+   - the existing Node server (`api/server.mjs`)
+   - the Vercel Function wrapper (`vercel/api.mjs`)
+3. Vercel routes `/api/*` traffic to the function wrapper and serves the Vite SPA from `dist`.
+4. GitHub Actions can call the deployed cron endpoint every 10 minutes for background refresh.
 
 ## Important note
 
-The storage layer is now Vercel-ready, but the current `api/server.mjs` is still a long-running Node server entrypoint for Docker. The next migration step is to add Vercel function wrappers around the same business logic.
+The storage selector lazy-loads the selected adapter. This keeps the Docker/local SQLite adapter available without requiring Vercel's serverless runtime to load `node:sqlite` when `APP_STORAGE_DRIVER=blob-json`.

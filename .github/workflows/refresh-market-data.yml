@@ -1,0 +1,42 @@
+name: Refresh Market Data
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force refresh even when the US market is closed"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call deployed refresh endpoint
+        env:
+          CRON_REFRESH_URL: ${{ vars.CRON_REFRESH_URL || secrets.CRON_REFRESH_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          FORCE_REFRESH: ${{ inputs.force || 'false' }}
+        run: |
+          if [ -z "$CRON_REFRESH_URL" ]; then
+            echo "CRON_REFRESH_URL is not configured"
+            exit 1
+          fi
+
+          if [ -z "$CRON_SECRET" ]; then
+            echo "CRON_SECRET is not configured"
+            exit 1
+          fi
+
+          curl --fail --show-error --silent \
+            --request POST \
+            --header "Authorization: Bearer $CRON_SECRET" \
+            --header "Content-Type: application/json" \
+            --data "{\"include_vix\":true,\"force\":${FORCE_REFRESH},\"source\":\"github-actions\"}" \
+            "$CRON_REFRESH_URL"

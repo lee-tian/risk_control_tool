@@ -2,18 +2,18 @@ import { describe, expect, it } from 'vitest';
 
 import type { PutPosition, TickerEntry } from '../types';
 import {
+  buildDirectOptionPosition,
   buildClosedTradeEditPreview,
-  buildPutCandidateFromPreTrade,
   closeOpenPosition,
   createClosedTradeFromPosition,
   deleteOpenPositionAndPruneTicker,
   ensureTickerExists,
   expireOpenPositions,
+  hasExpectedPersistedClosedTrade,
+  hasExpectedPersistedPositionState,
   parseClosedTradeEditPreview,
+  removeClosedTrade,
   removePutPosition,
-  shouldApplySellPutRiskGate,
-  shouldAllowForceSellOnCheckError,
-  shouldClearPreTradeState,
   updateClosedTrade,
   upsertPutPosition
 } from './putWorkflow';
@@ -37,94 +37,61 @@ const baseCall: PutPosition = {
   put_strike: 220
 };
 
-describe('buildPutCandidateFromPreTrade', () => {
-  it('parses IV rank from analysis payload', () => {
-    const candidate = buildPutCandidateFromPreTrade(basePut, '愿意接股', {
-      analysis: {
-        verdict: '需要谨慎',
-        summary: '测试摘要',
-        rationale_check: '测试理由检查',
-        worst_case: '测试最坏情况',
-        fundamental_note: '测试基本面',
-        fundamental_events: ['事件A'],
-        current_iv_rank: '58.4',
-        iv_rank_note: 'IV Rank 偏高',
-        iv_rank_source: 'Example',
-        iv_rank_time: '2026-03-26',
-        iv_rank_link: 'https://example.com',
-        action: '继续观察',
-        key_risks: ['风险A'],
-        calc: {
-          max_profit: '$430',
-          risk_at_10pct_drop: '$1200'
-        }
-      },
-      asOf: '2026-03-26T12:00:00Z'
-    });
-
-    expect(candidate.iv_rank).toBe(58.4);
-    expect(candidate.decision_snapshot?.current_iv_rank).toBe('58.4');
-    expect(candidate.decision_rationale).toBe('愿意接股');
-  });
-
-  it('trims rationale text and preserves call-specific pre-trade snapshots', () => {
-    const candidate = buildPutCandidateFromPreTrade(baseCall, '  收租并接近行权价时滚仓  ', {
-      analysis: {
+describe('buildDirectOptionPosition', () => {
+  it('drops recommendation metadata for direct sell flow', () => {
+    const direct = buildDirectOptionPosition({
+      ...basePut,
+      decision_rationale: '旧建议',
+      decision_snapshot: {
         verdict: '可以考虑',
-        summary: 'call 分析摘要',
-        rationale_check: '计划清晰',
-        worst_case: '上涨收益被封顶',
-        fundamental_note: '关注竞争压力',
-        fundamental_events: ['2026-Q1 指引偏弱'],
-        current_iv_rank: '41.2',
-        iv_rank_note: 'IV 中性偏高',
-        iv_rank_source: 'Barchart',
-        iv_rank_time: '2026-04-01T10:00:00Z',
-        iv_rank_link: 'https://example.com/ivr',
-        action: '等待检查',
-        key_risks: ['被提前行权'],
-        calc: {
-          max_profit: '$240',
-          risk_at_10pct_drop: '$950'
-        }
-      },
-      asOf: '2026-04-01T12:00:00Z'
+        summary: '旧摘要',
+        current_iv_rank: '58.4',
+        premium_view: '旧 premium 判断',
+        support_level: '150',
+        resistance_level: '190',
+        recommended_strike: '155',
+        recommendation_reason: '旧建议原因',
+        candidate_focus: 'US.NVDA260619P155000',
+        trade_action: '等待检查',
+        key_risks: ['风险A'],
+        warnings: ['警告A'],
+        analyzed_at: '2026-03-26T12:00:00Z'
+      }
     });
 
-    expect(candidate.option_side).toBe('call');
-    expect(candidate.decision_rationale).toBe('收租并接近行权价时滚仓');
-    expect(candidate.decision_snapshot).toMatchObject({
-      summary: 'call 分析摘要',
-      action: '等待检查',
-      analyzed_at: '2026-04-01T12:00:00Z'
+    expect(direct).toMatchObject({
+      ticker: 'NVDA',
+      put_strike: 160,
+      premium_per_share: 4.3,
+      decision_rationale: '',
+      decision_snapshot: null
     });
   });
 
-  it('falls back to 0 when IV rank is unavailable', () => {
-    const candidate = buildPutCandidateFromPreTrade(basePut, '愿意接股', {
-      analysis: {
-        verdict: '',
-        summary: '',
-        rationale_check: '',
-        worst_case: '',
-        fundamental_note: '',
-        fundamental_events: [],
-        current_iv_rank: '未确认',
-        iv_rank_note: '',
-        iv_rank_source: '',
-        iv_rank_time: '',
-        iv_rank_link: '',
-        action: '',
-        key_risks: [],
-        calc: {
-          max_profit: '',
-          risk_at_10pct_drop: ''
-        }
-      },
-      asOf: '2026-03-26T12:00:00Z'
+  it('preserves covered call fields while clearing decision metadata', () => {
+    const direct = buildDirectOptionPosition({
+      ...baseCall,
+      decision_rationale: '旧 call 建议',
+      decision_snapshot: {
+        verdict: '可以考虑',
+        summary: 'call 摘要',
+        current_iv_rank: '41.2',
+        premium_view: 'IV 中性偏高',
+        support_level: '205',
+        resistance_level: '235',
+        recommended_strike: '235',
+        recommendation_reason: '高于压力位更安全',
+        candidate_focus: 'US.AAPL260508C235000',
+        trade_action: '等待检查',
+        key_risks: ['被提前行权'],
+        warnings: [],
+        analyzed_at: '2026-04-01T12:00:00Z'
+      }
     });
 
-    expect(candidate.iv_rank).toBe(0);
+    expect(direct.option_side).toBe('call');
+    expect(direct.decision_rationale).toBe('');
+    expect(direct.decision_snapshot).toBeNull();
   });
 });
 
@@ -251,19 +218,16 @@ describe('upsertPutPosition', () => {
         decision_snapshot: {
           verdict: '可以考虑',
           summary: '旧摘要',
-          rationale_check: '旧理由',
-          worst_case: '上涨收益封顶',
-          fundamental_note: '旧基本面',
-          fundamental_events: ['事件A'],
           current_iv_rank: '41.2',
-          iv_rank_note: '旧 IV',
-          iv_rank_source: 'Barchart',
-          iv_rank_time: '2026-04-01T12:00:00Z',
-          iv_rank_link: 'https://example.com',
-          action: '继续观察',
+          premium_view: '旧 premium 判断',
+          support_level: '205.00 (OI 8000)',
+          resistance_level: '235.00 (OI 9100)',
+          recommended_strike: '235',
+          recommendation_reason: '旧原因',
+          candidate_focus: 'US.AAPL260508C235000',
+          trade_action: '继续观察',
           key_risks: ['被提前行权'],
-          max_profit: '$695',
-          risk_at_10pct_drop: '$0',
+          warnings: [],
           analyzed_at: '2026-04-01T12:00:00Z'
         }
       }
@@ -457,6 +421,44 @@ describe('closeOpenPosition', () => {
   });
 });
 
+describe('hasExpectedPersistedPositionState', () => {
+  it('returns true when a fully closed position is absent from persisted puts', () => {
+    expect(hasExpectedPersistedPositionState([], [], 'put-1')).toBe(true);
+  });
+
+  it('returns true when a partial close persists the updated contract count', () => {
+    expect(
+      hasExpectedPersistedPositionState(
+        [{ ...basePut, contracts: 2 }],
+        [{ ...basePut, contracts: 2 }],
+        'put-1'
+      )
+    ).toBe(true);
+  });
+
+  it('returns false when the persisted snapshot still has the old open contracts', () => {
+    expect(
+      hasExpectedPersistedPositionState(
+        [{ ...basePut, contracts: 3 }],
+        [{ ...basePut, contracts: 2 }],
+        'put-1'
+      )
+    ).toBe(false);
+  });
+});
+
+describe('hasExpectedPersistedClosedTrade', () => {
+  it('returns true when the expected closed trade exists in persisted history', () => {
+    const trade = createClosedTradeFromPosition(baseCall, 0.48, '2026-04-06', 'take profit', 'manual', () => 'trade-1', 2);
+    expect(hasExpectedPersistedClosedTrade([trade], [trade], 'trade-1')).toBe(true);
+  });
+
+  it('returns false when the new closed trade is missing from persisted history', () => {
+    const trade = createClosedTradeFromPosition(baseCall, 0.48, '2026-04-06', 'take profit', 'manual', () => 'trade-1', 2);
+    expect(hasExpectedPersistedClosedTrade([], [trade], 'trade-1')).toBe(false);
+  });
+});
+
 describe('expireOpenPositions', () => {
   it('moves expired put and call positions into history and keeps side', () => {
     const result = expireOpenPositions(
@@ -624,28 +626,14 @@ describe('updateClosedTrade', () => {
 
     expect(next).toEqual(current);
   });
-});
 
-describe('shouldClearPreTradeState', () => {
-  it('clears pre-trade state only after a successful save', () => {
-    expect(shouldClearPreTradeState('saved')).toBe(true);
-    expect(shouldClearPreTradeState('blocked')).toBe(false);
-    expect(shouldClearPreTradeState('error')).toBe(false);
-  });
-});
+  it('removes a closed trade by id', () => {
+    const current = [
+      createClosedTradeFromPosition(baseCall, 1.5, '2026-04-01', '', 'manual', () => 'trade-1'),
+      createClosedTradeFromPosition(basePut, 0, '2026-05-08', '', 'expired', () => 'trade-2')
+    ];
 
-describe('shouldAllowForceSellOnCheckError', () => {
-  it('keeps force-sell available for known ivRank script errors', () => {
-    expect(shouldAllowForceSellOnCheckError('ivRank is not defined')).toBe(true);
-    expect(shouldAllowForceSellOnCheckError('IVRunk is not defined')).toBe(true);
-    expect(shouldAllowForceSellOnCheckError('卖 Put 检查失败')).toBe(false);
-  });
-});
-
-describe('shouldApplySellPutRiskGate', () => {
-  it('applies sell-score gates only to sell puts', () => {
-    expect(shouldApplySellPutRiskGate('put')).toBe(true);
-    expect(shouldApplySellPutRiskGate('call')).toBe(false);
-    expect(shouldApplySellPutRiskGate(undefined)).toBe(true);
+    expect(removeClosedTrade(current, 'trade-1')).toEqual([current[1]]);
+    expect(removeClosedTrade(current, 'missing-id')).toEqual(current);
   });
 });

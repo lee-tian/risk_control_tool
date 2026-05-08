@@ -133,9 +133,68 @@ describe('refreshAppStateSnapshot', () => {
     expect(result.snapshot.data.accountValueHistory).toEqual([
       expect.objectContaining({
         date: '2026-04-01',
-        total_capital: 20340
+        total_capital: 20330
       })
     ]);
+  });
+
+  it('preserves existing option greeks when the refresh response omits them', async () => {
+    const result = await refreshAppStateSnapshot(
+      {
+        version: 1,
+        exported_at: '2026-04-05T22:50:00.000Z',
+        data: {
+          config: null,
+          closedTrades: [],
+          stockTrades: [],
+          scenario: null,
+          vixHistory: [],
+          accountValueHistory: [],
+          tickerList: [],
+          puts: [
+            {
+              id: 'put-1',
+              ticker: 'MSFT',
+              option_side: 'put',
+              put_strike: 390,
+              premium_per_share: 12.57,
+              contracts: 1,
+              iv_rank: 49.3,
+              date_sold: '2026-03-17',
+              expiration_date: '2026-05-01',
+              option_market_price_per_share: 26.5,
+              option_market_price_updated: '2026-04-03T19:43:04.928Z',
+              option_theta_per_share: -0.185,
+              option_delta: -0.42,
+              option_gamma: 0.012
+            }
+          ]
+        }
+      },
+      {
+        now: new Date('2026-04-05T23:10:00.000Z'),
+        force: true,
+        fetchQuoteBundleFn: vi.fn(async () => ({
+          quoteResult: { ok: false },
+          rsiResult: { ok: false },
+          rsi1hResult: { ok: false },
+          ma21Result: { ok: false },
+          ma200Result: { ok: false },
+          currentIvResult: { ok: false },
+          marketMetricsResult: { ok: false }
+        })),
+        fetchCurrentOptionQuoteFn: vi.fn(async () => ({ price: 25.1, theta: null, delta: null, gamma: null })),
+        refreshVixFn: vi.fn(async () => ({ value: 24.9 })),
+        sleepFn: vi.fn(async () => {})
+      }
+    );
+
+    expect(result.snapshot.data.puts[0]).toMatchObject({
+      option_market_price_per_share: 25.1,
+      option_theta_per_share: -0.185,
+      option_delta: -0.42,
+      option_gamma: 0.012
+    });
   });
 
   it('skips ticker and option refresh when the market is closed unless forced', async () => {

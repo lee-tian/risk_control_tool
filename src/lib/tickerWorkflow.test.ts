@@ -6,6 +6,7 @@ import {
   buyTickerShares,
   createTickerEntryFromDraft,
   findTickerEntry,
+  normalizeTickerSymbol,
   removeTickerEntry,
   sellTickerShares,
   updateTickerEntry
@@ -35,6 +36,11 @@ const baseEntries: TickerEntry[] = [
 ];
 
 describe('tickerWorkflow', () => {
+  it('normalizes BRKB into BRK.B for canonical storage', () => {
+    expect(normalizeTickerSymbol('brkb')).toBe('BRK.B');
+    expect(normalizeTickerSymbol(' BRK.B ')).toBe('BRK.B');
+  });
+
   it('creates a stock entry from draft input for add flow', () => {
     expect(
       createTickerEntryFromDraft({

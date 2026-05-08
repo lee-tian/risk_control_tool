@@ -12,6 +12,7 @@ import type {
   TickerEntry,
   VixHistoryPoint
 } from '../types';
+import { normalizeTickerSymbol } from './tickerWorkflow';
 
 const STORAGE_KEYS = {
   config: 'risk-tool-config',
@@ -33,7 +34,6 @@ const DEFAULT_BETA_BY_TICKER: Record<string, number> = {
   AMZN: 1.31,
   AXP: 1.34,
   'BRK.B': 0.36,
-  BRKB: 0.36,
   GLD: 0.19,
   GOOGL: 0.72,
   MSFT: 1.08,
@@ -47,6 +47,23 @@ const DEFAULT_PROVIDER_BY_TICKER: Record<string, { exchange: string | null; mic_
     mic_code: 'ARCX'
   }
 };
+
+function normalizeFutureEarningsDate(value: unknown, referenceDate = new Date()): string | null {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  const parsed = new Date(`${trimmed}T00:00:00.000Z`);
+  if (!Number.isFinite(parsed.getTime())) {
+    return null;
+  }
+
+  const referenceDay = new Date(
+    Date.UTC(referenceDate.getUTCFullYear(), referenceDate.getUTCMonth(), referenceDate.getUTCDate())
+  );
+  return parsed.getTime() >= referenceDay.getTime() ? trimmed : null;
+}
 
 function normalizeOptionSide(value: unknown): 'put' | 'call' {
   return value === 'call' ? 'call' : 'put';
@@ -113,7 +130,7 @@ export function loadPuts(): PutPosition[] {
 
   return rawPuts.map((put) => ({
     id: typeof put.id === 'string' ? put.id : '',
-    ticker: typeof put.ticker === 'string' ? put.ticker.trim().toUpperCase() : '',
+    ticker: typeof put.ticker === 'string' ? normalizeTickerSymbol(put.ticker) : '',
     option_side: normalizeOptionSide(put.option_side),
     put_strike: typeof put.put_strike === 'number' ? put.put_strike : 0,
     premium_per_share: typeof put.premium_per_share === 'number' ? put.premium_per_share : 0,
@@ -141,60 +158,64 @@ export function loadPuts(): PutPosition[] {
               typeof (put.decision_snapshot as Record<string, unknown>).summary === 'string'
                 ? ((put.decision_snapshot as Record<string, unknown>).summary as string)
                 : '',
-            rationale_check:
-              typeof (put.decision_snapshot as Record<string, unknown>).rationale_check === 'string'
-                ? ((put.decision_snapshot as Record<string, unknown>).rationale_check as string)
-                : '',
-            worst_case:
-              typeof (put.decision_snapshot as Record<string, unknown>).worst_case === 'string'
-                ? ((put.decision_snapshot as Record<string, unknown>).worst_case as string)
-                : '',
-            fundamental_note:
-              typeof (put.decision_snapshot as Record<string, unknown>).fundamental_note === 'string'
-                ? ((put.decision_snapshot as Record<string, unknown>).fundamental_note as string)
-                : '',
-            fundamental_events: Array.isArray((put.decision_snapshot as Record<string, unknown>).fundamental_events)
-              ? (((put.decision_snapshot as Record<string, unknown>).fundamental_events as unknown[]).filter(
-                  (item): item is string => typeof item === 'string'
-                ))
-              : [],
             current_iv_rank:
               typeof (put.decision_snapshot as Record<string, unknown>).current_iv_rank === 'string'
                 ? ((put.decision_snapshot as Record<string, unknown>).current_iv_rank as string)
                 : '',
-            iv_rank_note:
-              typeof (put.decision_snapshot as Record<string, unknown>).iv_rank_note === 'string'
-                ? ((put.decision_snapshot as Record<string, unknown>).iv_rank_note as string)
+            recommended_expiration:
+              typeof (put.decision_snapshot as Record<string, unknown>).recommended_expiration === 'string'
+                ? ((put.decision_snapshot as Record<string, unknown>).recommended_expiration as string)
                 : '',
-            iv_rank_source:
-              typeof (put.decision_snapshot as Record<string, unknown>).iv_rank_source === 'string'
-                ? ((put.decision_snapshot as Record<string, unknown>).iv_rank_source as string)
+            recommended_dte:
+              typeof (put.decision_snapshot as Record<string, unknown>).recommended_dte === 'string'
+                ? ((put.decision_snapshot as Record<string, unknown>).recommended_dte as string)
                 : '',
-            iv_rank_time:
-              typeof (put.decision_snapshot as Record<string, unknown>).iv_rank_time === 'string'
-                ? ((put.decision_snapshot as Record<string, unknown>).iv_rank_time as string)
+            premium_view:
+              typeof (put.decision_snapshot as Record<string, unknown>).premium_view === 'string'
+                ? ((put.decision_snapshot as Record<string, unknown>).premium_view as string)
                 : '',
-            iv_rank_link:
-              typeof (put.decision_snapshot as Record<string, unknown>).iv_rank_link === 'string'
-                ? ((put.decision_snapshot as Record<string, unknown>).iv_rank_link as string)
+            support_level:
+              typeof (put.decision_snapshot as Record<string, unknown>).support_level === 'string'
+                ? ((put.decision_snapshot as Record<string, unknown>).support_level as string)
                 : '',
-            action:
-              typeof (put.decision_snapshot as Record<string, unknown>).action === 'string'
-                ? ((put.decision_snapshot as Record<string, unknown>).action as string)
+            resistance_level:
+              typeof (put.decision_snapshot as Record<string, unknown>).resistance_level === 'string'
+                ? ((put.decision_snapshot as Record<string, unknown>).resistance_level as string)
+                : '',
+            recommended_strike:
+              typeof (put.decision_snapshot as Record<string, unknown>).recommended_strike === 'string'
+                ? ((put.decision_snapshot as Record<string, unknown>).recommended_strike as string)
+                : '',
+            recommended_premium:
+              typeof (put.decision_snapshot as Record<string, unknown>).recommended_premium === 'string'
+                ? ((put.decision_snapshot as Record<string, unknown>).recommended_premium as string)
+                : '',
+            recommended_distance:
+              typeof (put.decision_snapshot as Record<string, unknown>).recommended_distance === 'string'
+                ? ((put.decision_snapshot as Record<string, unknown>).recommended_distance as string)
+                : '',
+            recommendation_reason:
+              typeof (put.decision_snapshot as Record<string, unknown>).recommendation_reason === 'string'
+                ? ((put.decision_snapshot as Record<string, unknown>).recommendation_reason as string)
+                : '',
+            candidate_focus:
+              typeof (put.decision_snapshot as Record<string, unknown>).candidate_focus === 'string'
+                ? ((put.decision_snapshot as Record<string, unknown>).candidate_focus as string)
+                : '',
+            trade_action:
+              typeof (put.decision_snapshot as Record<string, unknown>).trade_action === 'string'
+                ? ((put.decision_snapshot as Record<string, unknown>).trade_action as string)
                 : '',
             key_risks: Array.isArray((put.decision_snapshot as Record<string, unknown>).key_risks)
               ? (((put.decision_snapshot as Record<string, unknown>).key_risks as unknown[]).filter(
                   (item): item is string => typeof item === 'string'
                 ))
               : [],
-            max_profit:
-              typeof (put.decision_snapshot as Record<string, unknown>).max_profit === 'string'
-                ? ((put.decision_snapshot as Record<string, unknown>).max_profit as string)
-                : '',
-            risk_at_10pct_drop:
-              typeof (put.decision_snapshot as Record<string, unknown>).risk_at_10pct_drop === 'string'
-                ? ((put.decision_snapshot as Record<string, unknown>).risk_at_10pct_drop as string)
-                : '',
+            warnings: Array.isArray((put.decision_snapshot as Record<string, unknown>).warnings)
+              ? (((put.decision_snapshot as Record<string, unknown>).warnings as unknown[]).filter(
+                  (item): item is string => typeof item === 'string'
+                ))
+              : [],
             analyzed_at:
               typeof (put.decision_snapshot as Record<string, unknown>).analyzed_at === 'string'
                 ? ((put.decision_snapshot as Record<string, unknown>).analyzed_at as string)
@@ -303,7 +324,7 @@ export function loadClosedTrades(): ClosedPutTrade[] {
       return {
         id: typeof trade.id === 'string' ? trade.id : '',
         position_id: typeof trade.position_id === 'string' ? trade.position_id : '',
-        ticker: typeof trade.ticker === 'string' ? trade.ticker.trim().toUpperCase() : '',
+        ticker: typeof trade.ticker === 'string' ? normalizeTickerSymbol(trade.ticker) : '',
         option_side: normalizeOptionSide(trade.option_side),
         put_strike: typeof trade.put_strike === 'number' ? trade.put_strike : 0,
         premium_sold_per_share: typeof trade.premium_sold_per_share === 'number' ? trade.premium_sold_per_share : 0,
@@ -331,7 +352,7 @@ export function loadStockTrades(): StockTradeHistory[] {
   return rawTrades
     .map<StockTradeHistory>((trade) => ({
       id: typeof trade.id === 'string' ? trade.id : '',
-      ticker: typeof trade.ticker === 'string' ? trade.ticker.trim().toUpperCase() : '',
+      ticker: typeof trade.ticker === 'string' ? normalizeTickerSymbol(trade.ticker) : '',
       action: trade.action === 'buy' ? 'buy' : 'sell',
       shares: typeof trade.shares === 'number' ? trade.shares : 0,
       price_per_share: typeof trade.price_per_share === 'number' ? trade.price_per_share : 0,
@@ -388,7 +409,7 @@ export function loadTickerList(): TickerEntry[] {
   const rawTickers = loadJson<unknown[]>(STORAGE_KEYS.tickerList, []);
   const mappedEntries: Array<TickerEntry | null> = rawTickers.map((item): TickerEntry | null => {
       if (typeof item === 'string') {
-        const ticker = item.trim().toUpperCase();
+        const ticker = normalizeTickerSymbol(item);
         return ticker === ''
           ? null
           : {
@@ -397,6 +418,7 @@ export function loadTickerList(): TickerEntry[] {
               shares: null,
               average_cost_basis: null,
               downside_tolerance_pct: null,
+              target_trim_price: null,
               current_price: null,
               last_updated: null,
               next_earnings_date: null,
@@ -413,13 +435,14 @@ export function loadTickerList(): TickerEntry[] {
               rsi_14_1h: null,
               rsi_updated: null,
               ma_21: null,
-              ma_200: null
+              ma_200: null,
+              atr_14: null
             };
       }
 
       if (typeof item === 'object' && item !== null) {
         const record = item as Record<string, unknown>;
-        const ticker = typeof record.ticker === 'string' ? record.ticker.trim().toUpperCase() : '';
+        const ticker = typeof record.ticker === 'string' ? normalizeTickerSymbol(record.ticker) : '';
         if (ticker === '') {
           return null;
         }
@@ -431,9 +454,10 @@ export function loadTickerList(): TickerEntry[] {
           average_cost_basis: typeof record.average_cost_basis === 'number' ? record.average_cost_basis : null,
           downside_tolerance_pct:
             typeof record.downside_tolerance_pct === 'number' ? record.downside_tolerance_pct : null,
+          target_trim_price: typeof record.target_trim_price === 'number' ? record.target_trim_price : null,
           current_price: typeof record.current_price === 'number' ? record.current_price : null,
           last_updated: typeof record.last_updated === 'string' ? record.last_updated : null,
-          next_earnings_date: typeof record.next_earnings_date === 'string' ? record.next_earnings_date : null,
+          next_earnings_date: normalizeFutureEarningsDate(record.next_earnings_date),
           current_iv: typeof record.current_iv === 'number'
             ? record.current_iv
             : typeof record.iv_rank === 'number'
@@ -458,7 +482,9 @@ export function loadTickerList(): TickerEntry[] {
           rsi_14_1h: typeof record.rsi_14_1h === 'number' ? record.rsi_14_1h : null,
           rsi_updated: typeof record.rsi_updated === 'string' ? record.rsi_updated : null,
           ma_21: typeof record.ma_21 === 'number' ? record.ma_21 : null,
-          ma_200: typeof record.ma_200 === 'number' ? record.ma_200 : null
+          ma_200: typeof record.ma_200 === 'number' ? record.ma_200 : null,
+          atr_14: typeof record.atr_14 === 'number' ? record.atr_14 : null,
+          buy_rsi_alert: typeof record.buy_rsi_alert === 'number' ? record.buy_rsi_alert : null
         };
       }
 
@@ -475,15 +501,16 @@ export function loadTickerList(): TickerEntry[] {
 export function saveTickerList(entries: TickerEntry[]): void {
   const normalized = entries
     .map((entry) => ({
-      ticker: entry.ticker.trim().toUpperCase(),
+      ticker: normalizeTickerSymbol(entry.ticker),
       beta: typeof entry.beta === 'number' ? entry.beta : null,
       shares: typeof entry.shares === 'number' ? entry.shares : null,
       average_cost_basis: typeof entry.average_cost_basis === 'number' ? entry.average_cost_basis : null,
       downside_tolerance_pct:
         typeof entry.downside_tolerance_pct === 'number' ? entry.downside_tolerance_pct : null,
+      target_trim_price: typeof entry.target_trim_price === 'number' ? entry.target_trim_price : null,
       current_price: typeof entry.current_price === 'number' ? entry.current_price : null,
       last_updated: typeof entry.last_updated === 'string' ? entry.last_updated : null,
-      next_earnings_date: typeof entry.next_earnings_date === 'string' ? entry.next_earnings_date : null,
+      next_earnings_date: normalizeFutureEarningsDate(entry.next_earnings_date),
       current_iv: typeof entry.current_iv === 'number' ? entry.current_iv : null,
       current_iv_updated: typeof entry.current_iv_updated === 'string' ? entry.current_iv_updated : null,
       historical_iv: typeof entry.historical_iv === 'number' ? entry.historical_iv : null,
@@ -497,7 +524,9 @@ export function saveTickerList(entries: TickerEntry[]): void {
       rsi_14_1h: typeof entry.rsi_14_1h === 'number' ? entry.rsi_14_1h : null,
       rsi_updated: typeof entry.rsi_updated === 'string' ? entry.rsi_updated : null,
       ma_21: typeof entry.ma_21 === 'number' ? entry.ma_21 : null,
-      ma_200: typeof entry.ma_200 === 'number' ? entry.ma_200 : null
+      ma_200: typeof entry.ma_200 === 'number' ? entry.ma_200 : null,
+      atr_14: typeof entry.atr_14 === 'number' ? entry.atr_14 : null,
+      buy_rsi_alert: typeof entry.buy_rsi_alert === 'number' ? entry.buy_rsi_alert : null
     }))
     .filter((entry, index, list) => entry.ticker !== '' && list.findIndex((candidate) => candidate.ticker === entry.ticker) === index)
     .sort((a, b) => a.ticker.localeCompare(b.ticker));
@@ -508,7 +537,7 @@ export function saveTickerList(entries: TickerEntry[]): void {
 export function loadDeletedTickers(): string[] {
   const raw = loadJson<unknown[]>(STORAGE_KEYS.deletedTickers, []);
   return raw
-    .map((item) => (typeof item === 'string' ? item.trim().toUpperCase() : ''))
+    .map((item) => (typeof item === 'string' ? normalizeTickerSymbol(item) : ''))
     .filter(Boolean)
     .filter((item, index, list) => list.indexOf(item) === index)
     .sort();
@@ -516,7 +545,7 @@ export function loadDeletedTickers(): string[] {
 
 export function saveDeletedTickers(tickers: string[]): void {
   const normalized = tickers
-    .map((item) => item.trim().toUpperCase())
+    .map((item) => normalizeTickerSymbol(item))
     .filter(Boolean)
     .filter((item, index, list) => list.indexOf(item) === index)
     .sort();
@@ -524,7 +553,7 @@ export function saveDeletedTickers(tickers: string[]): void {
 }
 
 export function filterDeletedTickers(entries: TickerEntry[], deletedTickers: string[]): TickerEntry[] {
-  const deletedSet = new Set(deletedTickers.map((item) => item.trim().toUpperCase()).filter(Boolean));
+  const deletedSet = new Set(deletedTickers.map((item) => normalizeTickerSymbol(item)).filter(Boolean));
   if (deletedSet.size === 0) {
     return entries;
   }
@@ -559,9 +588,10 @@ export function mergeTickerListsPreservingManualFields(
         shares: localEntry.shares ?? snapshotEntry.shares,
         average_cost_basis: localEntry.average_cost_basis ?? snapshotEntry.average_cost_basis,
         downside_tolerance_pct: localEntry.downside_tolerance_pct ?? snapshotEntry.downside_tolerance_pct,
+        target_trim_price: localEntry.target_trim_price ?? snapshotEntry.target_trim_price,
         current_price: snapshotEntry.current_price ?? localEntry.current_price,
         last_updated: snapshotEntry.last_updated ?? localEntry.last_updated,
-        next_earnings_date: snapshotEntry.next_earnings_date ?? localEntry.next_earnings_date,
+        next_earnings_date: normalizeFutureEarningsDate(snapshotEntry.next_earnings_date ?? localEntry.next_earnings_date),
         current_iv: snapshotEntry.current_iv ?? localEntry.current_iv,
         current_iv_updated: snapshotEntry.current_iv_updated ?? localEntry.current_iv_updated,
         historical_iv: snapshotEntry.historical_iv ?? localEntry.historical_iv,
@@ -575,7 +605,9 @@ export function mergeTickerListsPreservingManualFields(
         rsi_14_1h: snapshotEntry.rsi_14_1h ?? localEntry.rsi_14_1h,
         rsi_updated: snapshotEntry.rsi_updated ?? localEntry.rsi_updated,
         ma_21: snapshotEntry.ma_21 ?? localEntry.ma_21,
-        ma_200: snapshotEntry.ma_200 ?? localEntry.ma_200
+        ma_200: snapshotEntry.ma_200 ?? localEntry.ma_200,
+        atr_14: snapshotEntry.atr_14 ?? localEntry.atr_14,
+        buy_rsi_alert: snapshotEntry.buy_rsi_alert ?? localEntry.buy_rsi_alert
       };
     })
     .filter((entry): entry is TickerEntry => entry !== null)
@@ -682,6 +714,72 @@ export function buildAppStateSnapshot(input: {
   };
 }
 
+function buildFallbackTickerListFromSnapshotData(data: Record<string, unknown>): TickerEntry[] {
+  const tickerSet = new Set<string>();
+
+  const collectTicker = (value: unknown) => {
+    if (typeof value !== 'string') {
+      return;
+    }
+
+    const ticker = normalizeTickerSymbol(value);
+    if (ticker !== '') {
+      tickerSet.add(ticker);
+    }
+  };
+
+  if (Array.isArray(data.puts)) {
+    for (const item of data.puts) {
+      if (typeof item === 'object' && item !== null) {
+        collectTicker((item as Record<string, unknown>).ticker);
+      }
+    }
+  }
+
+  if (Array.isArray(data.closedTrades)) {
+    for (const item of data.closedTrades) {
+      if (typeof item === 'object' && item !== null) {
+        collectTicker((item as Record<string, unknown>).ticker);
+      }
+    }
+  }
+
+  if (Array.isArray(data.stockTrades)) {
+    for (const item of data.stockTrades) {
+      if (typeof item === 'object' && item !== null) {
+        collectTicker((item as Record<string, unknown>).ticker);
+      }
+    }
+  }
+
+  return [...tickerSet].sort().map((ticker) => ({
+    ticker,
+    beta: DEFAULT_BETA_BY_TICKER[ticker] ?? null,
+    shares: null,
+    average_cost_basis: null,
+    downside_tolerance_pct: null,
+    target_trim_price: null,
+    current_price: null,
+    last_updated: null,
+    next_earnings_date: null,
+    current_iv: null,
+    current_iv_updated: null,
+    historical_iv: null,
+    iv_rank: null,
+    iv_percentile: null,
+    put_call_ratio: null,
+    put_call_ratio_updated: null,
+    provider_exchange: DEFAULT_PROVIDER_BY_TICKER[ticker]?.exchange ?? null,
+    provider_mic_code: DEFAULT_PROVIDER_BY_TICKER[ticker]?.mic_code ?? null,
+    rsi_14: null,
+    rsi_14_1h: null,
+    rsi_updated: null,
+    ma_21: null,
+    ma_200: null,
+    atr_14: null
+  }));
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -714,6 +812,10 @@ export function parseAppStateSnapshot(raw: string): AppStateSnapshot {
 
   const data = parsed.data;
 
+  const normalizedTickerList = normalizeImportedTickerList(Array.isArray(data.tickerList) ? data.tickerList : []);
+  const fallbackTickerList =
+    normalizedTickerList.length > 0 ? normalizedTickerList : buildFallbackTickerListFromSnapshotData(data);
+
   return {
     version: 1,
     exported_at: typeof parsed.exported_at === 'string' ? parsed.exported_at : new Date().toISOString(),
@@ -722,7 +824,7 @@ export function parseAppStateSnapshot(raw: string): AppStateSnapshot {
       puts: normalizeImportedPuts(Array.isArray(data.puts) ? data.puts : []),
       closedTrades: normalizeImportedClosedTrades(Array.isArray(data.closedTrades) ? data.closedTrades : []),
       stockTrades: normalizeImportedStockTrades(Array.isArray(data.stockTrades) ? data.stockTrades : []),
-      tickerList: normalizeImportedTickerList(Array.isArray(data.tickerList) ? data.tickerList : []),
+      tickerList: fallbackTickerList,
       scenario: typeof data.scenario === 'number' ? data.scenario : null,
       vixHistory: normalizeImportedVixHistory(Array.isArray(data.vixHistory) ? data.vixHistory : []),
       accountValueHistory: normalizeImportedAccountValueHistory(
@@ -750,7 +852,7 @@ function normalizeImportedPuts(rawPuts: unknown[]): PutPosition[] {
     const record = (typeof put === 'object' && put !== null ? put : {}) as Record<string, unknown>;
     return {
       id: typeof record.id === 'string' && record.id !== '' ? record.id : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      ticker: typeof record.ticker === 'string' ? record.ticker.trim().toUpperCase() : '',
+      ticker: typeof record.ticker === 'string' ? normalizeTickerSymbol(record.ticker) : '',
       option_side: normalizeOptionSide(record.option_side),
       put_strike: typeof record.put_strike === 'number' ? record.put_strike : 0,
       premium_per_share: typeof record.premium_per_share === 'number' ? record.premium_per_share : 0,
@@ -770,7 +872,7 @@ function normalizeImportedPuts(rawPuts: unknown[]): PutPosition[] {
   });
 }
 
-function normalizeImportedTickerList(rawTickers: unknown[]): TickerEntry[] {
+export function normalizeImportedTickerList(rawTickers: unknown[]): TickerEntry[] {
   return rawTickers
     .map((item): TickerEntry | null => {
       if (typeof item !== 'object' || item === null) {
@@ -778,7 +880,7 @@ function normalizeImportedTickerList(rawTickers: unknown[]): TickerEntry[] {
       }
 
       const record = item as Record<string, unknown>;
-      const ticker = typeof record.ticker === 'string' ? record.ticker.trim().toUpperCase() : '';
+      const ticker = typeof record.ticker === 'string' ? normalizeTickerSymbol(record.ticker) : '';
       if (ticker === '') {
         return null;
       }
@@ -786,13 +888,14 @@ function normalizeImportedTickerList(rawTickers: unknown[]): TickerEntry[] {
       return {
         ticker,
         beta: typeof record.beta === 'number' ? record.beta : DEFAULT_BETA_BY_TICKER[ticker] ?? null,
-        shares: typeof record.shares === 'number' ? record.shares : null,
-        average_cost_basis: typeof record.average_cost_basis === 'number' ? record.average_cost_basis : null,
-        downside_tolerance_pct:
-          typeof record.downside_tolerance_pct === 'number' ? record.downside_tolerance_pct : null,
-        current_price: typeof record.current_price === 'number' ? record.current_price : null,
+      shares: typeof record.shares === 'number' ? record.shares : null,
+      average_cost_basis: typeof record.average_cost_basis === 'number' ? record.average_cost_basis : null,
+      downside_tolerance_pct:
+        typeof record.downside_tolerance_pct === 'number' ? record.downside_tolerance_pct : null,
+      target_trim_price: typeof record.target_trim_price === 'number' ? record.target_trim_price : null,
+      current_price: typeof record.current_price === 'number' ? record.current_price : null,
         last_updated: typeof record.last_updated === 'string' ? record.last_updated : null,
-        next_earnings_date: typeof record.next_earnings_date === 'string' ? record.next_earnings_date : null,
+        next_earnings_date: normalizeFutureEarningsDate(record.next_earnings_date),
         current_iv: typeof record.current_iv === 'number' ? record.current_iv : null,
         current_iv_updated: typeof record.current_iv_updated === 'string' ? record.current_iv_updated : null,
         historical_iv: typeof record.historical_iv === 'number' ? record.historical_iv : null,
@@ -812,7 +915,9 @@ function normalizeImportedTickerList(rawTickers: unknown[]): TickerEntry[] {
         rsi_14_1h: typeof record.rsi_14_1h === 'number' ? record.rsi_14_1h : null,
         rsi_updated: typeof record.rsi_updated === 'string' ? record.rsi_updated : null,
         ma_21: typeof record.ma_21 === 'number' ? record.ma_21 : null,
-        ma_200: typeof record.ma_200 === 'number' ? record.ma_200 : null
+        ma_200: typeof record.ma_200 === 'number' ? record.ma_200 : null,
+        atr_14: typeof record.atr_14 === 'number' ? record.atr_14 : null,
+        buy_rsi_alert: typeof record.buy_rsi_alert === 'number' ? record.buy_rsi_alert : null
       };
     })
     .filter((entry): entry is TickerEntry => entry !== null)
@@ -828,7 +933,7 @@ function normalizeImportedClosedTrades(rawTrades: unknown[]): ClosedPutTrade[] {
       return {
         id: typeof record.id === 'string' && record.id !== '' ? record.id : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         position_id: typeof record.position_id === 'string' ? record.position_id : '',
-        ticker: typeof record.ticker === 'string' ? record.ticker.trim().toUpperCase() : '',
+        ticker: typeof record.ticker === 'string' ? normalizeTickerSymbol(record.ticker) : '',
         option_side: normalizeOptionSide(record.option_side),
         put_strike: typeof record.put_strike === 'number' ? record.put_strike : 0,
         premium_sold_per_share: typeof record.premium_sold_per_share === 'number' ? record.premium_sold_per_share : 0,
@@ -853,7 +958,7 @@ function normalizeImportedStockTrades(rawTrades: unknown[]): StockTradeHistory[]
       const record = (typeof trade === 'object' && trade !== null ? trade : {}) as Record<string, unknown>;
       return {
         id: typeof record.id === 'string' ? record.id : '',
-        ticker: typeof record.ticker === 'string' ? record.ticker.trim().toUpperCase() : '',
+        ticker: typeof record.ticker === 'string' ? normalizeTickerSymbol(record.ticker) : '',
         action: record.action === 'buy' ? 'buy' : 'sell',
         shares: typeof record.shares === 'number' ? record.shares : 0,
         price_per_share: typeof record.price_per_share === 'number' ? record.price_per_share : 0,
@@ -898,7 +1003,7 @@ export function applyPutPositionsImportPayload(payload: PutPositionsExportPayloa
 } {
   const puts = (payload.data.puts ?? []).map((put) => ({
     id: typeof put.id === 'string' && put.id !== '' ? put.id : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    ticker: typeof put.ticker === 'string' ? put.ticker.trim().toUpperCase() : '',
+    ticker: typeof put.ticker === 'string' ? normalizeTickerSymbol(put.ticker) : '',
     option_side: normalizeOptionSide(put.option_side),
     put_strike: typeof put.put_strike === 'number' ? put.put_strike : 0,
     premium_per_share: typeof put.premium_per_share === 'number' ? put.premium_per_share : 0,
@@ -915,6 +1020,7 @@ export function applyPutPositionsImportPayload(payload: PutPositionsExportPayloa
       shares: null,
       average_cost_basis: null,
       downside_tolerance_pct: null,
+      target_trim_price: null,
       current_price: null,
       last_updated: null,
       next_earnings_date: null,

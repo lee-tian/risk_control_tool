@@ -5,10 +5,12 @@ type OptionAlertLikeRow = {
   expiration_date: string;
   daysToExpiration?: number;
   gammaThetaRatio?: number | null;
+  annualizedYield?: number | null;
 };
 
-const THETA_GAMMA_YELLOW_THRESHOLD = 12;
-const THETA_GAMMA_RED_THRESHOLD = 8;
+const THETA_GAMMA_YELLOW_THRESHOLD = 4;
+const THETA_GAMMA_RED_THRESHOLD = 2;
+const ANNUALIZED_YIELD_ATTENTION_THRESHOLD = 0.06;
 
 function toThetaGammaRatio(gammaThetaRatio: number | null | undefined): number | null {
   if (typeof gammaThetaRatio !== 'number' || !Number.isFinite(gammaThetaRatio) || gammaThetaRatio <= 0.000001) {
@@ -19,17 +21,29 @@ function toThetaGammaRatio(gammaThetaRatio: number | null | undefined): number |
 }
 
 export function getAttentionLevel(
-  row: Pick<OptionAlertLikeRow, 'daysToExpiration' | 'premiumCapturedPct' | 'gammaThetaRatio'>
+  row: Pick<OptionAlertLikeRow, 'daysToExpiration' | 'premiumCapturedPct' | 'gammaThetaRatio' | 'annualizedYield'>
 ): 'red' | 'yellow' | null {
   const daysToExpiration = row.daysToExpiration ?? Number.POSITIVE_INFINITY;
   const premiumCapturedPct = row.premiumCapturedPct ?? 0;
   const thetaGammaRatio = toThetaGammaRatio(row.gammaThetaRatio);
+  const annualizedYield =
+    typeof row.annualizedYield === 'number' && Number.isFinite(row.annualizedYield) ? row.annualizedYield : null;
+  const shouldCheckThetaGamma = daysToExpiration >= 0 && daysToExpiration <= 21;
 
-  if ((daysToExpiration >= 0 && daysToExpiration < 7) || premiumCapturedPct > 0.7 || (thetaGammaRatio !== null && thetaGammaRatio <= THETA_GAMMA_RED_THRESHOLD)) {
+  if (
+    (daysToExpiration >= 0 && daysToExpiration < 7) ||
+    premiumCapturedPct > 0.7 ||
+    (shouldCheckThetaGamma && thetaGammaRatio !== null && thetaGammaRatio <= THETA_GAMMA_RED_THRESHOLD)
+  ) {
     return 'red';
   }
 
-  if ((daysToExpiration >= 0 && daysToExpiration < 21) || premiumCapturedPct > 0.5 || (thetaGammaRatio !== null && thetaGammaRatio <= THETA_GAMMA_YELLOW_THRESHOLD)) {
+  if (
+    (daysToExpiration >= 0 && daysToExpiration < 21) ||
+    premiumCapturedPct > 0.5 ||
+    (shouldCheckThetaGamma && thetaGammaRatio !== null && thetaGammaRatio <= THETA_GAMMA_YELLOW_THRESHOLD) ||
+    (annualizedYield !== null && annualizedYield < ANNUALIZED_YIELD_ATTENTION_THRESHOLD)
+  ) {
     return 'yellow';
   }
 
@@ -37,11 +51,14 @@ export function getAttentionLevel(
 }
 
 export function getAttentionReasons(
-  row: Pick<OptionAlertLikeRow, 'daysToExpiration' | 'premiumCapturedPct' | 'gammaThetaRatio'>
+  row: Pick<OptionAlertLikeRow, 'daysToExpiration' | 'premiumCapturedPct' | 'gammaThetaRatio' | 'annualizedYield'>
 ): string[] {
   const daysToExpiration = row.daysToExpiration ?? Number.POSITIVE_INFINITY;
   const premiumCapturedPct = row.premiumCapturedPct ?? 0;
   const thetaGammaRatio = toThetaGammaRatio(row.gammaThetaRatio);
+  const annualizedYield =
+    typeof row.annualizedYield === 'number' && Number.isFinite(row.annualizedYield) ? row.annualizedYield : null;
+  const shouldCheckThetaGamma = daysToExpiration >= 0 && daysToExpiration <= 21;
 
   return [
     ...(daysToExpiration >= 0 && daysToExpiration < 7
@@ -54,11 +71,14 @@ export function getAttentionReasons(
       : premiumCapturedPct > 0.5
         ? ['盈利百分比超过 50%']
         : []),
-    ...(thetaGammaRatio !== null && thetaGammaRatio <= THETA_GAMMA_RED_THRESHOLD
+    ...(shouldCheckThetaGamma && thetaGammaRatio !== null && thetaGammaRatio <= THETA_GAMMA_RED_THRESHOLD
       ? [`Theta / Gamma 比例过低 (${thetaGammaRatio.toFixed(2)})`]
-      : thetaGammaRatio !== null && thetaGammaRatio <= THETA_GAMMA_YELLOW_THRESHOLD
+      : shouldCheckThetaGamma && thetaGammaRatio !== null && thetaGammaRatio <= THETA_GAMMA_YELLOW_THRESHOLD
         ? [`Theta / Gamma 比例偏低 (${thetaGammaRatio.toFixed(2)})`]
-        : [])
+        : []),
+    ...(annualizedYield !== null && annualizedYield < ANNUALIZED_YIELD_ATTENTION_THRESHOLD
+      ? [`年化收益低于 6% (${(annualizedYield * 100).toFixed(2)}%)`]
+      : [])
   ];
 }
 

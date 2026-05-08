@@ -1,55 +1,10 @@
 import type { ClosedPutTrade, PutPosition, TickerEntry } from '../types';
 
-export type PreTradeAnalysisSnapshotInput = {
-  analysis: {
-    verdict: string;
-    summary: string;
-    rationale_check: string;
-    worst_case: string;
-    fundamental_note: string;
-    fundamental_events: string[];
-    current_iv_rank: string;
-    iv_rank_note: string;
-    iv_rank_source: string;
-    iv_rank_time: string;
-    iv_rank_link: string;
-    action: string;
-    key_risks: string[];
-    calc: {
-      max_profit: string;
-      risk_at_10pct_drop: string;
-    };
-  };
-  asOf: string;
-};
-
-export function buildPutCandidateFromPreTrade(
-  preTradeCandidate: PutPosition,
-  rationale: string,
-  preTradeAnalysis: PreTradeAnalysisSnapshotInput
-): PutPosition {
+export function buildDirectOptionPosition(position: PutPosition): PutPosition {
   return {
-    ...preTradeCandidate,
-    decision_rationale: rationale.trim(),
-    decision_snapshot: {
-      verdict: preTradeAnalysis.analysis.verdict,
-      summary: preTradeAnalysis.analysis.summary,
-      rationale_check: preTradeAnalysis.analysis.rationale_check,
-      worst_case: preTradeAnalysis.analysis.worst_case,
-      fundamental_note: preTradeAnalysis.analysis.fundamental_note,
-      fundamental_events: preTradeAnalysis.analysis.fundamental_events,
-      current_iv_rank: preTradeAnalysis.analysis.current_iv_rank,
-      iv_rank_note: preTradeAnalysis.analysis.iv_rank_note,
-      iv_rank_source: preTradeAnalysis.analysis.iv_rank_source,
-      iv_rank_time: preTradeAnalysis.analysis.iv_rank_time,
-      iv_rank_link: preTradeAnalysis.analysis.iv_rank_link,
-      action: preTradeAnalysis.analysis.action,
-      key_risks: preTradeAnalysis.analysis.key_risks,
-      max_profit: preTradeAnalysis.analysis.calc.max_profit,
-      risk_at_10pct_drop: preTradeAnalysis.analysis.calc.risk_at_10pct_drop,
-      analyzed_at: preTradeAnalysis.asOf
-    },
-    iv_rank: Number.parseFloat(preTradeAnalysis.analysis.current_iv_rank) || 0
+    ...position,
+    decision_rationale: '',
+    decision_snapshot: null
   };
 }
 
@@ -228,6 +183,59 @@ export function closeOpenPosition(
   };
 }
 
+export function hasExpectedPersistedPositionState(
+  persistedPuts: PutPosition[],
+  expectedPuts: PutPosition[],
+  positionId: string
+): boolean {
+  const expected = expectedPuts.find((item) => item.id === positionId) ?? null;
+  const actual = persistedPuts.find((item) => item.id === positionId) ?? null;
+
+  if (!expected) {
+    return actual === null;
+  }
+
+  if (!actual) {
+    return false;
+  }
+
+  return (
+    actual.contracts === expected.contracts &&
+    actual.ticker === expected.ticker &&
+    actual.option_side === expected.option_side &&
+    actual.put_strike === expected.put_strike &&
+    actual.expiration_date === expected.expiration_date
+  );
+}
+
+export function hasExpectedPersistedClosedTrade(
+  persistedClosedTrades: ClosedPutTrade[],
+  expectedClosedTrades: ClosedPutTrade[],
+  tradeId: string
+): boolean {
+  const expected = expectedClosedTrades.find((item) => item.id === tradeId) ?? null;
+  const actual = persistedClosedTrades.find((item) => item.id === tradeId) ?? null;
+
+  if (!expected) {
+    return actual === null;
+  }
+
+  if (!actual) {
+    return false;
+  }
+
+  return (
+    actual.position_id === expected.position_id &&
+    actual.ticker === expected.ticker &&
+    actual.option_side === expected.option_side &&
+    actual.put_strike === expected.put_strike &&
+    actual.contracts === expected.contracts &&
+    actual.closed_at === expected.closed_at &&
+    actual.premium_bought_back_per_share === expected.premium_bought_back_per_share &&
+    actual.premium_sold_per_share === expected.premium_sold_per_share
+  );
+}
+
 export function expireOpenPositions(
   puts: PutPosition[],
   closedTrades: ClosedPutTrade[],
@@ -366,15 +374,6 @@ export function updateClosedTrade(
   );
 }
 
-export function shouldClearPreTradeState(result: 'saved' | 'blocked' | 'error'): boolean {
-  return result === 'saved';
-}
-
-export function shouldAllowForceSellOnCheckError(message: string): boolean {
-  const normalized = message.trim().toLowerCase();
-  return normalized.includes('ivrank is not defined') || normalized.includes('ivrunk is not defined');
-}
-
-export function shouldApplySellPutRiskGate(optionSide?: 'put' | 'call'): boolean {
-  return optionSide !== 'call';
+export function removeClosedTrade(trades: ClosedPutTrade[], tradeId: string): ClosedPutTrade[] {
+  return trades.filter((trade) => trade.id !== tradeId);
 }

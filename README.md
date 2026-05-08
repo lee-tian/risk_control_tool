@@ -6,7 +6,7 @@
 
 - 前端：Vite + React + TypeScript
 - API：Node.js
-- 本地 / Docker 持久化：文件存储
+- 本地 / Docker 持久化：SQLite
 - Vercel 持久化：Blob JSON（通过 `APP_STORAGE_DRIVER=blob-json` 切换，当前使用 public blob）
 
 ## 股票价格刷新
@@ -36,13 +36,14 @@
 API 持久化实现：
 
 - [index.mjs](/Users/emily/Documents/Code/risk_control_tool/api/lib/storage/index.mjs)
-- [fileStore.mjs](/Users/emily/Documents/Code/risk_control_tool/api/lib/storage/fileStore.mjs)
+- [sqliteStore.mjs](/Users/emily/Documents/Code/risk_control_tool/api/lib/storage/sqliteStore.mjs)
 - [blobStore.mjs](/Users/emily/Documents/Code/risk_control_tool/api/lib/storage/blobStore.mjs)
 
 说明：
 
-- 本地和 Docker 默认使用 `file` 驱动，数据保存在 [app-state.json](/Users/emily/Documents/Code/risk_control_tool/data/app-state.json) 和 [vix-cache.json](/Users/emily/Documents/Code/risk_control_tool/data/vix-cache.json)
-- Vercel 部署建议使用 `blob-json` 驱动，把 `app-state.json` 和 `vix-cache.json` 存到 Blob
+- 本地和 Docker 默认使用 `sqlite` 驱动，数据保存在 [risk-tool.sqlite](/Users/emily/Documents/Code/risk_control_tool/data/risk-tool.sqlite)
+- 旧的 `APP_STORAGE_DRIVER=file` 配置现在会自动回落到 `sqlite`
+- Vercel 部署建议使用 `blob-json` 驱动，把 app state 和 vix cache 存到 Blob
 - 当前实现基于 `@vercel/blob` 服务端 `put()` 的限制，使用 public blob pathname 存储这两个 JSON 文件
 - 只要同一浏览器和同一站点不清空站点数据，浏览器本地状态会保留
 - 即使浏览器本地数据丢失，只要 API 快照还在，页面刷新后也能恢复大部分状态
@@ -166,7 +167,7 @@ http://localhost:60688
 说明：
 
 - Compose 会同时启动前端和价格 API
-- Docker 下默认强制使用 `APP_STORAGE_DRIVER=file`
+- Docker 下默认使用 `APP_STORAGE_DRIVER=sqlite`
 - Twelve Data / Gemini 等 key 通过本地 `.env` 配置
 - 前端通过 `/api/quotes` 请求后端，再由后端去调用 Twelve Data
 
@@ -177,6 +178,15 @@ http://localhost:60688
 - [vercel.json](/Users/emily/Documents/Code/risk_control_tool/vercel.json)
 - [api.mjs](/Users/emily/Documents/Code/risk_control_tool/vercel/api.mjs)
 - [VERCEL_MIGRATION.md](/Users/emily/Documents/Code/risk_control_tool/VERCEL_MIGRATION.md)
+- [refresh-market-data.yml](/Users/emily/Documents/Code/risk_control_tool/.github/workflows/refresh-market-data.yml)
+
+实现方式：
+
+- Vite 前端通过 `npm run build` 输出到 `dist`
+- Vercel 把 `/api/*` 路由到 `vercel/api.mjs`
+- `vercel/api.mjs` 复用 Docker API 的 `handleApiRequest`
+- Vercel 环境使用 `APP_STORAGE_DRIVER=blob-json`，避免依赖本地 SQLite 文件系统
+- SPA 深链接回落到 `/index.html`
 
 ### 你需要准备
 

@@ -47,10 +47,12 @@ describe('option alert helpers', () => {
   it('classifies attention rows into yellow and red levels', () => {
     expect(getAttentionLevel({ daysToExpiration: 18, premiumCapturedPct: 0.2 })).toBe('yellow');
     expect(getAttentionLevel({ daysToExpiration: 40, premiumCapturedPct: 0.55 })).toBe('yellow');
+    expect(getAttentionLevel({ daysToExpiration: 40, premiumCapturedPct: 0.2, annualizedYield: 0.055 })).toBe('yellow');
     expect(getAttentionLevel({ daysToExpiration: 6, premiumCapturedPct: 0.2 })).toBe('red');
     expect(getAttentionLevel({ daysToExpiration: 40, premiumCapturedPct: 0.75 })).toBe('red');
-    expect(getAttentionLevel({ daysToExpiration: 40, premiumCapturedPct: 0.2, gammaThetaRatio: 0.1 })).toBe('yellow');
-    expect(getAttentionLevel({ daysToExpiration: 40, premiumCapturedPct: 0.2, gammaThetaRatio: 0.13 })).toBe('red');
+    expect(getAttentionLevel({ daysToExpiration: 18, premiumCapturedPct: 0.2, gammaThetaRatio: 0.3 })).toBe('yellow');
+    expect(getAttentionLevel({ daysToExpiration: 18, premiumCapturedPct: 0.2, gammaThetaRatio: 0.6 })).toBe('red');
+    expect(getAttentionLevel({ daysToExpiration: 40, premiumCapturedPct: 0.2, gammaThetaRatio: 0.6 })).toBeNull();
     expect(getAttentionLevel({ daysToExpiration: 30, premiumCapturedPct: 0.4 })).toBeNull();
   });
 
@@ -65,8 +67,15 @@ describe('option alert helpers', () => {
       '盈利百分比超过 50%'
     ]);
 
-    expect(getAttentionReasons({ daysToExpiration: 40, premiumCapturedPct: 0.2, gammaThetaRatio: 0.13 })).toEqual([
-      'Theta / Gamma 比例过低 (7.69)'
+    expect(getAttentionReasons({ daysToExpiration: 18, premiumCapturedPct: 0.2, gammaThetaRatio: 0.3 })).toEqual([
+      '到期日小于 21 天',
+      'Theta / Gamma 比例偏低 (3.33)'
     ]);
+
+    expect(getAttentionReasons({ daysToExpiration: 40, premiumCapturedPct: 0.2, annualizedYield: 0.055 })).toEqual([
+      '年化收益低于 6% (5.50%)'
+    ]);
+
+    expect(getAttentionReasons({ daysToExpiration: 40, premiumCapturedPct: 0.2, gammaThetaRatio: 0.6 })).toEqual([]);
   });
 });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { TickerEntry } from '../types';
-import { applyTickerPcrRefresh, parseJsonResponseText } from './quoteRefresh';
+import { applyQuoteRefreshToTickerList, applyTickerPcrRefresh, parseJsonResponseText } from './quoteRefresh';
 
 function makeTicker(overrides: Partial<TickerEntry>): TickerEntry {
   return {
@@ -86,6 +86,98 @@ describe('applyTickerPcrRefresh', () => {
       shares: 100,
       put_call_ratio: 0.89,
       put_call_ratio_updated: '2026-03-26T23:20:00.000Z'
+    });
+  });
+});
+
+describe('applyQuoteRefreshToTickerList', () => {
+  it('applies refreshed market fields and timestamps to the requested ticker', () => {
+    const current = [
+      makeTicker({
+        ticker: 'TSLA',
+        current_price: null,
+        last_updated: null,
+        current_iv: null,
+        current_iv_updated: null,
+        historical_iv: null,
+        iv_rank: null,
+        iv_percentile: null,
+        put_call_ratio: null,
+        put_call_ratio_updated: null,
+        rsi_14: null,
+        rsi_14_1h: null,
+        rsi_updated: null,
+        ma_21: null,
+        ma_200: null,
+        next_earnings_date: null
+      }),
+      makeTicker({ ticker: 'AAPL' })
+    ];
+
+    const next = applyQuoteRefreshToTickerList(
+      current,
+      {
+        quotes: { TSLA: 255.92 },
+        rsi: { TSLA: 48.1 },
+        rsi1h: { TSLA: 52.4 },
+        ma21: { TSLA: 250.1 },
+        ma200: { TSLA: 221.4 },
+        atr14: { TSLA: 7.25 },
+        currentIv: { TSLA: 0.285 },
+        historicalIv: { TSLA: 0.233 },
+        ivRank: { TSLA: 23.4 },
+        ivPercentile: { TSLA: 51.2 },
+        putCallRatio: { TSLA: 0.88 },
+        nextEarningsDate: { TSLA: '2026-05-07' },
+        as_of: '2026-04-06T05:45:00.000Z'
+      },
+      ['TSLA']
+    );
+
+    expect(next[0]).toMatchObject({
+      ticker: 'TSLA',
+      current_price: 255.92,
+      last_updated: '2026-04-06T05:45:00.000Z',
+      current_iv: 0.285,
+      current_iv_updated: '2026-04-06T05:45:00.000Z',
+      historical_iv: 0.233,
+      iv_rank: 23.4,
+      iv_percentile: 51.2,
+      put_call_ratio: 0.88,
+      put_call_ratio_updated: '2026-04-06T05:45:00.000Z',
+      rsi_14: 48.1,
+      rsi_14_1h: 52.4,
+      rsi_updated: '2026-04-06T05:45:00.000Z',
+      ma_21: 250.1,
+      ma_200: 221.4,
+      atr_14: 7.25,
+      next_earnings_date: '2026-05-07'
+    });
+    expect(next[1]).toEqual(current[1]);
+  });
+
+  it('clears stale past earnings dates when a requested ticker refresh has no replacement date', () => {
+    const current = [
+      makeTicker({
+        ticker: 'GOOGL',
+        current_price: 318.49,
+        next_earnings_date: '2026-02-04'
+      })
+    ];
+
+    const next = applyQuoteRefreshToTickerList(
+      current,
+      {
+        quotes: { GOOGL: 319.12 },
+        as_of: '2026-04-09T16:30:00.000Z'
+      },
+      ['GOOGL']
+    );
+
+    expect(next[0]).toMatchObject({
+      ticker: 'GOOGL',
+      current_price: 319.12,
+      next_earnings_date: null
     });
   });
 });

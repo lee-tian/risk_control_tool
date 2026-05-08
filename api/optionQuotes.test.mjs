@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  extractOptionQuoteFromBarchart,
   extractOptionQuoteFromChain,
   extractOptionQuoteFromSnapshot,
   formatOptionSymbol,
@@ -110,5 +111,77 @@ describe('optionQuotes call support', () => {
   it('returns null for unavailable delta and gamma values', () => {
     expect(pickOptionQuoteDelta({ delta: ['bad'] })).toBeNull();
     expect(pickOptionQuoteGamma({ gamma: [undefined] })).toBeNull();
+  });
+
+  it('extracts a matching contract from Barchart option rows', () => {
+    const quote = extractOptionQuoteFromBarchart(
+      {
+        data: [
+          {
+            symbol: 'AAPL260619C00205000',
+            optionType: 'Call',
+            strikePrice: 205,
+            expirationDate: '2026-06-19',
+            lastPrice: 4.1,
+            bidPrice: 4.0,
+            askPrice: 4.2,
+            delta: 0.45,
+            gamma: 0.011,
+            theta: -0.08,
+            tradeTime: '11:21 ET'
+          },
+          {
+            symbol: 'AAPL260619C00210000',
+            optionType: 'Call',
+            strikePrice: 210,
+            expirationDate: '2026-06-19',
+            lastPrice: 2.25,
+            bidPrice: 2.2,
+            askPrice: 2.3,
+            delta: 0.31,
+            gamma: 0.018,
+            theta: -0.07,
+            tradeTime: '11:22 ET'
+          }
+        ]
+      },
+      210,
+      '2026-06-19',
+      'call'
+    );
+
+    expect(quote).toEqual({
+      price: 2.25,
+      theta: -0.07,
+      delta: 0.31,
+      gamma: 0.018,
+      asOf: '11:22 ET'
+    });
+  });
+
+  it('ignores mismatched expiration and side when parsing Barchart rows', () => {
+    const quote = extractOptionQuoteFromBarchart(
+      {
+        data: [
+          {
+            optionType: 'Put',
+            strikePrice: 210,
+            expirationDate: '2026-06-19',
+            lastPrice: 2.2
+          },
+          {
+            optionType: 'Call',
+            strikePrice: 210,
+            expirationDate: '2026-07-17',
+            lastPrice: 2.4
+          }
+        ]
+      },
+      210,
+      '2026-06-19',
+      'call'
+    );
+
+    expect(quote).toBeNull();
   });
 });

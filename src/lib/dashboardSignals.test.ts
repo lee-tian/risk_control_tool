@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTopIvRankStocks } from './dashboardSignals';
+import { buildOptionCapitalUsageByTicker, buildTopIvRankStocks } from './dashboardSignals';
 import type { TickerEntry } from '../types';
 
 function makeTicker(overrides: Partial<TickerEntry>): TickerEntry {
@@ -40,7 +40,7 @@ describe('buildTopIvRankStocks', () => {
       makeTicker({ ticker: 'META', iv_rank: 58, current_iv: 0.29, next_earnings_date: '2026-04-29' }),
       makeTicker({ ticker: 'NFLX', iv_rank: 39, current_iv: 0.27, next_earnings_date: '2026-04-18' }),
       makeTicker({ ticker: 'GOOGL', iv_rank: null, current_iv: 0.22 })
-    ]);
+    ], 100000, {});
 
     expect(result.map((item) => item.ticker)).toEqual(['NVDA', 'MSFT', 'AMZN', 'META', 'AAPL']);
     expect(result[0]).toMatchObject({
@@ -56,8 +56,57 @@ describe('buildTopIvRankStocks', () => {
       makeTicker({ ticker: 'AAPL', iv_rank: 70, current_iv: 0.32, shares: 100, current_price: 200 }),
       makeTicker({ ticker: 'MSFT', iv_rank: 70, current_iv: 0.32, shares: 50, current_price: 300 }),
       makeTicker({ ticker: 'AMZN', iv_rank: 70, current_iv: 0.35, shares: 10, current_price: 100 })
-    ]);
+    ], 100000, {});
 
     expect(result.map((item) => item.ticker)).toEqual(['AMZN', 'AAPL', 'MSFT']);
+  });
+
+  it('includes each ticker capital usage percentage versus total capital', () => {
+    const result = buildTopIvRankStocks([
+      makeTicker({ ticker: 'AAPL', iv_rank: 70, shares: 100, current_price: 200 }),
+      makeTicker({ ticker: 'MSFT', iv_rank: 60, shares: 50, current_price: 300 })
+    ], 100000, {});
+
+    expect(result[0]).toMatchObject({
+      ticker: 'AAPL',
+      marketValue: 20000,
+      optionCapitalUsage: 0,
+      totalCapitalUsage: 20000,
+      capitalUsagePct: 0.2
+    });
+    expect(result[1]).toMatchObject({
+      ticker: 'MSFT',
+      marketValue: 15000,
+      optionCapitalUsage: 0,
+      totalCapitalUsage: 15000,
+      capitalUsagePct: 0.15
+    });
+  });
+
+  it('adds option capital usage into the total ticker capital usage', () => {
+    const result = buildTopIvRankStocks([
+      makeTicker({ ticker: 'AMZN', iv_rank: 70, shares: 100, current_price: 200 })
+    ], 100000, { AMZN: 44000 });
+
+    expect(result[0]).toMatchObject({
+      ticker: 'AMZN',
+      marketValue: 20000,
+      optionCapitalUsage: 44000,
+      totalCapitalUsage: 64000,
+      capitalUsagePct: 0.64
+    });
+  });
+
+  it('excludes call positions from option capital usage', () => {
+    expect(
+      buildOptionCapitalUsageByTicker([
+        { ticker: 'MSFT', nominalExposure: 79000, option_side: 'call' },
+        { ticker: 'MSFT', nominalExposure: 39000, option_side: 'put' },
+        { ticker: 'AMZN', nominalExposure: 28000, option_side: 'put' }
+      ])
+    ).toEqual({
+      MSFT: 39000,
+      AMZN: 28000
+    });
   });
 });

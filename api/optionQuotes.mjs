@@ -153,3 +153,126 @@ export function extractOptionQuoteFromChain(data, targetStrike) {
     gamma: sample.gamma
   };
 }
+
+function normalizeBarchartOptionRows(payload) {
+  if (Array.isArray(payload?.data)) {
+    return payload.data;
+  }
+
+  if (Array.isArray(payload?.results)) {
+    return payload.results;
+  }
+
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  return [];
+}
+
+function normalizeOptionSide(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'call' || normalized === 'c') {
+    return 'call';
+  }
+  if (normalized === 'put' || normalized === 'p') {
+    return 'put';
+  }
+
+  return null;
+}
+
+function normalizeOptionDate(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(trimmed)) {
+    return trimmed;
+  }
+  if (/^\d{4}\/\d{2}\/\d{2}$/u.test(trimmed)) {
+    return trimmed.replaceAll('/', '-');
+  }
+
+  return null;
+}
+
+function pickBarchartOptionPrice(row) {
+  const last = Number(row?.lastPrice);
+  const bid = Number(row?.bidPrice);
+  const ask = Number(row?.askPrice);
+
+  if (Number.isFinite(last) && last > 0) {
+    return last;
+  }
+  if (Number.isFinite(bid) && bid > 0 && Number.isFinite(ask) && ask > 0) {
+    return (bid + ask) / 2;
+  }
+  if (Number.isFinite(ask) && ask > 0) {
+    return ask;
+  }
+  if (Number.isFinite(bid) && bid > 0) {
+    return bid;
+  }
+
+  return null;
+}
+
+export function extractOptionQuoteFromBarchart(payload, targetStrike, expirationDate, side = 'put') {
+  const rows = normalizeBarchartOptionRows(payload);
+  const normalizedSide = normalizeOptionSide(side) ?? 'put';
+  const normalizedExpiration = normalizeOptionDate(expirationDate);
+  let bestMatch = null;
+
+  for (const row of rows) {
+    const rowStrike = Number(row?.strikePrice ?? row?.strike);
+    if (!Number.isFinite(rowStrike)) {
+      continue;
+    }
+
+    const rowSide = normalizeOptionSide(row?.optionType ?? row?.side);
+    if (rowSide && rowSide !== normalizedSide) {
+      continue;
+    }
+
+    const rowExpiration = normalizeOptionDate(row?.expirationDate);
+    if (normalizedExpiration && rowExpiration && rowExpiration !== normalizedExpiration) {
+      continue;
+    }
+
+    const price = pickBarchartOptionPrice(row);
+    if (price === null) {
+      continue;
+    }
+
+    const candidate = {
+      strikeDistance: Math.abs(rowStrike - targetStrike),
+      tradeTime: row?.tradeTime ?? null,
+      price,
+      theta: Number.isFinite(Number(row?.theta)) ? Number(row.theta) : null,
+      delta: Number.isFinite(Number(row?.delta)) ? Number(row.delta) : null,
+      gamma: Number.isFinite(Number(row?.gamma)) ? Number(row.gamma) : null
+    };
+
+    if (bestMatch === null || candidate.strikeDistance < bestMatch.strikeDistance) {
+      bestMatch = candidate;
+    }
+  }
+
+  if (!bestMatch) {
+    return null;
+  }
+
+  return {
+    price: bestMatch.price,
+    theta: bestMatch.theta,
+    delta: bestMatch.delta,
+    gamma: bestMatch.gamma,
+    asOf: bestMatch.tradeTime
+  };
+}

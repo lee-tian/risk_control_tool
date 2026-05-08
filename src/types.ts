@@ -23,19 +23,20 @@ export type PutPosition = {
   decision_snapshot?: {
     verdict: string;
     summary: string;
-    rationale_check: string;
-    worst_case: string;
-    fundamental_note: string;
-    fundamental_events: string[];
     current_iv_rank: string;
-    iv_rank_note: string;
-    iv_rank_source: string;
-    iv_rank_time: string;
-    iv_rank_link: string;
-    action: string;
+    recommended_expiration?: string;
+    recommended_dte?: string;
+    premium_view: string;
+    support_level: string;
+    resistance_level: string;
+    recommended_strike: string;
+    recommended_premium?: string;
+    recommended_distance?: string;
+    recommendation_reason: string;
+    candidate_focus: string;
+    trade_action: string;
     key_risks: string[];
-    max_profit: string;
-    risk_at_10pct_drop: string;
+    warnings: string[];
     analyzed_at: string;
   } | null;
 };
@@ -74,6 +75,7 @@ export type TickerEntry = {
   shares: number | null;
   average_cost_basis: number | null;
   downside_tolerance_pct: number | null;
+  target_trim_price?: number | null;
   current_price: number | null;
   last_updated: string | null;
   next_earnings_date?: string | null;
@@ -91,6 +93,10 @@ export type TickerEntry = {
   rsi_updated: string | null;
   ma_21: number | null;
   ma_200: number | null;
+  atr_14?: number | null;
+  option_snapshot_enabled?: boolean | null;
+  option_snapshot_updated?: string | null;
+  buy_rsi_alert?: number | null;
 };
 
 export type RiskStatus = 'Safe' | 'Near Limit' | 'Exceeded';
@@ -171,6 +177,7 @@ export type PortfolioMetrics = {
   putRows: PutRiskRow[];
   highestRiskTicker: string;
   groupedTickerRisk: Array<{ ticker: string; risk: number }>;
+  groupedTickerTheta: Array<{ ticker: string; dailyThetaIncome: number }>;
   canAddMoreRisk: boolean;
 };
 

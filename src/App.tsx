@@ -1,11 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Area, AreaChart, CartesianGrid, ReferenceDot, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import {
+  filterAccountValueChartData,
+  getAccountValueChartDomain,
+  type AccountValueChartPoint,
+  type AccountValueRange
+} from './lib/accountValueChart';
 import { buildAccountValueComparisons, upsertDailyAccountValueSnapshot } from './lib/accountValueHistory';
 import { buildSummaryText, calculatePortfolioMetrics } from './lib/calculations';
 import { applyOptionCloseCash, applyOptionOpenCash, applyStockBuyCash, applyStockSellCash } from './lib/cashFlows';
 import { formatCurrency, formatPercent } from './lib/formatters';
+import { getHistoryAnnualizedYield, getHistoryHoldingDays, getHistoryProfitPct } from './lib/historyMetrics';
 import { compareOptionRowsByLossPct, getAttentionLevel, getAttentionReasons, isOptionLossAtTwoXCredit } from './lib/optionAlerts';
-import { parseJsonResponseText } from './lib/quoteRefresh';
-import { buildTopIvRankStocks } from './lib/dashboardSignals';
+import { comparePositionRows, type PositionSortDirection, type PositionSortField } from './lib/positionSorting';
+import { applyQuoteRefreshToTickerList, parseJsonResponseText } from './lib/quoteRefresh';
+import { buildOptionCapitalUsageByTicker, buildTopIvRankStocks } from './lib/dashboardSignals';
 import {
   buildCapitalAllocationChart,
   buildHoldingDeltaSummary,
@@ -20,20 +29,22 @@ import {
   clearCoreAppStateCache,
   loadScenario,
   loadVixHistory,
+  mergeTickerListsPreservingManualFields,
+  normalizeImportedTickerList,
   parseAppStateSnapshot,
   parsePutPositionsImportPayload,
 } from './lib/storage';
 import {
+  buildDirectOptionPosition,
   buildClosedTradeEditPreview,
-  buildPutCandidateFromPreTrade,
   closeOpenPosition,
   deleteOpenPositionAndPruneTicker,
   ensureTickerExists,
   expireOpenPositions,
+  hasExpectedPersistedClosedTrade,
+  hasExpectedPersistedPositionState,
   parseClosedTradeEditPreview,
-  shouldApplySellPutRiskGate,
-  shouldAllowForceSellOnCheckError,
-  shouldClearPreTradeState,
+  removeClosedTrade,
   updateClosedTrade,
   upsertPutPosition
 } from './lib/putWorkflow';
@@ -61,12 +72,14 @@ import type {
 } from './types';
 
 const DEFAULT_STRESS_SCENARIO: StressScenario = 0.1;
+const ATR_MULTIPLIERS = [0.5, 1.0, 1.5, 2.0] as const;
 
 const DEFAULT_CONFIG: Config = {
   cash: 0,
   risk_limit_pct: 0.2,
   warning_threshold_pct: 0.8
 };
+
 
 type VixSnapshot = {
   value: number;
@@ -80,15 +93,18 @@ type VixSnapshot = {
   cacheWriteError: string | null;
 };
 
-type TickerEditDraftValues = Pick<TickerDraft, 'beta' | 'shares' | 'averageCostBasis' | 'downsideTolerancePct'>;
+type TickerEditDraftValues = Pick<TickerDraft, 'beta' | 'shares' | 'averageCostBasis'> & {
+  targetTrimPrice: string;
+  buyRsiAlert: string;
+};
 
 function createTickerEditDraft(entry: TickerEntry): TickerEditDraftValues {
   return {
     beta: entry.beta == null ? '' : String(entry.beta),
     shares: entry.shares == null ? '' : String(entry.shares),
     averageCostBasis: entry.average_cost_basis == null ? '' : String(entry.average_cost_basis),
-    downsideTolerancePct:
-      entry.downside_tolerance_pct == null ? '' : (entry.downside_tolerance_pct * 100).toFixed(1).replace(/\.0$/, '')
+    targetTrimPrice: entry.target_trim_price == null ? '' : String(entry.target_trim_price),
+    buyRsiAlert: entry.buy_rsi_alert == null ? '' : String(entry.buy_rsi_alert)
   };
 }
 
@@ -110,8 +126,27 @@ type BackgroundRefreshStatus = {
   error: string | null;
 };
 
-type AppTab = 'dashboard' | 'sell' | 'positions' | 'history' | 'stocks' | 'calculator';
+type AppTab = 'dashboard' | 'risk_first' | 'sell' | 'positions' | 'history' | 'stocks' | 'calculator';
 type HistoryFilter = 'all' | 'profit' | 'loss';
+type StockTradeType = '短线' | '中线' | '长线';
+
+type RiskFirstDecision = {
+  allowed: boolean;
+  recommendedPositionPct: number;
+  tradeType: StockTradeType;
+  stopLossPct: number | null;
+  expectedReturnPct: number | null;
+  riskRewardRatio: number | null;
+  importanceLevel: '短期' | '中期' | '长期';
+  doorType: '双向门' | '单向门';
+  reasons: string[];
+  warnings: string[];
+  positionReason: string;
+  riskControl: string;
+  asymmetric: string;
+};
+
+const ACCOUNT_VALUE_RANGE_OPTIONS: AccountValueRange[] = ['7D', '1M', '3M', 'YTD', 'All'];
 
 const SEEDED_VIX_HISTORY_RAW = `
 2026-01-02	14.51
@@ -225,105 +260,6 @@ function formatGeminiError(error: unknown, fallbackMessage: string) {
   return message || fallbackMessage;
 }
 
-const PRE_TRADE_IV_OPTIONS = [
-  { value: 'IV高，权利金有吸引力', label: 'IV 高，值得卖' },
-  { value: 'IV一般，但收益尚可接受', label: 'IV 一般，可接受' },
-  { value: 'IV偏低，这笔单主要不是为了高IV', label: 'IV 偏低，谨慎做' }
-];
-
-const PRE_TRADE_EVENT_OPTIONS = [
-  { value: '无明显特殊事件窗口，可以正常评估', label: '无明显事件窗口' },
-  { value: '有事件窗口，但我接受波动并继续执行', label: '有事件但可接受' },
-  { value: '事件太近，优先谨慎或暂缓', label: '事件太近，先谨慎' }
-];
-
-function getReversalPlanOptions(optionSide?: 'put' | 'call') {
-  return optionSide === 'call'
-    ? [
-        { value: '接近行权价先回补或滚仓', label: '接近行权价先回补/滚仓' },
-        { value: '愿意被行权，不主动回补', label: '愿意被行权' },
-        { value: '若浮亏扩大到阈值，直接止损退出', label: '达到阈值止损' }
-      ]
-    : [
-        { value: '跌破关键位后接货，不急着止损', label: '跌破后接货' },
-        { value: '接近行权价先回补或滚仓', label: '接近行权价先回补/滚仓' },
-        { value: '若浮亏扩大到阈值，直接止损退出', label: '达到阈值止损' }
-      ];
-}
-
-function getTradeGoalOptions(optionSide?: 'put' | 'call') {
-  return optionSide === 'call'
-    ? [
-        { value: '在目标价卖出现股并顺便收取权利金', label: '目标价卖股' },
-        { value: '以收租为主，降低持仓成本', label: '收租降成本' },
-        { value: '在震荡里提升持股收益', label: '震荡中增强收益' }
-      ]
-    : [
-        { value: '以折价建仓为主，顺便赚取权利金', label: '折价建仓' },
-        { value: '以权利金收入为主，不急着接货', label: '纯收租' },
-        { value: '在想买的价格附近分批建仓', label: '分批建仓' }
-      ];
-}
-
-const PRE_TRADE_EXIT_RULE_OPTIONS = [
-  { value: '收到50%权利金就回补', label: '收到 50% 回补' },
-  { value: '收到70%权利金就回补', label: '收到 70% 回补' },
-  { value: '接近 Strike roll 期权', label: '接近 Strike roll 期权' },
-  { value: '剩余DTE很少就不再硬扛', label: '剩余 DTE 很少就处理' },
-  { value: '亏损达到权利金2倍就退出', label: '亏损到 2x 权利金退出' }
-];
-
-function isPreTradeQuestionnaireComplete(questionnaire: PreTradeQuestionnaire) {
-  return Object.values(questionnaire).every((value) => value.trim() !== '');
-}
-
-function buildPreTradeRationale(candidate: PutPosition, questionnaire: PreTradeQuestionnaire) {
-  const optionLabel = getOptionSideLabel(candidate.option_side);
-  return [
-    `交易类型：${optionLabel}`,
-    `当前 IV 判断：${questionnaire.ivView}`,
-    `事件窗口判断：${questionnaire.eventWindowView}`,
-    `反向走势处理计划：${questionnaire.reversalPlan}`,
-    `交易目的：${questionnaire.tradeGoal}`,
-    `退出条件：${questionnaire.exitRule}`
-  ].join('；');
-}
-
-function renderPreTradeSources(sources?: Array<{ title: string; url: string }>) {
-  if (!sources || sources.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="analysis-sources">
-      <span>来源</span>
-      {sources.map((source) => (
-        <a key={source.url} href={source.url} target="_blank" rel="noreferrer">
-          {source.title}
-        </a>
-      ))}
-    </div>
-  );
-}
-
-function parseDecisionRationale(rationale: string) {
-  return rationale
-    .split('；')
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .map((item) => {
-      const separatorIndex = item.indexOf('：');
-      if (separatorIndex === -1) {
-        return { label: '备注', value: item };
-      }
-
-      return {
-        label: item.slice(0, separatorIndex).trim(),
-        value: item.slice(separatorIndex + 1).trim()
-      };
-    });
-}
-
 function getOptionSideBadge(side?: 'put' | 'call'): string {
   return side === 'call' ? 'CALL' : 'PUT';
 }
@@ -380,6 +316,165 @@ function formatSignedPercent(value: number | null): string {
   }
 
   return `${value >= 0 ? '+' : '-'}${formatPercent(Math.abs(value))}`;
+}
+
+
+function getRiskFirstImportanceLevel(tradeType: StockTradeType): RiskFirstDecision['importanceLevel'] {
+  if (tradeType === '长线') return '长期';
+  if (tradeType === '中线') return '中期';
+  return '短期';
+}
+
+function getRiskFirstRecommendedPct(
+  importanceLevel: RiskFirstDecision['importanceLevel'],
+  riskRewardRatio: number | null,
+  isOneWayDoor: boolean
+): number {
+  const basePct = importanceLevel === '长期' && riskRewardRatio !== null && riskRewardRatio >= 3
+    ? 0.5
+    : importanceLevel === '中期'
+      ? 0.3
+      : 0.2;
+
+  return Math.min(basePct, isOneWayDoor ? 0.2 : 0.5);
+}
+
+function buildRiskFirstDecision(input: {
+  ticker: string;
+  tradeType: StockTradeType;
+  expectedReturnPct: number | null;
+  maxLossPct: number | null;
+  totalCapital: number;
+  resultingPositionValue: number;
+  existingShares: number;
+  currentPrice: number | null;
+  averageCostBasis: number | null;
+  investmentLogic: string;
+  plannedHoldingTime: string;
+  exitStrategy: string;
+  isOneWayDoor: boolean;
+  isAddingToLoss: boolean;
+}): RiskFirstDecision {
+  const importanceLevel = getRiskFirstImportanceLevel(input.tradeType);
+  const riskRewardRatio =
+    input.maxLossPct !== null && input.maxLossPct > 0 && input.expectedReturnPct !== null
+      ? input.expectedReturnPct / input.maxLossPct
+      : null;
+  const recommendedPositionPct = getRiskFirstRecommendedPct(importanceLevel, riskRewardRatio, input.isOneWayDoor);
+  const positionPct = input.totalCapital > 0 ? input.resultingPositionValue / input.totalCapital : 0;
+  const reasons: string[] = [];
+  const warnings: string[] = [];
+
+  if (positionPct > 0.5) {
+    reasons.push('单一标的仓位超过 50% 上限');
+    warnings.push('仓位过大');
+  }
+  if (positionPct > recommendedPositionPct) {
+    reasons.push(`仓位超过系统建议的 ${formatPercent(recommendedPositionPct)}`);
+    warnings.push('建议降低仓位');
+  }
+  if (input.maxLossPct === null || input.maxLossPct <= 0) {
+    reasons.push('未定义有效止损');
+    warnings.push('不符合止损纪律');
+  }
+  if (input.exitStrategy.trim() === '') {
+    reasons.push('缺少退出策略');
+    warnings.push('不符合系统纪律');
+  }
+  if (riskRewardRatio === null || riskRewardRatio < 2) {
+    reasons.push('风险收益比低于 1:2');
+    warnings.push('不符合风险收益纪律');
+  }
+  if (input.isOneWayDoor && positionPct > 0.2) {
+    reasons.push('单向门交易仓位必须 ≤20%');
+    warnings.push('单向门仓位过大');
+  }
+  if (input.isAddingToLoss) {
+    reasons.push('当前持仓亏损时不允许补仓摊平亏损');
+    warnings.push('存在补仓摊平亏损风险');
+  }
+  if (input.investmentLogic.trim() === '') {
+    warnings.push('投资逻辑未填写，容易变成情绪交易');
+  }
+  if (input.plannedHoldingTime.trim() === '') {
+    warnings.push('计划持有时间未填写');
+  }
+  if (input.maxLossPct !== null && input.maxLossPct >= 0.2) {
+    warnings.push('亏损 20% 可能影响判断，请降低仓位');
+  }
+
+  return {
+    allowed: reasons.length === 0,
+    recommendedPositionPct,
+    tradeType: input.tradeType,
+    stopLossPct: input.maxLossPct,
+    expectedReturnPct: input.expectedReturnPct,
+    riskRewardRatio,
+    importanceLevel,
+    doorType: input.isOneWayDoor ? '单向门' : '双向门',
+    reasons,
+    warnings: [...new Set(warnings)],
+    positionReason:
+      `当前/交易后仓位约 ${formatPercent(positionPct)}；${importanceLevel}重要性对应建议上限 ${formatPercent(recommendedPositionPct)}。`,
+    riskControl:
+      input.maxLossPct === null || input.maxLossPct <= 0
+        ? '未定义有效止损，系统拒绝交易。'
+        : `买入前以 -${formatPercent(input.maxLossPct)} 为最大亏损线；退出策略：${input.exitStrategy.trim() || '未填写'}`,
+    asymmetric:
+      riskRewardRatio !== null && riskRewardRatio >= 2
+        ? `是，预期收益约为最大亏损的 ${riskRewardRatio.toFixed(1)} 倍。`
+        : '否，未达到至少 1:2 的非对称要求。'
+  };
+}
+
+function renderAccountValueAxisTick(value: number) {
+  if (!Number.isFinite(value)) {
+    return '';
+  }
+
+  if (Math.abs(value) >= 1_000_000) {
+    return `$${(value / 1_000_000).toFixed(2)}M`;
+  }
+  if (Math.abs(value) >= 1_000) {
+    return `$${(value / 1_000).toFixed(0)}K`;
+  }
+  return formatCurrency(value);
+}
+
+function AccountValueTooltip({ active, payload }: { active?: boolean; payload?: Array<{ payload: AccountValueChartPoint }> }) {
+  const point = payload?.[0]?.payload;
+  if (!active || !point) {
+    return null;
+  }
+
+  return (
+    <div className="account-value-tooltip">
+      <strong>{point.shortDate}</strong>
+      <span>{formatCurrency(point.totalCapital)}</span>
+      <small>日变化 {formatSignedCurrency(point.changeAmount)} · {formatSignedPercent(point.changePct)}</small>
+    </div>
+  );
+}
+
+function RiskCurveTooltip({
+  active,
+  payload
+}: {
+  active?: boolean;
+  payload?: Array<{ payload: { scenarioPct: number; capital: number; netChange: number } }>;
+}) {
+  const point = payload?.[0]?.payload;
+  if (!active || !point) {
+    return null;
+  }
+
+  return (
+    <div className="account-value-tooltip">
+      <strong>{`情景 ${formatSignedPercent(point.scenarioPct)}`}</strong>
+      <span>{formatCurrency(point.capital)}</span>
+      <small>{`净变化 ${formatSignedCurrency(point.netChange)}`}</small>
+    </div>
+  );
 }
 
 function calculateHoldingStockRisk(entry: TickerEntry | undefined): number {
@@ -442,6 +537,38 @@ async function readJsonResponse<T>(response: Response): Promise<T> {
   return parseJsonResponseText<T>(text, response.status, response.statusText);
 }
 
+async function readPersistedAppStateSnapshot() {
+  const response = await fetch('/api/app-state');
+  const payload = await readJsonResponse<{ snapshot?: unknown; error?: string }>(response);
+
+  if (!response.ok || payload.error || !payload.snapshot) {
+    throw new Error(payload.error ?? '读取保存后的快照失败');
+  }
+
+  return parseAppStateSnapshot(JSON.stringify(payload.snapshot));
+}
+
+async function waitForPersistedAppStateSnapshot(
+  predicate: (snapshot: ReturnType<typeof parseAppStateSnapshot>) => boolean,
+  failureMessage: string
+) {
+  const retryDelays = [0, 120, 300, 700];
+  let latestSnapshot: ReturnType<typeof parseAppStateSnapshot> | null = null;
+
+  for (const delay of retryDelays) {
+    if (delay > 0) {
+      await sleep(delay);
+    }
+
+    latestSnapshot = await readPersistedAppStateSnapshot();
+    if (predicate(latestSnapshot)) {
+      return latestSnapshot;
+    }
+  }
+
+  throw new Error(failureMessage);
+}
+
 function normalizeTicker(ticker: string): string {
   return normalizeTickerSymbol(ticker);
 }
@@ -458,6 +585,21 @@ function getRsiTone(rsi: number | null): 'muted' | 'green' | 'red' | 'yellow' {
   if (rsi <= 30) return 'green';
   if (rsi >= 70) return 'red';
   return 'yellow';
+}
+
+function formatPersistSuccessMessage(
+  baseMessage: string | undefined,
+  storage?: { driver?: string | null } | null
+): string | undefined {
+  if (!baseMessage) {
+    return baseMessage;
+  }
+
+  if ((storage?.driver ?? '').toLowerCase() === 'sqlite') {
+    return `${baseMessage}，已写入 SQLite`;
+  }
+
+  return baseMessage;
 }
 
 type StockExtremeSignal = {
@@ -672,6 +814,7 @@ type QuotesPayload = {
   rsi1h?: Record<string, number>;
   ma21?: Record<string, number>;
   ma200?: Record<string, number>;
+  atr14?: Record<string, number>;
   currentIv?: Record<string, number>;
   nextEarningsDate?: Record<string, string>;
   historicalIv?: Record<string, number>;
@@ -771,12 +914,10 @@ function getPositionRiskAssessment(
 }
 
 const CURRENT_IV_CACHE_MS = 24 * 60 * 60 * 1000;
-const AUTO_PRICE_REFRESH_MS = 20 * 60 * 1000;
-const AUTO_PRICE_REFRESH_CHECK_MS = 20 * 60 * 1000;
-const AUTO_OPTION_REFRESH_MS = 30 * 60 * 1000;
-const AUTO_OPTION_REFRESH_CHECK_MS = 30 * 60 * 1000;
-const PRICE_REFRESH_GAP_MS = 15 * 1000;
+
+const PRICE_REFRESH_GAP_MS = 2 * 1000;
 const PRICE_REFRESH_RETRY_GAP_MS = 20 * 1000;
+const OPTION_REFRESH_ALL_CONCURRENCY = 1;
 const VIX_STRESS_Z = 1.45;
 
 function isFreshWithin(timestamp: string | null, ttlMs: number): boolean {
@@ -792,12 +933,25 @@ function isFreshWithin(timestamp: string | null, ttlMs: number): boolean {
   return Date.now() - value < ttlMs;
 }
 
-function isPriceRefreshStale(timestamp: string | null): boolean {
-  return !isFreshWithin(timestamp, AUTO_PRICE_REFRESH_MS);
-}
+
 
 function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function formatFetchFailure(error: unknown, fallback = '保存失败') {
+  if (error instanceof TypeError && error.message === 'Failed to fetch') {
+    return '无法连接到本地服务，请刷新页面后重试';
+  }
+
+  if (
+    error instanceof Error &&
+    (error.message.includes("Unexpected token '<'") || error.message.includes('接口返回了 HTML'))
+  ) {
+    return '本地服务返回了错误页面，请刷新页面后重试';
+  }
+
+  return error instanceof Error ? error.message : fallback;
 }
 
 function isMinuteLimitError(message: string): boolean {
@@ -809,52 +963,22 @@ function isMinuteLimitError(message: string): boolean {
   );
 }
 
-function getNewYorkTimeParts(date = new Date()): {
-  weekday: string;
-  hour: number;
-  minute: number;
-} {
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    weekday: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
-  });
+function getTickerLastUpdated(entry: TickerEntry): string | null {
+  const timestamps = [
+    entry.last_updated,
+    entry.current_iv_updated,
+    entry.rsi_updated,
+    entry.put_call_ratio_updated
+  ].filter((value): value is string => typeof value === 'string' && value !== '');
 
-  const parts = formatter.formatToParts(date);
-  const weekday = parts.find((part) => part.type === 'weekday')?.value ?? 'Mon';
-  const hour = Number(parts.find((part) => part.type === 'hour')?.value ?? '0');
-  const minute = Number(parts.find((part) => part.type === 'minute')?.value ?? '0');
-
-  return { weekday, hour, minute };
-}
-
-function isUsMarketOpen(date = new Date()): boolean {
-  const { weekday, hour, minute } = getNewYorkTimeParts(date);
-
-  if (weekday === 'Sat' || weekday === 'Sun') {
-    return false;
+  if (timestamps.length === 0) {
+    return null;
   }
 
-  const minutes = hour * 60 + minute;
-  const marketOpen = 9 * 60 + 30;
-  const marketClose = 16 * 60;
-
-  return minutes >= marketOpen && minutes < marketClose;
+  return timestamps.reduce((latest, current) => (current > latest ? current : latest));
 }
 
-function shouldRunDailyOptionRefresh(date = new Date()): boolean {
-  return isUsMarketOpen(date);
-}
 
-function isOptionRefreshStale(timestamp: string | null): boolean {
-  if (!timestamp) {
-    return true;
-  }
-
-  return !isFreshWithin(timestamp, AUTO_OPTION_REFRESH_MS);
-}
 
 function getAutoStressByVix(vix: number): StressScenario {
   const annualizedVol = vix / 100;
@@ -975,21 +1099,6 @@ function closeAnalysisModal(
   setAnalysisError('');
 }
 
-type PutEntryCheckResponse = {
-  ok: boolean;
-  summary: string;
-  failures: string[];
-  metrics?: {
-    current_price: number;
-    rsi_14: number;
-    ma_20: number;
-    current_iv: number | null;
-    otm_pct: number;
-    dte: number | null;
-    as_of: string;
-  };
-};
-
 type PositionAnalysisResult = {
   ticker: string;
   analysis: {
@@ -1010,121 +1119,13 @@ type PositionAnalysisResult = {
   asOf: string;
 };
 
-type PreTradeAnalysisResult = {
-  analysis: {
-    verdict: string;
-    summary: string;
-    rationale_check: string;
-    key_risks: string[];
-    worst_case: string;
-    fundamental_note: string;
-    fundamental_events: string[];
-    current_iv_rank: string;
-    iv_rank_note: string;
-    iv_rank_source: string;
-    iv_rank_time: string;
-    iv_rank_link: string;
-    current_iv_check: string;
-    marsi_check: string;
-    rsi_check: string;
-    ma200_check: string;
-    next_earnings_date: string;
-    earnings_warning: string;
-    calc: {
-      max_profit: string;
-      risk_at_10pct_drop: string;
-    };
-    action: string;
-  };
-  sources: Array<{ title: string; url: string }>;
-  marketContext?: {
-    current_price: number | null;
-    current_price_date: string | null;
-    current_iv: number | null;
-    historical_iv: number | null;
-    iv_rank: number | null;
-    iv_percentile: number | null;
-    next_earnings_date: string | null;
-    put_call_ratio: number | null;
-    source: {
-      current_price: string | null;
-      next_earnings_date: string | null;
-      current_iv: string | null;
-      historical_iv: string | null;
-      iv_rank: string | null;
-      iv_percentile: string | null;
-      put_call_ratio: string | null;
-    };
-  };
-  asOf: string;
-};
-
-type PreTradeContextResult = {
-  summary: {
-    iv_assessment: string;
-    earnings_assessment: string;
-    special_window_assessment: string;
-    fundamental_risk_assessment: string;
-    key_flags: string[];
-  };
-  source_map?: {
-    iv_assessment?: Array<{ title: string; url: string }>;
-    earnings_assessment?: Array<{ title: string; url: string }>;
-    special_window_assessment?: Array<{ title: string; url: string }>;
-    fundamental_risk_assessment?: Array<{ title: string; url: string }>;
-  };
-  marketContext?: {
-    current_price: number | null;
-    current_price_date: string | null;
-    current_iv: number | null;
-    historical_iv: number | null;
-    iv_rank: number | null;
-    iv_percentile: number | null;
-    next_earnings_date: string | null;
-    put_call_ratio: number | null;
-    source: {
-      current_price: string | null;
-      next_earnings_date: string | null;
-      current_iv: string | null;
-      historical_iv: string | null;
-      iv_rank: string | null;
-      iv_percentile: string | null;
-      put_call_ratio: string | null;
-    };
-  };
-  partial?: boolean;
-  sources: Array<{ title: string; url: string }>;
-  asOf: string;
-};
-
-type PreTradeQuestionnaire = {
-  ivView: string;
-  eventWindowView: string;
-  reversalPlan: string;
-  tradeGoal: string;
-  exitRule: string;
-};
-
 type OptionDraftState = {
   putForm: PutPosition;
   editingPutId: string | null;
-  preTradeCandidate: PutPosition | null;
-  preTradeQuestionnaire: PreTradeQuestionnaire;
-  preTradeAnalysis: PreTradeAnalysisResult | null;
 };
 
 const ACTIVE_TAB_STORAGE_KEY = 'risk-tool-active-tab';
 const OPTION_DRAFT_STORAGE_KEY = 'risk-tool-option-draft';
-
-function createEmptyPreTradeQuestionnaire(): PreTradeQuestionnaire {
-  return {
-    ivView: '',
-    eventWindowView: '',
-    reversalPlan: '',
-    tradeGoal: '',
-    exitRule: ''
-  };
-}
 
 function loadDraftJson<T>(key: string): T | null {
   if (typeof window === 'undefined') {
@@ -1160,35 +1161,12 @@ function saveDraftJson(key: string, value: unknown): void {
   }
 }
 
-function savePutPosition(
-  normalized: PutPosition,
-  editingPutId: string | null,
-  setPuts: React.Dispatch<React.SetStateAction<PutPosition[]>>,
-  setTickerList: React.Dispatch<React.SetStateAction<TickerEntry[]>>
-) {
-  setTickerList((current) => {
-    return ensureTickerExists(current, normalized.ticker);
-  });
-  setPuts((current) => {
-    return upsertPutPosition(current, normalized, editingPutId, generateId);
-  });
-}
-
 function loadOptionDraftState(): OptionDraftState {
   const draft = loadDraftJson<Partial<OptionDraftState>>(OPTION_DRAFT_STORAGE_KEY);
 
   return {
     putForm: draft?.putForm ? { ...createEmptyPut(), ...draft.putForm } : createEmptyPut(),
-    editingPutId: typeof draft?.editingPutId === 'string' ? draft.editingPutId : null,
-    preTradeCandidate: draft?.preTradeCandidate ? { ...draft.preTradeCandidate } as PutPosition : null,
-    preTradeQuestionnaire:
-      draft?.preTradeQuestionnaire && typeof draft.preTradeQuestionnaire === 'object'
-        ? { ...createEmptyPreTradeQuestionnaire(), ...draft.preTradeQuestionnaire as PreTradeQuestionnaire }
-        : createEmptyPreTradeQuestionnaire(),
-    preTradeAnalysis:
-      draft?.preTradeAnalysis && typeof draft.preTradeAnalysis === 'object'
-        ? draft.preTradeAnalysis as PreTradeAnalysisResult
-        : null
+    editingPutId: typeof draft?.editingPutId === 'string' ? draft.editingPutId : null
   };
 }
 
@@ -1213,6 +1191,13 @@ function normalizeBackgroundRefreshStatus(raw: unknown): BackgroundRefreshStatus
     message: typeof record.message === 'string' ? record.message : null,
     error: typeof record.error === 'string' ? record.error : null
   };
+}
+
+function getStopLossColor(current: number | null, stop: number | null) {
+  if (current == null || stop == null) return undefined;
+  if (current <= stop) return '#c53030'; // Red
+  if (current <= stop * 1.02) return '#d97706'; // Yellow (within 2%)
+  return '#2f855a'; // Green
 }
 
 function App() {
@@ -1249,19 +1234,16 @@ function App() {
   } | null>(null);
   const [vixMessage, setVixMessage] = useState('');
   const [vixSnapshot, setVixSnapshot] = useState<VixSnapshot | null>(null);
-  const [backgroundRefreshStatus, setBackgroundRefreshStatus] = useState<BackgroundRefreshStatus | null>(null);
+
   const [pendingPositionScrollId, setPendingPositionScrollId] = useState<string | null>(null);
   const [pendingStockScrollTicker, setPendingStockScrollTicker] = useState<string | null>(null);
   const [refreshingTicker, setRefreshingTicker] = useState<string | null>(null);
   const [isRefreshingAllTickers, setIsRefreshingAllTickers] = useState(false);
-  const [isCheckingPut, setIsCheckingPut] = useState(false);
-  const [putCheckResult, setPutCheckResult] = useState<PutEntryCheckResponse | null>(null);
-  const [forceSellCandidate, setForceSellCandidate] = useState<PutPosition | null>(null);
+  const [isSavingPut, setIsSavingPut] = useState(false);
   const [analysisPositionId, setAnalysisPositionId] = useState<string | null>(null);
   const [analysisResult, setAnalysisResult] = useState<PositionAnalysisResult | null>(null);
   const [analysisError, setAnalysisError] = useState('');
   const [refreshingOptionPriceId, setRefreshingOptionPriceId] = useState<string | null>(null);
-  const [autoRefreshingOptionPriceId, setAutoRefreshingOptionPriceId] = useState<string | null>(null);
   const [isRefreshingAllOptions, setIsRefreshingAllOptions] = useState(false);
   const [refreshAllOptionsProgress, setRefreshAllOptionsProgress] = useState<{
     current: number;
@@ -1270,18 +1252,12 @@ function App() {
     failureCount: number;
     ticker: string;
   } | null>(null);
-  const [autoRefreshOptionsProgress, setAutoRefreshOptionsProgress] = useState<{
-    current: number;
-    total: number;
-    successCount: number;
-    failureCount: number;
-    ticker: string;
-  } | null>(null);
+
   const putsRef = useRef<PutPosition[]>(puts);
+  const tickerListRef = useRef<TickerEntry[]>(tickerList);
   const positionCardRefs = useRef<Record<string, HTMLElement | null>>({});
   const stockRowRefs = useRef<Record<string, HTMLElement | null>>({});
   const refreshingOptionPriceIdRef = useRef<string | null>(refreshingOptionPriceId);
-  const autoRefreshingOptionPriceIdRef = useRef<string | null>(autoRefreshingOptionPriceId);
   const isRefreshingAllOptionsRef = useRef(isRefreshingAllOptions);
   const [optionPriceOverrides, setOptionPriceOverrides] = useState<
     Record<string, { price: number; theta: number | null; delta: number | null; gamma: number | null; updatedAt: string }>
@@ -1296,16 +1272,6 @@ function App() {
     x: number;
     y: number;
   } | null>(null);
-  const [preTradeCandidate, setPreTradeCandidate] = useState<PutPosition | null>(initialOptionDraft.preTradeCandidate);
-  const [preTradeQuestionnaire, setPreTradeQuestionnaire] = useState<PreTradeQuestionnaire>(
-    initialOptionDraft.preTradeQuestionnaire
-  );
-  const [preTradeError, setPreTradeError] = useState('');
-  const [preTradeAnalysis, setPreTradeAnalysis] = useState<PreTradeAnalysisResult | null>(initialOptionDraft.preTradeAnalysis);
-  const [preTradeContext, setPreTradeContext] = useState<PreTradeContextResult | null>(null);
-  const [isLoadingPreTradeContext, setIsLoadingPreTradeContext] = useState(false);
-  const [isEnrichingPreTradeContext, setIsEnrichingPreTradeContext] = useState(false);
-  const [isPreTradeAnalyzing, setIsPreTradeAnalyzing] = useState(false);
   const [deletePreview, setDeletePreview] = useState<{
     id: string;
     ticker: string;
@@ -1319,6 +1285,8 @@ function App() {
     closedAt: string;
     reflectionNotes: string;
   } | null>(null);
+  const [closePreviewError, setClosePreviewError] = useState('');
+  const [isClosingPosition, setIsClosingPosition] = useState(false);
   const [sellStockPreview, setSellStockPreview] = useState<{
     ticker: string;
     currentShares: number;
@@ -1331,6 +1299,13 @@ function App() {
     currentShares: number;
     sharesToBuy: string;
     buyPricePerShare: string;
+    tradeType: StockTradeType;
+    investmentLogic: string;
+    expectedUpsidePct: string;
+    maxLossPct: string;
+    plannedHoldingTime: string;
+    exitStrategy: string;
+    isOneWayDoor: boolean;
   } | null>(null);
   const [historyEditPreview, setHistoryEditPreview] = useState<{
     tradeId: string;
@@ -1350,8 +1325,18 @@ function App() {
   const [positionFilter, setPositionFilter] = useState<'ALL' | 'WITHIN_7_DAYS' | 'PROFIT_OVER_60'>('ALL');
   const [positionOptionTypeFilter, setPositionOptionTypeFilter] = useState<'ALL' | 'PUT' | 'CALL'>('ALL');
   const [moneynessFilter, setMoneynessFilter] = useState<'ALL' | 'ITM' | 'OTM'>('ALL');
-  const [positionSort, setPositionSort] = useState<'DEFAULT' | 'EXPIRATION' | 'PUT_RISK' | 'LOSS_PCT' | 'ANNUALIZED_YIELD'>('DEFAULT');
+  const [positionSort, setPositionSort] = useState<PositionSortField>('DEFAULT');
+  const [positionSortDirection, setPositionSortDirection] = useState<PositionSortDirection>('ASC');
   const [riskCalculatorDropInput, setRiskCalculatorDropInput] = useState('0');
+  // --- Position Size Calculator (1% Risk Model) ---
+  const [posSizeAccountEquity, setPosSizeAccountEquity] = useState('');
+  const [posSizeEntryPrice, setPosSizeEntryPrice] = useState('');
+  const [posSizeStopPrice, setPosSizeStopPrice] = useState('');
+  // --- ATR Stop System ---
+  const [atrSupportLevel, setAtrSupportLevel] = useState('');
+  const [atrValue, setAtrValue] = useState('');
+  const [atrMultiplier, setAtrMultiplier] = useState('1.0');
+  const [accountValueRange, setAccountValueRange] = useState<AccountValueRange>('7D');
   const [vixHistory, setVixHistory] = useState<VixHistoryPoint[]>(() => mergeSeededVixHistory(loadVixHistory()));
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all');
   const [copyMessage, setCopyMessage] = useState('');
@@ -1382,13 +1367,30 @@ function App() {
   const addPutSectionRef = useRef<HTMLElement | null>(null);
   const hasHydratedSnapshotRef = useRef(false);
   const hasLoadedRemoteSnapshotRef = useRef(false);
+  const lastAutoSavedSnapshotRef = useRef<string>('');
   const latestBackgroundRefreshFinishedAtRef = useRef<string | null>(null);
   const isEditingConfigRef = useRef(false);
   const [isSnapshotHydrated, setIsSnapshotHydrated] = useState(false);
 
   function applyRemoteSnapshot(snapshotPayload: unknown, successMessage?: string) {
     const snapshot = parseAppStateSnapshot(JSON.stringify(snapshotPayload));
+    const rawSnapshot = typeof snapshotPayload === 'object' && snapshotPayload !== null
+      ? snapshotPayload as { data?: { tickerList?: unknown[] } }
+      : null;
+    const parsedTickerList =
+      snapshot.data.tickerList.length === 0 && Array.isArray(rawSnapshot?.data?.tickerList)
+        ? normalizeImportedTickerList(rawSnapshot.data.tickerList)
+        : snapshot.data.tickerList;
+    const mergedTickerList = mergeTickerListsPreservingManualFields(parsedTickerList, tickerListRef.current);
+    const normalizedSnapshotText = JSON.stringify({
+      ...snapshot,
+      data: {
+        ...snapshot.data,
+        tickerList: mergedTickerList
+      }
+    });
     hasLoadedRemoteSnapshotRef.current = true;
+    lastAutoSavedSnapshotRef.current = normalizedSnapshotText;
 
     setConfig(snapshot.data.config);
     if (!isEditingConfigRef.current) {
@@ -1399,7 +1401,8 @@ function App() {
     setPuts(snapshot.data.puts);
     setClosedTrades(snapshot.data.closedTrades);
     setStockTrades(snapshot.data.stockTrades);
-    setTickerList(snapshot.data.tickerList);
+    tickerListRef.current = mergedTickerList;
+    setTickerList(mergedTickerList);
     setScenario(snapshot.data.scenario ?? DEFAULT_STRESS_SCENARIO);
     setVixHistory(mergeSeededVixHistory(snapshot.data.vixHistory));
     setAccountValueHistory(snapshot.data.accountValueHistory);
@@ -1446,6 +1449,10 @@ function App() {
   }, [puts]);
 
   useEffect(() => {
+    tickerListRef.current = tickerList;
+  }, [tickerList]);
+
+  useEffect(() => {
     isEditingConfigRef.current = isEditingConfig;
   }, [isEditingConfig]);
 
@@ -1483,9 +1490,7 @@ function App() {
     refreshingOptionPriceIdRef.current = refreshingOptionPriceId;
   }, [refreshingOptionPriceId]);
 
-  useEffect(() => {
-    autoRefreshingOptionPriceIdRef.current = autoRefreshingOptionPriceId;
-  }, [autoRefreshingOptionPriceId]);
+
 
   useEffect(() => {
     isRefreshingAllOptionsRef.current = isRefreshingAllOptions;
@@ -1501,9 +1506,6 @@ function App() {
       putForm.put_strike === 0 &&
       putForm.premium_per_share === 0 &&
       putForm.contracts === 1 &&
-      preTradeCandidate === null &&
-      !isPreTradeQuestionnaireComplete(preTradeQuestionnaire) &&
-      preTradeAnalysis === null &&
       editingPutId === null;
 
     if (isFreshForm) {
@@ -1513,122 +1515,9 @@ function App() {
 
     saveDraftJson(OPTION_DRAFT_STORAGE_KEY, {
       putForm,
-      editingPutId,
-      preTradeCandidate,
-      preTradeQuestionnaire,
-      preTradeAnalysis
+      editingPutId
     } satisfies OptionDraftState);
-  }, [editingPutId, preTradeAnalysis, preTradeCandidate, preTradeQuestionnaire, putForm]);
-
-  useEffect(() => {
-    setPutCheckResult(null);
-  }, [putForm, editingPutId]);
-
-  useEffect(() => {
-    if (!preTradeCandidate) {
-      setPreTradeContext(null);
-      setIsLoadingPreTradeContext(false);
-      setIsEnrichingPreTradeContext(false);
-      return;
-    }
-
-    const candidate = preTradeCandidate;
-
-    let cancelled = false;
-
-    async function fetchPreTradeContext() {
-      setIsLoadingPreTradeContext(true);
-      setIsEnrichingPreTradeContext(false);
-
-      try {
-        const response = await fetch('/api/pre-trade-context', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            ticker: candidate.ticker,
-            option_side: candidate.option_side ?? 'put',
-            expiration_date: candidate.expiration_date,
-            include_search: false
-          })
-        });
-
-        const payloadText = await response.text();
-        const payload = parseJsonResponseText<PreTradeContextResult & { error?: string }>(
-          payloadText,
-          response.status,
-          response.statusText
-        );
-
-        if (!response.ok || payload.error || typeof payload.summary !== 'object' || payload.summary === null) {
-          throw new Error(payload.error ?? '卖前事件信息读取失败');
-        }
-
-        if (!cancelled) {
-          setPreTradeContext(payload);
-        }
-
-        if (!cancelled) {
-          setIsEnrichingPreTradeContext(true);
-          void (async () => {
-            try {
-              const enrichResponse = await fetch('/api/pre-trade-context', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                  ticker: candidate.ticker,
-                  option_side: candidate.option_side ?? 'put',
-                  expiration_date: candidate.expiration_date,
-                  include_search: true
-                })
-              });
-              const enrichText = await enrichResponse.text();
-              const enrichPayload = parseJsonResponseText<PreTradeContextResult & { error?: string }>(
-                enrichText,
-                enrichResponse.status,
-                enrichResponse.statusText
-              );
-
-              if (!enrichResponse.ok || enrichPayload.error || typeof enrichPayload.summary !== 'object' || enrichPayload.summary === null) {
-                throw new Error(enrichPayload.error ?? '卖前补充信息读取失败');
-              }
-
-              if (!cancelled) {
-                setPreTradeContext((current) => ({
-                  ...(current ?? enrichPayload),
-                  ...enrichPayload
-                }));
-              }
-            } catch {
-              // Keep the immediate website snapshot if Gemini enrichment fails.
-            } finally {
-              if (!cancelled) {
-                setIsEnrichingPreTradeContext(false);
-              }
-            }
-          })();
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setPreTradeContext(null);
-          setPreTradeError(formatGeminiError(error, '卖前事件信息读取失败'));
-        }
-      } finally {
-        if (!cancelled) {
-          setIsLoadingPreTradeContext(false);
-        }
-      }
-    }
-
-    void fetchPreTradeContext();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [preTradeCandidate]);
+  }, [editingPutId, putForm]);
 
   useEffect(() => {
     let ignore = false;
@@ -1642,7 +1531,7 @@ function App() {
           return;
         }
 
-        applyRemoteSnapshot(payload.snapshot, '已加载本地保存的数据');
+        applyRemoteSnapshot(payload.snapshot);
       } catch {
         // Keep browser localStorage state if no saved snapshot is available.
       } finally {
@@ -1658,7 +1547,7 @@ function App() {
     return () => {
       ignore = true;
     };
-  }, [deletedPositionIds, deletedTickers]);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1676,7 +1565,7 @@ function App() {
           return;
         }
 
-        setBackgroundRefreshStatus(nextStatus);
+
 
         if (
           nextStatus.finishedAt &&
@@ -1706,211 +1595,11 @@ function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [deletedPositionIds, deletedTickers]);
+  }, []);
 
   useEffect(() => {
     void handleRefreshVix(true);
   }, []);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      void handleRefreshVix(true);
-    }, 10 * 60 * 1000);
-
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    if (!hasHydratedSnapshotRef.current || !hasLoadedRemoteSnapshotRef.current) {
-      return;
-    }
-
-    let cancelled = false;
-
-    async function autoRefreshMarketPrices() {
-      if (cancelled || isRefreshingAllTickers || refreshingTicker !== null) {
-        return;
-      }
-
-      if (!isUsMarketOpen()) {
-        return;
-      }
-
-      const staleEntries = tickerList.filter((entry) => entry.ticker !== '' && isPriceRefreshStale(entry.last_updated));
-
-      if (staleEntries.length === 0) {
-        return;
-      }
-
-      setPriceRefreshMessage(`当前处于盘中，检测到 ${staleEntries.length} 个股票价格超过 20 分钟未更新，正在自动刷新价格...`);
-
-      for (let index = 0; index < staleEntries.length; index += 1) {
-        if (cancelled) {
-          return;
-        }
-
-        try {
-          await refreshTickerMarketData(staleEntries[index], 'price-only');
-        } catch {
-          // Keep existing value and wait for the next in-session check.
-        }
-
-        if (index < staleEntries.length - 1) {
-          await sleep(PRICE_REFRESH_GAP_MS);
-        }
-      }
-
-      if (!cancelled) {
-        setPriceRefreshMessage(`盘中自动行情刷新完成，共处理 ${staleEntries.length} 个股票`);
-      }
-    }
-
-    void autoRefreshMarketPrices();
-    const timer = window.setInterval(() => {
-      void autoRefreshMarketPrices();
-    }, AUTO_PRICE_REFRESH_CHECK_MS);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [tickerList, isRefreshingAllTickers, refreshingTicker]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function autoRefreshOptionPrices() {
-      if (!hasHydratedSnapshotRef.current) {
-        return;
-      }
-
-      if (
-        cancelled ||
-        isRefreshingAllOptionsRef.current ||
-        refreshingOptionPriceIdRef.current !== null ||
-        autoRefreshingOptionPriceIdRef.current !== null
-      ) {
-        return;
-      }
-
-      if (!shouldRunDailyOptionRefresh()) {
-        return;
-      }
-
-      const stalePositions = putsRef.current.filter(
-        (put) => !isExpiredDate(put.expiration_date) && isOptionRefreshStale(put.option_market_price_updated ?? null)
-      );
-
-      if (stalePositions.length === 0) {
-        return;
-      }
-
-      let successCount = 0;
-      let failureCount = 0;
-      setAutoRefreshOptionsProgress({
-        current: 0,
-        total: stalePositions.length,
-        successCount: 0,
-        failureCount: 0,
-        ticker: ''
-      });
-
-      try {
-        for (let index = 0; index < stalePositions.length; index += 1) {
-          const position = stalePositions[index];
-
-          if (cancelled) {
-            return;
-          }
-
-          setAutoRefreshOptionsProgress({
-            current: index + 1,
-            total: stalePositions.length,
-            successCount,
-            failureCount,
-            ticker: position.ticker
-          });
-
-          try {
-            setAutoRefreshingOptionPriceId(position.id);
-            setOptionPriceMessages((current) => ({
-              ...current,
-              [position.id]: {
-                tone: 'info',
-                text: '系统正在自动刷新期权价格...'
-              }
-            }));
-            await refreshSingleOptionPriceWithRetry(position, true);
-            successCount += 1;
-          } catch {
-            failureCount += 1;
-            // Keep existing option price and retry on the next scheduled check.
-          } finally {
-            if (!cancelled) {
-              setAutoRefreshingOptionPriceId(null);
-            }
-          }
-
-          setAutoRefreshOptionsProgress({
-            current: index + 1,
-            total: stalePositions.length,
-            successCount,
-            failureCount,
-            ticker: position.ticker
-          });
-
-          if (index < stalePositions.length - 1) {
-            await sleep(PRICE_REFRESH_GAP_MS);
-          }
-        }
-      } finally {
-        if (!cancelled) {
-          setAutoRefreshOptionsProgress(null);
-        }
-      }
-    }
-
-    void autoRefreshOptionPrices();
-    const timer = window.setInterval(() => {
-      void autoRefreshOptionPrices();
-    }, AUTO_OPTION_REFRESH_CHECK_MS);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!hasHydratedSnapshotRef.current) {
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      const snapshot = buildAppStateSnapshot({
-        config,
-        puts,
-        closedTrades,
-        stockTrades,
-        tickerList,
-        scenario,
-        vixHistory,
-        accountValueHistory
-      });
-
-      void fetch('/api/app-state', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(snapshot)
-      }).catch(() => {
-        // Keep the UI quiet; manual Save remains available if the backend write fails.
-      });
-    }, 800);
-
-    return () => window.clearTimeout(timer);
-  }, [accountValueHistory, closedTrades, config, puts, tickerList, scenario, vixHistory]);
 
   useEffect(() => {
     if (!hasHydratedSnapshotRef.current || puts.length === 0) {
@@ -2086,7 +1775,16 @@ function App() {
     () => stockExtremeSignals.filter((item) => item.direction === 'oversold').slice(0, 3),
     [stockExtremeSignals]
   );
-  const topIvRankStocks = useMemo(() => buildTopIvRankStocks(tickerList, 5), [tickerList]);
+  const topIvRankStocks = useMemo(
+    () =>
+      buildTopIvRankStocks(
+        tickerList,
+        metrics.totalCapitalBase,
+        buildOptionCapitalUsageByTicker(metrics.putRows),
+        5
+      ),
+    [metrics.putRows, metrics.totalCapitalBase, tickerList]
+  );
 
   const riskTickersWithOptionLoss = useMemo(() => {
     const putRows = metrics.putRows.filter((row) => row.option_side !== 'call');
@@ -2152,12 +1850,14 @@ function App() {
   const combinedHoldings = useMemo(() => {
     const putMap = new Map(riskTickersWithOptionLoss.map((item) => [item.ticker, item]));
     const stockMap = new Map(stockHoldings.map((item) => [item.ticker, item]));
+    const thetaMap = new Map(metrics.groupedTickerTheta.map((item) => [item.ticker, item.dailyThetaIncome]));
     const tickers = [...new Set([...riskTickersWithOptionLoss.map((item) => item.ticker), ...stockHoldings.map((item) => item.ticker)])];
 
     return tickers
       .map((ticker) => {
         const putHolding = putMap.get(ticker) ?? null;
         const stockHolding = stockMap.get(ticker) ?? null;
+        const tickerEntry = tickerMap.get(ticker) ?? null;
         const totalOptionPremiumIncome = (putHolding?.totalPremiumIncome ?? 0) + (stockHolding?.callPremiumIncome ?? 0);
         const putPnl = putHolding?.totalOptionPnl ?? 0;
         const callPnl = stockHolding?.callUnrealizedPnl ?? 0;
@@ -2184,6 +1884,15 @@ function App() {
             : totalOptionPremiumIncome > 0
               ? totalOptionPremiumIncome
               : putHolding?.risk ?? 0;
+        const totalDeltaOnePctImpact =
+          stockHolding != null &&
+          typeof stockHolding.totalDelta === 'number' &&
+          typeof stockHolding.currentPrice === 'number' &&
+          Number.isFinite(stockHolding.currentPrice) &&
+          stockHolding.currentPrice > 0
+            ? stockHolding.totalDelta * stockHolding.currentPrice * 0.01 * (tickerEntry?.beta ?? 1)
+            : null;
+        const totalOptionThetaIncomePerDay = thetaMap.get(ticker) ?? null;
         const isAlert =
           (putHolding !== null &&
             putHolding.totalOptionLoss >= putHolding.totalPremiumIncome * 2 &&
@@ -2204,6 +1913,8 @@ function App() {
           totalPnlPct,
           currentValue,
           displayValue,
+          totalDeltaOnePctImpact,
+          totalOptionThetaIncomePerDay,
           nearestStrikeDistancePct,
           isAlert
         };
@@ -2219,7 +1930,7 @@ function App() {
         }
         return a.ticker.localeCompare(b.ticker);
       });
-  }, [riskTickersWithOptionLoss, stockHoldings, stockLossAlertThreshold]);
+  }, [metrics.groupedTickerTheta, riskTickersWithOptionLoss, stockHoldings, stockLossAlertThreshold]);
   const sortedClosedTrades = useMemo(
     () => [...closedTrades].sort((a, b) => b.closed_at.localeCompare(a.closed_at)),
     [closedTrades]
@@ -2320,21 +2031,122 @@ function App() {
   const remainingCashAmount = Math.max((config?.cash ?? 0) - metrics.totalNominalPutExposure, 0);
   const overallCapitalAmount = remainingCashAmount + metrics.totalNominalPutExposure + totalStockMarketValue;
   const remainingCashPct = overallCapitalAmount > 0 ? remainingCashAmount / overallCapitalAmount : 0;
-  const accountCapitalBase = metrics.totalCapitalBase > 0 ? metrics.totalCapitalBase : overallCapitalAmount;
-  const riskCurveCapitalBase = overallCapitalAmount > 0 ? overallCapitalAmount : accountCapitalBase;
   const totalUnrealizedOptionPnl = metrics.putRows.reduce((sum, row) => sum + (row.unrealizedPnl ?? 0), 0);
   const accountEquity = (config?.cash ?? 0) + totalStockMarketValue + totalUnrealizedOptionPnl;
+  const accountCapitalBase =
+    accountEquity > 0
+      ? accountEquity
+      : metrics.totalCapitalBase > 0
+        ? metrics.totalCapitalBase
+        : overallCapitalAmount;
+  const currentStockRiskFirstDecisions = useMemo(
+    () =>
+      tickerList
+        .filter((entry) => (entry.shares ?? 0) > 0)
+        .map((entry) => {
+          const shares = entry.shares ?? 0;
+          const referencePrice = entry.current_price ?? entry.average_cost_basis;
+          const positionValue =
+            typeof referencePrice === 'number' && Number.isFinite(referencePrice)
+              ? shares * referencePrice
+              : 0;
+          const atr14 = typeof entry.atr_14 === 'number' && Number.isFinite(entry.atr_14) ? entry.atr_14 : null;
+          const currentPriceVal = typeof entry.current_price === 'number' && Number.isFinite(entry.current_price) ? entry.current_price : null;
+          const costBasis = typeof entry.average_cost_basis === 'number' && Number.isFinite(entry.average_cost_basis) && entry.average_cost_basis > 0 ? entry.average_cost_basis : null;
+          // 1% Risk Stop: the price at which the unrealized loss = 1% of total account equity
+          // Anchored to cost basis: stop = costBasis - (accountEquity × 1%) / shares
+          const onePercentStopPrice =
+            costBasis !== null && shares > 0 && accountCapitalBase > 0
+              ? costBasis - (accountCapitalBase * 0.01) / shares
+              : null;
+          const atrBasisPrice = shares > 0 && costBasis !== null ? costBasis : currentPriceVal;
+          const atrBasisLabel = shares > 0 && costBasis !== null ? '平均价' : '现价';
+          const atrStopPrice = atr14 !== null && atrBasisPrice !== null ? atrBasisPrice - atr14 : null;
+          return {
+            ticker: entry.ticker,
+            shares,
+            positionValue,
+            positionPct: accountCapitalBase > 0 ? positionValue / accountCapitalBase : 0,
+            currentPrice: entry.current_price,
+            averageCostBasis: entry.average_cost_basis,
+            atr14,
+            onePercentStopPrice,
+            atrStopPrice,
+            atrBasisPrice,
+            atrBasisLabel,
+            ma21: typeof entry.ma_21 === 'number' ? entry.ma_21 : null,
+            unrealizedPnlPct:
+              typeof entry.current_price === 'number' &&
+              typeof entry.average_cost_basis === 'number' &&
+              entry.average_cost_basis > 0
+                ? (entry.current_price - entry.average_cost_basis) / entry.average_cost_basis
+                : null,
+            decision: buildRiskFirstDecision({
+              ticker: entry.ticker,
+              tradeType: '中线',
+              expectedReturnPct: null,
+              maxLossPct: entry.downside_tolerance_pct,
+              totalCapital: accountCapitalBase,
+              resultingPositionValue: positionValue,
+              existingShares: shares,
+              currentPrice: entry.current_price,
+              averageCostBasis: entry.average_cost_basis,
+              investmentLogic: '',
+              plannedHoldingTime: '',
+              exitStrategy:
+                typeof entry.downside_tolerance_pct === 'number'
+                  ? `跌破 -${formatPercent(entry.downside_tolerance_pct)} 止损或逻辑失效退出`
+                  : '',
+              isOneWayDoor: false,
+              isAddingToLoss: false
+            })
+          };
+        })
+        .sort((a, b) => {
+          if (a.decision.allowed !== b.decision.allowed) {
+            return a.decision.allowed ? 1 : -1;
+          }
+          return b.positionValue - a.positionValue;
+        }),
+    [accountCapitalBase, tickerList]
+  );
+
+  const riskCurveCapitalBase = accountCapitalBase;
   const accountValueComparisons = useMemo(
-    () => buildAccountValueComparisons(accountValueHistory, accountCapitalBase),
-    [accountCapitalBase, accountValueHistory]
+    () => buildAccountValueComparisons(accountValueHistory, accountEquity),
+    [accountEquity, accountValueHistory]
+  );
+  const accountValueChartData = useMemo(
+    () => filterAccountValueChartData(accountValueHistory, accountValueRange),
+    [accountValueHistory, accountValueRange]
+  );
+  const accountValueChartSummary = useMemo(() => {
+    const firstPoint = accountValueChartData[0] ?? null;
+    const lastPoint = accountValueChartData[accountValueChartData.length - 1] ?? null;
+    const changeAmount = firstPoint && lastPoint ? lastPoint.totalCapital - firstPoint.totalCapital : null;
+    const changePct =
+      firstPoint && lastPoint && firstPoint.totalCapital > 0 && changeAmount !== null
+        ? changeAmount / firstPoint.totalCapital
+        : null;
+
+    return {
+      firstPoint,
+      lastPoint,
+      changeAmount,
+      changePct
+    };
+  }, [accountValueChartData]);
+  const accountValueChartDomain = useMemo(
+    () => getAccountValueChartDomain(accountValueChartData),
+    [accountValueChartData]
   );
   useEffect(() => {
     if (!isSnapshotHydrated) {
       return;
     }
 
-    setAccountValueHistory((current) => upsertDailyAccountValueSnapshot(current, accountCapitalBase));
-  }, [accountCapitalBase, isSnapshotHydrated]);
+    setAccountValueHistory((current) => upsertDailyAccountValueSnapshot(current, accountEquity));
+  }, [accountEquity, isSnapshotHydrated]);
   const insightLines = useMemo(() => {
     return [
       ...accountValueComparisons.map((item) =>
@@ -2388,6 +2200,38 @@ function App() {
     () => buildRiskCurvePoints(puts, tickerList, riskCurveCapitalBase),
     [puts, riskCurveCapitalBase, tickerList]
   );
+
+  // --- Position Size Calculator (1% Risk Model) ---
+  const posSizeResult = useMemo(() => {
+    const equity = Number(posSizeAccountEquity);
+    const entry = Number(posSizeEntryPrice);
+    const stop = Number(posSizeStopPrice);
+    if (!Number.isFinite(equity) || equity <= 0) return null;
+    if (!Number.isFinite(entry) || entry <= 0) return null;
+    if (!Number.isFinite(stop) || stop <= 0) return null;
+    const riskPerShare = Math.abs(entry - stop);
+    if (riskPerShare < 0.0001) return null;
+    const dollarRisk = equity * 0.01;
+    const positionSize = Math.floor(dollarRisk / riskPerShare);
+    return { entryPrice: entry, stopPrice: stop, riskPerShare, positionSize, dollarRisk };
+  }, [posSizeAccountEquity, posSizeEntryPrice, posSizeStopPrice]);
+
+  // --- ATR Stop System ---
+  const atrStopResult = useMemo(() => {
+    const support = Number(atrSupportLevel);
+    const atr = Number(atrValue);
+    const mult = Number(atrMultiplier);
+    if (!Number.isFinite(support) || support <= 0) return null;
+    if (!Number.isFinite(atr) || atr <= 0) return null;
+    const scenarios = ATR_MULTIPLIERS.map((m) => ({
+      multiplier: m,
+      stopLevel: support - atr * m,
+      buffer: atr * m,
+    }));
+    const activeStop = Number.isFinite(mult) && mult > 0 ? support - atr * mult : null;
+    return { support, atr, activeStop, scenarios };
+  }, [atrSupportLevel, atrValue, atrMultiplier]);
+
   const baseRiskScore = metrics.riskScore;
   const regimeAdjustment = getRegimeAdjustment(vixSnapshot?.fearGreedScore ?? null);
   const finalSellingScore = Math.max(0, baseRiskScore + regimeAdjustment);
@@ -2427,39 +2271,7 @@ function App() {
       const isInTheMoney = isRowInTheMoney(row, tickerEntry.current_price);
       return moneynessFilter === 'ITM' ? isInTheMoney : !isInTheMoney;
     })
-    .sort((a, b) => {
-      if (positionSort === 'EXPIRATION') {
-        return a.expiration_date.localeCompare(b.expiration_date) || a.ticker.localeCompare(b.ticker);
-      }
-
-      if (positionSort === 'PUT_RISK') {
-        if (b.putRisk !== a.putRisk) {
-          return b.putRisk - a.putRisk;
-        }
-        return a.expiration_date.localeCompare(b.expiration_date);
-      }
-
-      if (positionSort === 'LOSS_PCT') {
-        const aLossPct = typeof a.premiumCapturedPct === 'number' ? a.premiumCapturedPct : Number.POSITIVE_INFINITY;
-        const bLossPct = typeof b.premiumCapturedPct === 'number' ? b.premiumCapturedPct : Number.POSITIVE_INFINITY;
-        if (aLossPct !== bLossPct) {
-          return aLossPct - bLossPct;
-        }
-        return b.putRisk - a.putRisk;
-      }
-
-      if (positionSort === 'ANNUALIZED_YIELD') {
-        if (b.annualizedYield !== a.annualizedYield) {
-          return b.annualizedYield - a.annualizedYield;
-        }
-        return b.putRisk - a.putRisk;
-      }
-
-      if (a.ticker !== b.ticker) {
-        return a.ticker.localeCompare(b.ticker);
-      }
-      return a.expiration_date.localeCompare(b.expiration_date);
-    });
+    .sort((a, b) => comparePositionRows(a, b, positionSort, positionSortDirection));
 
   useEffect(() => {
     if (activeTab !== 'positions' || pendingPositionScrollId === null) {
@@ -2510,7 +2322,7 @@ function App() {
     }
 
     try {
-      const response = await fetch('/api/vix');
+      const response = await fetch(silent ? '/api/vix?cache_only=true' : '/api/vix');
       const payload = (await response.json()) as {
         value?: number;
         as_of?: string;
@@ -2579,171 +2391,52 @@ function App() {
     setIsEditingConfig(false);
   }
 
-  async function runPutChecksAndSave(normalized: PutPosition): Promise<'saved' | 'blocked' | 'error'> {
-    const nextPuts = editingPutId
-      ? puts.map((item) => (item.id === editingPutId ? normalized : item))
-      : [...puts, { ...normalized, id: normalized.id || generateId() }];
-    const nextMetrics = calculatePortfolioMetrics(config, nextPuts, tickerList, activeScenario);
-    const shouldApplyRiskGate = shouldApplySellPutRiskGate(normalized.option_side);
-    const nextRegimeAdjustment = getRegimeAdjustment(vixSnapshot?.fearGreedScore ?? null);
-    const nextFinalSellingScore = Math.max(0, nextMetrics.riskScore + nextRegimeAdjustment);
-    const exceedsRiskScoreLimit = shouldApplyRiskGate && nextFinalSellingScore > 80;
-    const currentVixValue = vixSnapshot?.value ?? latestVixPoint?.value ?? null;
-    const isLowVixRegime = currentVixValue !== null && currentVixValue < 20;
-    const isRisingLowMidVixRegime =
-      currentVixValue !== null && currentVixValue >= 20 && currentVixValue < 25 && stressAdjustment.mode === 'rising';
-    const shouldBlockOnLowVixAndRiskScore =
-      shouldApplyRiskGate && (isLowVixRegime || isRisingLowMidVixRegime) && nextFinalSellingScore > 60;
+  async function persistPutPosition(normalized: PutPosition, targetEditingPutId: string | null) {
+    const directPosition = buildDirectOptionPosition(normalized);
+    const nextPuts = upsertPutPosition(puts, directPosition, targetEditingPutId, generateId);
+    const nextTickerList = ensureTickerExists(tickerList, directPosition.ticker);
+    const nextConfig = applyOptionOpenCash(config, configForm ?? DEFAULT_CONFIG, directPosition, targetEditingPutId !== null);
+    const persistedPosition =
+      nextPuts.find((item) => item.id === targetEditingPutId) ??
+      nextPuts.find((item) => !puts.some((existing) => existing.id === item.id)) ??
+      null;
 
-    setIsCheckingPut(true);
-    setPutCheckResult(null);
-
-    try {
-      const selectedTicker = tickerList.find((entry) => entry.ticker === normalized.ticker) ?? null;
-      const query = new URLSearchParams({
-        symbol: normalized.ticker,
-        strike: String(normalized.put_strike),
-        beta: String(selectedTicker?.beta ?? ''),
-        date_sold: normalized.date_sold,
-        expiration_date: normalized.expiration_date
-      });
-
-      if (selectedTicker?.current_price !== null && selectedTicker?.current_price !== undefined) {
-        query.set('cached_current_price', String(selectedTicker.current_price));
-      }
-      if (selectedTicker?.rsi_14 !== null && selectedTicker?.rsi_14 !== undefined) {
-        query.set('cached_rsi_14', String(selectedTicker.rsi_14));
-      }
-      if (selectedTicker?.ma_21 !== null && selectedTicker?.ma_21 !== undefined) {
-        query.set('cached_ma_20', String(selectedTicker.ma_21));
-      }
-      if (selectedTicker?.current_iv !== null && selectedTicker?.current_iv !== undefined) {
-        query.set('cached_current_iv', String(selectedTicker.current_iv));
-      }
-
-      if (selectedTicker?.provider_exchange) {
-        query.set('exchange', selectedTicker.provider_exchange);
-      }
-      if (selectedTicker?.provider_mic_code) {
-        query.set('mic_code', selectedTicker.provider_mic_code);
-      }
-
-      query.set('side', normalized.option_side === 'call' ? 'call' : 'put');
-
-      const response = await fetch(`/api/put-check?${query.toString()}`);
-      const payload = (await response.json()) as PutEntryCheckResponse & { error?: string; failures?: string[] };
-
-      if (!response.ok || payload.error) {
-        throw new Error(payload.error ?? payload.failures?.[0] ?? `${getOptionSideLabel(normalized.option_side)} 检查失败`);
-      }
-
-      setPutCheckResult(payload);
-
-      if (payload.metrics) {
-        const nextEntry: TickerEntry = {
-          ticker: normalized.ticker,
-          beta: selectedTicker?.beta ?? null,
-          shares: selectedTicker?.shares ?? null,
-          average_cost_basis: selectedTicker?.average_cost_basis ?? null,
-          downside_tolerance_pct: selectedTicker?.downside_tolerance_pct ?? null,
-          current_price: payload.metrics.current_price,
-          last_updated: payload.metrics.as_of,
-          next_earnings_date: selectedTicker?.next_earnings_date ?? null,
-          current_iv: payload.metrics.current_iv,
-          current_iv_updated: payload.metrics.current_iv === null ? selectedTicker?.current_iv_updated ?? null : payload.metrics.as_of,
-          historical_iv: selectedTicker?.historical_iv ?? null,
-          iv_rank: selectedTicker?.iv_rank ?? null,
-          iv_percentile: selectedTicker?.iv_percentile ?? null,
-          put_call_ratio: selectedTicker?.put_call_ratio ?? null,
-          put_call_ratio_updated: selectedTicker?.put_call_ratio_updated ?? null,
-          provider_exchange: selectedTicker?.provider_exchange ?? null,
-          provider_mic_code: selectedTicker?.provider_mic_code ?? null,
-          rsi_14: payload.metrics.rsi_14,
-          rsi_14_1h: selectedTicker?.rsi_14_1h ?? null,
-          rsi_updated: payload.metrics.as_of,
-          ma_21: selectedTicker?.ma_21 ?? null,
-          ma_200: selectedTicker?.ma_200 ?? null
-        };
-
-        setTickerList((current) =>
-          current.some((entry) => entry.ticker === normalized.ticker)
-            ? current.map((entry) => (entry.ticker === normalized.ticker ? { ...entry, ...nextEntry } : entry))
-            : [...current, nextEntry].sort((a, b) => a.ticker.localeCompare(b.ticker))
-        );
-      }
-
-      if (exceedsRiskScoreLimit) {
-        setPutCheckResult({
-          ok: false,
-          summary: 'Final selling score 高于 80，默认不能卖',
-          failures: [
-            `这笔${getOptionSideLabel(normalized.option_side)}保存后，Base score ${nextMetrics.riskScore} + Regime adjustment ${nextRegimeAdjustment >= 0 ? '+' : ''}${nextRegimeAdjustment} = ${nextFinalSellingScore}`,
-            '默认禁止交易；如果你确认要执行，需要点 Process Anyway'
-          ]
-        });
-        setForceSellCandidate(normalized);
-        return 'blocked';
-      }
-
-      if (shouldBlockOnLowVixAndRiskScore) {
-        setPutCheckResult({
-          ok: false,
-          summary: '当前低波动环境下，Risk Score 高于 60，默认不要卖',
-          failures: [
-            currentVixValue !== null
-              ? `当前 VIX ${currentVixValue.toFixed(2)}，属于${isLowVixRegime ? '低波动区' : '20-25 且持续上升区'}`
-              : `当前 VIX 环境偏不利于继续做${getOptionSideLabel(normalized.option_side)}`,
-            `这笔${getOptionSideLabel(normalized.option_side)}保存后，Base score ${nextMetrics.riskScore} + Regime adjustment ${nextRegimeAdjustment >= 0 ? '+' : ''}${nextRegimeAdjustment} = ${nextFinalSellingScore}`,
-            '低波动或低中波动上升环境下，Final selling score 超过 60 时建议停止新增仓位；如需继续，请点 Process Anyway'
-          ]
-        });
-        setForceSellCandidate(normalized);
-        return 'blocked';
-      }
-
-      if (!payload.ok) {
-        setForceSellCandidate(normalized);
-        return 'blocked';
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : `${getOptionSideLabel(normalized.option_side)} 检查失败`;
-
-      if (shouldAllowForceSellOnCheckError(message)) {
-        setPutCheckResult({
-          ok: false,
-          summary: '检查服务异常，已切换为人工确认',
-          failures: [
-            message,
-            `检查过程中出现脚本错误；如果你确认这笔${getOptionSideLabel(normalized.option_side)}仍然要做，可以点 Process Anyway 继续。`
-          ]
-        });
-        setForceSellCandidate(normalized);
-        return 'blocked';
-      }
-
-      setPutCheckResult({
-        ok: false,
-        summary: '有提示风险，不建议执行',
-        failures: [message]
-      });
-      return 'error';
-    } finally {
-      setIsCheckingPut(false);
+    if (!persistedPosition) {
+      throw new Error(`未能构建 ${directPosition.ticker} ${getOptionSideLabel(directPosition.option_side)} 的持久化快照`);
     }
 
-    savePutPosition(normalized, editingPutId, setPuts, setTickerList);
-    const nextConfig = applyOptionOpenCash(config, configForm ?? DEFAULT_CONFIG, normalized, editingPutId !== null);
-    setConfig(nextConfig);
-    setConfigForm(nextConfig);
+    await persistAppStateSnapshot(
+      buildAppStateSnapshot({
+        config: nextConfig,
+        puts: nextPuts,
+        closedTrades,
+        stockTrades,
+        tickerList: nextTickerList,
+        scenario,
+        vixHistory,
+        accountValueHistory
+      }),
+      targetEditingPutId
+        ? `已更新 ${directPosition.ticker} ${getOptionSideLabel(directPosition.option_side)}`
+        : `已保存 ${directPosition.ticker} ${getOptionSideLabel(directPosition.option_side)}`,
+      targetEditingPutId ? '更新期权失败' : '保存期权失败'
+    );
+
+    const persistedSnapshot = await waitForPersistedAppStateSnapshot(
+      (snapshot) => hasExpectedPersistedPositionState(snapshot.data.puts, nextPuts, persistedPosition.id),
+      targetEditingPutId ? '期权更新保存未生效，请重试' : '期权保存未生效，请重试'
+    );
+
+    setPuts(persistedSnapshot.data.puts);
+    setTickerList(persistedSnapshot.data.tickerList);
+    setConfig(persistedSnapshot.data.config);
+    setConfigForm(persistedSnapshot.data.config ?? DEFAULT_CONFIG);
     setConfigErrors({});
-    setImportExportMessage(`风险检查通过，已保存 ${normalized.ticker} ${getOptionSideLabel(normalized.option_side)}`);
     setActiveTab('positions');
     window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, 'positions');
-
     setPutForm(createEmptyPut());
     setPutErrors({});
     setEditingPutId(null);
-    return 'saved';
   }
 
   async function handleSavePut() {
@@ -2756,20 +2449,17 @@ function App() {
     setPutErrors(errors);
     if (Object.keys(errors).length > 0) return;
 
-    setPreTradeCandidate(normalized);
-    setPreTradeQuestionnaire(createEmptyPreTradeQuestionnaire());
-    setPreTradeError('');
-    setPreTradeAnalysis(null);
-    setPreTradeContext(null);
+    setIsSavingPut(true);
+    try {
+      await persistPutPosition(normalized, editingPutId);
+    } catch (error) {
+      setImportExportMessage(error instanceof Error ? error.message : editingPutId ? '更新期权失败' : '保存期权失败');
+    } finally {
+      setIsSavingPut(false);
+    }
   }
 
   function handleEditPut(put: PutPosition) {
-    setPreTradeCandidate(null);
-    setPreTradeQuestionnaire(createEmptyPreTradeQuestionnaire());
-    setPreTradeError('');
-    setPreTradeAnalysis(null);
-    setPreTradeContext(null);
-    setPutCheckResult(null);
     setEditingPutId(put.id);
     setPutForm(put);
     setImportExportMessage(`正在编辑 ${put.ticker}，已切换到 ${getOptionSideLabel(put.option_side)}`);
@@ -2814,6 +2504,7 @@ function App() {
   }
 
   function handleOpenClosePut(row: PutRiskRow) {
+    setClosePreviewError('');
     setClosePreview({
       row,
       contractsToClose: row.contracts.toString(),
@@ -2838,10 +2529,12 @@ function App() {
       | 'option_delta'
       | 'option_gamma'
     >,
-    silent = false
+    silent = false,
+    persistAfterRefresh = true
   ) {
+    const livePosition = putsRef.current.find((item) => item.id === position.id) ?? position;
     const response = await fetch(
-      `/api/option-price?symbol=${encodeURIComponent(position.ticker)}&expiration_date=${encodeURIComponent(position.expiration_date)}&strike=${encodeURIComponent(String(position.put_strike))}&side=${encodeURIComponent(position.option_side === 'call' ? 'call' : 'put')}`
+      `/api/option-price?symbol=${encodeURIComponent(livePosition.ticker)}&expiration_date=${encodeURIComponent(livePosition.expiration_date)}&strike=${encodeURIComponent(String(livePosition.put_strike))}&side=${encodeURIComponent(livePosition.option_side === 'call' ? 'call' : 'put')}`
     );
     const payload = (await response.json()) as {
       option_price_per_share?: number;
@@ -2853,21 +2546,23 @@ function App() {
     };
 
     if (!response.ok || payload.error || typeof payload.option_price_per_share !== 'number') {
-      throw new Error(payload.error ?? `${position.ticker} 当前期权价格刷新失败`);
+      throw new Error(payload.error ?? `${livePosition.ticker} 当前期权价格刷新失败`);
     }
 
     const updatedAt = payload.as_of ?? new Date().toISOString();
     const refreshedOptionPrice = payload.option_price_per_share;
-    const preservedTheta = typeof position.option_theta_per_share === 'number' ? position.option_theta_per_share : null;
-    const preservedDelta = typeof position.option_delta === 'number' ? position.option_delta : null;
-    const preservedGamma = typeof position.option_gamma === 'number' ? position.option_gamma : null;
+    const preservedTheta = typeof livePosition.option_theta_per_share === 'number' ? livePosition.option_theta_per_share : null;
+    const preservedDelta = typeof livePosition.option_delta === 'number' ? livePosition.option_delta : null;
+    const preservedGamma = typeof livePosition.option_gamma === 'number' ? livePosition.option_gamma : null;
+    const receivedGreeks = typeof payload.delta === 'number' && typeof payload.gamma === 'number';
     const refreshedTheta = typeof payload.theta_per_share === 'number' ? payload.theta_per_share : preservedTheta;
     const refreshedDelta = typeof payload.delta === 'number' ? payload.delta : preservedDelta;
     const refreshedGamma = typeof payload.gamma === 'number' ? payload.gamma : preservedGamma;
+    const hasPersistedGreeks = typeof refreshedDelta === 'number' && typeof refreshedGamma === 'number';
 
     setOptionPriceOverrides((current) => ({
       ...current,
-      [position.id]: {
+      [livePosition.id]: {
         price: refreshedOptionPrice,
         theta: refreshedTheta,
         delta: refreshedDelta,
@@ -2877,14 +2572,17 @@ function App() {
     }));
     setOptionPriceMessages((current) => ({
       ...current,
-      [position.id]: {
-        tone: 'success',
-        text: `已更新 ${formatCurrency(refreshedOptionPrice)}/share`
+      [livePosition.id]: {
+        tone: receivedGreeks || hasPersistedGreeks ? 'success' : 'info',
+        text:
+          receivedGreeks || hasPersistedGreeks
+            ? `已更新 ${formatCurrency(refreshedOptionPrice)}/share`
+            : `已更新 ${formatCurrency(refreshedOptionPrice)}/share，但未返回 Delta/Gamma`
       }
     }));
 
     const nextPuts = putsRef.current.map((item) =>
-      item.id === position.id
+      item.id === livePosition.id
         ? {
             ...item,
             option_market_price_per_share: refreshedOptionPrice,
@@ -2898,14 +2596,40 @@ function App() {
     putsRef.current = nextPuts;
     setPuts(nextPuts);
 
+    if (persistAfterRefresh) {
+      try {
+        await persistAppStateSnapshot(
+          buildAppStateSnapshot({
+            config,
+            puts: nextPuts,
+            closedTrades,
+            stockTrades,
+            tickerList,
+            scenario,
+            vixHistory,
+            accountValueHistory
+          }),
+          undefined,
+          '刷新期权后保存失败',
+          { saveMode: 'merge' }
+        );
+      } catch (error) {
+        setImportExportMessage(error instanceof Error ? error.message : '刷新期权后保存失败');
+      }
+    }
+
     if (!silent) {
       setImportExportMessage(
-        `${position.ticker} ${getOptionSideBadge(position.option_side)} 当前期权价格已更新为 ${formatCurrency(refreshedOptionPrice)}/share`
+        receivedGreeks || hasPersistedGreeks
+          ? `${livePosition.ticker} ${getOptionSideBadge(livePosition.option_side)} 当前期权价格已更新为 ${formatCurrency(refreshedOptionPrice)}/share`
+          : `${livePosition.ticker} ${getOptionSideBadge(livePosition.option_side)} 价格已更新为 ${formatCurrency(refreshedOptionPrice)}/share，但本次未返回 Delta/Gamma`
       );
     }
 
     return {
       ...payload,
+      receivedGreeks,
+      hasPersistedGreeks,
       nextPuts
     };
   }
@@ -2924,10 +2648,11 @@ function App() {
       | 'option_delta'
       | 'option_gamma'
     >,
-    silent = false
+    silent = false,
+    persistAfterRefresh = true
   ) {
     try {
-      return await refreshSingleOptionPrice(position, silent);
+      return await refreshSingleOptionPrice(position, silent, persistAfterRefresh);
     } catch (error) {
       const message = error instanceof Error ? error.message : '当前期权价格刷新失败';
       if (!isMinuteLimitError(message)) {
@@ -2936,7 +2661,7 @@ function App() {
 
       setImportExportMessage(`${position.ticker} 遇到分钟限额，正在放慢节奏后重试...`);
       await sleep(PRICE_REFRESH_RETRY_GAP_MS);
-      return refreshSingleOptionPrice(position, silent);
+      return refreshSingleOptionPrice(position, silent, persistAfterRefresh);
     }
   }
 
@@ -2981,18 +2706,6 @@ function App() {
         );
       }
 
-      await persistAppStateSnapshot(
-        buildAppStateSnapshot({
-          config,
-          puts: payload.nextPuts,
-          closedTrades,
-          stockTrades,
-          tickerList,
-          scenario,
-          vixHistory,
-          accountValueHistory
-        })
-      );
     } catch (error) {
       const message = error instanceof Error ? error.message : '当前期权价格刷新失败';
       setImportExportMessage(message);
@@ -3014,10 +2727,7 @@ function App() {
       return;
     }
 
-    if (autoRefreshingOptionPriceId !== null) {
-      setImportExportMessage('系统正在自动刷新期权，请稍后再试全量刷新');
-      return;
-    }
+
 
     const positions = puts.filter((put) => !isExpiredDate(put.expiration_date));
     if (positions.length === 0) {
@@ -3037,77 +2747,94 @@ function App() {
 
     let successCount = 0;
     let failureCount = 0;
+    let priceOnlyCount = 0;
     const failureMessages: string[] = [];
 
     try {
-      for (let index = 0; index < positions.length; index += 1) {
-        const position = positions[index];
+      let completedCount = 0;
+      const updateProgress = (ticker: string) => {
         setRefreshAllOptionsProgress({
-          current: index + 1,
+          current: completedCount,
           total: positions.length,
           successCount,
           failureCount,
-          ticker: position.ticker
+          ticker
         });
-        setRefreshingOptionPriceId(position.id);
-        setOptionPriceMessages((current) => ({
-          ...current,
-          [position.id]: {
-            tone: 'info',
-            text: '正在刷新期权价格...'
-          }
-        }));
+      };
 
-        try {
-          await refreshSingleOptionPriceWithRetry(position, true);
-          successCount += 1;
-        } catch (error) {
-          failureCount += 1;
-          const message = error instanceof Error ? error.message : `${position.ticker} 当前期权价格刷新失败`;
-          failureMessages.push(`${position.ticker}: ${message}`);
+      for (let startIndex = 0; startIndex < positions.length; startIndex += OPTION_REFRESH_ALL_CONCURRENCY) {
+        const batch = positions.slice(startIndex, startIndex + OPTION_REFRESH_ALL_CONCURRENCY);
+
+        batch.forEach((position) => {
           setOptionPriceMessages((current) => ({
             ...current,
             [position.id]: {
-              tone: 'error',
-              text: message
+              tone: 'info',
+              text: '正在刷新期权价格...'
             }
           }));
-        } finally {
-          setRefreshingOptionPriceId(null);
-        }
-
-        setRefreshAllOptionsProgress({
-          current: index + 1,
-          total: positions.length,
-          successCount,
-          failureCount,
-          ticker: position.ticker
         });
 
-        if (index < positions.length - 1) {
+        await Promise.all(
+          batch.map(async (position) => {
+            updateProgress(position.ticker);
+
+        try {
+          const result = await refreshSingleOptionPriceWithRetry(position, true, false);
+          successCount += 1;
+          if (!result.receivedGreeks && !result.hasPersistedGreeks) {
+            priceOnlyCount += 1;
+            failureMessages.push(`${position.ticker}: 仅更新价格，未返回 Delta/Gamma`);
+          }
+        } catch (error) {
+          failureCount += 1;
+          const message = error instanceof Error ? error.message : `${position.ticker} 当前期权价格刷新失败`;
+              failureMessages.push(`${position.ticker}: ${message}`);
+              setOptionPriceMessages((current) => ({
+                ...current,
+                [position.id]: {
+                  tone: 'error',
+                  text: message
+                }
+              }));
+            } finally {
+              completedCount += 1;
+              updateProgress(position.ticker);
+            }
+          })
+        );
+
+        if (startIndex + OPTION_REFRESH_ALL_CONCURRENCY < positions.length) {
           await sleep(PRICE_REFRESH_GAP_MS);
         }
       }
 
       setImportExportMessage(
-        failureCount > 0
-          ? `已刷新 ${successCount} 笔期权，${failureCount} 笔失败：${failureMessages.slice(0, 3).join('；')}${failureMessages.length > 3 ? '……' : ''}`
-          : `已刷新全部 ${successCount} 笔期权价格`
+        failureCount > 0 || priceOnlyCount > 0
+          ? `已刷新 ${successCount} 笔期权，失败 ${failureCount} 笔，只有价格更新 ${priceOnlyCount} 笔：${failureMessages.slice(0, 3).join('；')}${failureMessages.length > 3 ? '……' : ''}`
+          : `已刷新全部 ${successCount} 笔期权价格和 Greeks`
       );
 
       if (successCount > 0) {
-        await persistAppStateSnapshot(
-          buildAppStateSnapshot({
-            config,
-            puts: putsRef.current,
-            closedTrades,
-            stockTrades,
-            tickerList,
-            scenario,
-            vixHistory,
-            accountValueHistory
-          })
-        );
+        try {
+          await persistAppStateSnapshot(
+            buildAppStateSnapshot({
+              config,
+              puts: putsRef.current,
+              closedTrades,
+              stockTrades,
+              tickerList,
+              scenario,
+              vixHistory,
+              accountValueHistory
+            }),
+            undefined,
+            '全部刷新后保存失败',
+            { saveMode: 'merge' }
+          );
+        } catch (error) {
+          setImportExportMessage(`部分期权刷新成功，但整体保存失败: ${error instanceof Error ? error.message : '未知错误'}`);
+        }
       }
     } finally {
       setRefreshAllOptionsProgress(null);
@@ -3139,7 +2866,9 @@ function App() {
     });
 
     try {
-      await persistAppStateSnapshot(nextSnapshot, `已删除 ${deletePreview.ticker}`, '删除期权后保存失败');
+      await persistAppStateSnapshot(nextSnapshot, `已删除 ${deletePreview.ticker}`, '删除期权后保存失败', {
+        allowDestructiveWrite: true
+      });
       setPuts(deleteResult.nextPuts);
       setDeletedPositionIds(nextDeletedPositionIds);
       if (deleteResult.removedTicker) {
@@ -3165,14 +2894,25 @@ function App() {
       return;
     }
 
+    setClosePreviewError('');
     const contractsToClose = Number(closePreview.contractsToClose);
     const buybackPremiumPerShare = Number(closePreview.buybackPremiumPerShare);
     if (!Number.isFinite(contractsToClose) || contractsToClose <= 0 || contractsToClose > closePreview.row.contracts) {
-      setImportExportMessage(`平仓张数请输入 1 到 ${closePreview.row.contracts} 之间的有效数字`);
+      const message = `平仓张数请输入 1 到 ${closePreview.row.contracts} 之间的有效数字`;
+      setImportExportMessage(message);
+      setClosePreviewError(message);
       return;
     }
     if (!Number.isFinite(buybackPremiumPerShare) || buybackPremiumPerShare < 0) {
-      setImportExportMessage('买回权利金请输入有效数字');
+      const message = '买回权利金请输入有效数字';
+      setImportExportMessage(message);
+      setClosePreviewError(message);
+      return;
+    }
+    if (closePreview.closedAt.trim() === '') {
+      const message = '请选择平仓日期';
+      setImportExportMessage(message);
+      setClosePreviewError(message);
       return;
     }
 
@@ -3208,10 +2948,19 @@ function App() {
     const successMessage = `已平仓 ${closePreview.row.ticker} ${contractsToClose} 张，已实现盈亏 ${formatCurrency(
       (closePreview.row.premium_per_share - buybackPremiumPerShare) * contractsToClose * 100
     )}`;
+    const expectedClosedTradeId = closeResult.nextClosedTrades[0]?.id ?? null;
+    const previousClosedTrades = closedTrades;
+    const previousPuts = puts;
+    const previousConfig = config;
+    const previousConfigForm = configForm;
+    const previousDeletedPositionIds = deletedPositionIds;
+    const previousEditingPutId = editingPutId;
+    const previousPutForm = putForm;
+    const previousPutErrors = putErrors;
 
     try {
-      await persistAppStateSnapshot(nextSnapshot, successMessage, '平仓后保存失败');
-
+      setIsClosingPosition(true);
+      setImportExportMessage(`正在保存 ${closePreview.row.ticker} 平仓记录...`);
       setClosedTrades(closeResult.nextClosedTrades);
       setPuts(closeResult.nextPuts);
       setConfig(nextConfig);
@@ -3225,9 +2974,48 @@ function App() {
         setPutForm(createEmptyPut());
         setPutErrors({});
       }
+      await persistAppStateSnapshot(nextSnapshot, successMessage, '平仓后保存失败');
+
+      const persistedSnapshot = await waitForPersistedAppStateSnapshot(
+        (snapshot) =>
+          hasExpectedPersistedPositionState(
+            snapshot.data.puts,
+            closeResult.nextPuts,
+            closePreview.row.id
+          ) &&
+          (
+            expectedClosedTradeId === null ||
+            hasExpectedPersistedClosedTrade(
+              snapshot.data.closedTrades,
+              closeResult.nextClosedTrades,
+              expectedClosedTradeId
+            )
+          ),
+        '平仓保存未生效，请重试'
+      );
+
+      setClosedTrades(persistedSnapshot.data.closedTrades);
+      setPuts(persistedSnapshot.data.puts);
+      setConfig(persistedSnapshot.data.config);
+      setConfigForm(persistedSnapshot.data.config ?? DEFAULT_CONFIG);
       setClosePreview(null);
     } catch (error) {
-      setImportExportMessage(error instanceof Error ? error.message : '平仓后保存失败');
+      setClosedTrades(previousClosedTrades);
+      setPuts(previousPuts);
+      setConfig(previousConfig);
+      setConfigForm(previousConfigForm);
+      setDeletedPositionIds(previousDeletedPositionIds);
+      if (previousEditingPutId === closePreview.row.id) {
+        setEditingPutId(previousEditingPutId);
+        setPutForm(previousPutForm);
+        setPutErrors(previousPutErrors);
+      }
+      const message = error instanceof Error ? error.message : '平仓后保存失败';
+      console.error('confirmClosePut failed', error);
+      setImportExportMessage(message);
+      setClosePreviewError(message);
+    } finally {
+      setIsClosingPosition(false);
     }
   }
 
@@ -3235,7 +3023,7 @@ function App() {
     setHistoryEditPreview(buildClosedTradeEditPreview(trade));
   }
 
-  function confirmEditClosedTrade() {
+  async function confirmEditClosedTrade() {
     if (!historyEditPreview) {
       return;
     }
@@ -3247,25 +3035,41 @@ function App() {
       return;
     }
 
-    setClosedTrades((current) =>
-      updateClosedTrade(current, {
-        tradeId: historyEditPreview.tradeId,
-        ticker: normalizeTicker(historyEditPreview.ticker),
-        option_side: historyEditPreview.optionSide,
-        putStrike: parsedPreview.values.putStrike,
-        premiumSoldPerShare: parsedPreview.values.premiumSoldPerShare,
-        premiumBoughtBackPerShare: parsedPreview.values.premiumBoughtBackPerShare,
-        contracts: parsedPreview.values.contracts,
-        dateSold: historyEditPreview.dateSold,
-        expirationDate: historyEditPreview.expirationDate,
-        closedAt: historyEditPreview.closedAt,
-        closeReason: historyEditPreview.closeReason,
-        reflectionNotes: historyEditPreview.reflectionNotes
-      })
-    );
+    const nextClosedTrades = updateClosedTrade(closedTrades, {
+      tradeId: historyEditPreview.tradeId,
+      ticker: normalizeTicker(historyEditPreview.ticker),
+      option_side: historyEditPreview.optionSide,
+      putStrike: parsedPreview.values.putStrike,
+      premiumSoldPerShare: parsedPreview.values.premiumSoldPerShare,
+      premiumBoughtBackPerShare: parsedPreview.values.premiumBoughtBackPerShare,
+      contracts: parsedPreview.values.contracts,
+      dateSold: historyEditPreview.dateSold,
+      expirationDate: historyEditPreview.expirationDate,
+      closedAt: historyEditPreview.closedAt,
+      closeReason: historyEditPreview.closeReason,
+      reflectionNotes: historyEditPreview.reflectionNotes
+    });
 
-    setImportExportMessage(`已更新 ${normalizeTicker(historyEditPreview.ticker)} 的历史记录`);
-    setHistoryEditPreview(null);
+    try {
+      await persistAppStateSnapshot(
+        buildAppStateSnapshot({
+          config,
+          puts,
+          closedTrades: nextClosedTrades,
+          stockTrades,
+          tickerList,
+          scenario,
+          vixHistory,
+          accountValueHistory
+        }),
+        `已更新 ${normalizeTicker(historyEditPreview.ticker)} 的历史记录`,
+        '历史记录编辑保存失败'
+      );
+      setClosedTrades(nextClosedTrades);
+      setHistoryEditPreview(null);
+    } catch (error) {
+      setImportExportMessage(error instanceof Error ? error.message : '历史记录编辑保存失败');
+    }
   }
 
   function handleUpdateClosedTradeReflection(tradeId: string, reflectionNotes: string) {
@@ -3274,7 +3078,65 @@ function App() {
     );
   }
 
-  function handleAddTicker() {
+  async function handleDeleteClosedTrade(trade: ClosedPutTrade) {
+    if (!window.confirm(`确定删除 ${trade.ticker} 的这条期权历史记录吗？`)) {
+      return;
+    }
+
+    const nextClosedTrades = removeClosedTrade(closedTrades, trade.id);
+
+    try {
+      await persistAppStateSnapshot(
+        buildAppStateSnapshot({
+          config,
+          puts,
+          closedTrades: nextClosedTrades,
+          stockTrades,
+          tickerList,
+          scenario,
+          vixHistory,
+          accountValueHistory
+        }),
+        `已删除 ${trade.ticker} 的期权历史记录`,
+        '删除历史记录失败',
+        { allowDestructiveWrite: true }
+      );
+      setClosedTrades(nextClosedTrades);
+    } catch (error) {
+      setImportExportMessage(error instanceof Error ? error.message : '删除历史记录失败');
+    }
+  }
+
+  async function handleDeleteStockTrade(trade: StockTradeHistory) {
+    if (!window.confirm(`确定删除 ${trade.ticker} 的这条股票交易记录吗？`)) {
+      return;
+    }
+
+    const nextStockTrades = stockTrades.filter((item) => item.id !== trade.id);
+
+    try {
+      await persistAppStateSnapshot(
+        buildAppStateSnapshot({
+          config,
+          puts,
+          closedTrades,
+          stockTrades: nextStockTrades,
+          tickerList,
+          scenario,
+          vixHistory,
+          accountValueHistory
+        }),
+        `已删除 ${trade.ticker} 的股票交易记录`,
+        '删除股票交易记录失败',
+        { allowDestructiveWrite: true }
+      );
+      setStockTrades(nextStockTrades);
+    } catch (error) {
+      setImportExportMessage(error instanceof Error ? error.message : '删除股票交易记录失败');
+    }
+  }
+
+  async function handleAddTicker() {
     const normalized = normalizeTicker(newTicker);
     if (normalized === '') {
       setTickerMessage('请输入股票代码');
@@ -3288,27 +3150,45 @@ function App() {
       return;
     }
 
-    setTickerList((current) =>
-      addTickerEntry(current, {
-        ticker: newTicker,
-        beta: newTickerBeta,
-        shares: newTickerShares,
-        averageCostBasis: newTickerAverageCost,
-        downsideTolerancePct: newTickerTolerancePct,
-        providerExchange: newTickerExchange,
-        providerMicCode: newTickerMicCode
-      })
-    );
-    setDeletedTickers((current) => current.filter((item) => item !== normalized));
-    setPutForm((current) => ({ ...current, ticker: normalized }));
-    setNewTicker('');
-    setNewTickerBeta('');
-    setNewTickerShares('');
-    setNewTickerAverageCost('');
-    setNewTickerTolerancePct('');
-    setNewTickerExchange('');
-    setNewTickerMicCode('');
-    setTickerMessage(`已添加 ${normalized}`);
+    const nextTickerList = addTickerEntry(tickerList, {
+      ticker: newTicker,
+      beta: newTickerBeta,
+      shares: newTickerShares,
+      averageCostBasis: newTickerAverageCost,
+      downsideTolerancePct: newTickerTolerancePct,
+      providerExchange: newTickerExchange,
+      providerMicCode: newTickerMicCode
+    });
+
+    try {
+      await persistAppStateSnapshot(
+        buildAppStateSnapshot({
+          config,
+          puts,
+          closedTrades,
+          stockTrades,
+          tickerList: nextTickerList,
+          scenario,
+          vixHistory,
+          accountValueHistory
+        }),
+        `已添加 ${normalized}`,
+        '添加股票标的失败'
+      );
+      setTickerList(nextTickerList);
+      setDeletedTickers((current) => current.filter((item) => item !== normalized));
+      setPutForm((current) => ({ ...current, ticker: normalized }));
+      setNewTicker('');
+      setNewTickerBeta('');
+      setNewTickerShares('');
+      setNewTickerAverageCost('');
+      setNewTickerTolerancePct('');
+      setNewTickerExchange('');
+      setNewTickerMicCode('');
+      setTickerMessage(`已添加 ${normalized}`);
+    } catch (error) {
+      setTickerMessage(error instanceof Error ? error.message : '添加股票标的失败');
+    }
   }
 
   function handleStartTickerEdit(entry: TickerEntry) {
@@ -3337,7 +3217,13 @@ function App() {
     setTickerDrafts((current) => ({
       ...current,
       [ticker]: {
-        ...(current[ticker] ?? { beta: '', shares: '', averageCostBasis: '', downsideTolerancePct: '' }),
+        ...(current[ticker] ?? {
+          beta: '',
+          shares: '',
+          averageCostBasis: '',
+          targetTrimPrice: '',
+          buyRsiAlert: ''
+        }),
         [field]: value
       }
     }));
@@ -3353,7 +3239,8 @@ function App() {
       beta: draft.beta.trim() === '' ? null : Number(draft.beta),
       shares: draft.shares.trim() === '' ? null : Number(draft.shares),
       average_cost_basis: draft.averageCostBasis.trim() === '' ? null : Number(draft.averageCostBasis),
-      downside_tolerance_pct: draft.downsideTolerancePct.trim() === '' ? null : Number(draft.downsideTolerancePct) / 100
+      target_trim_price: draft.targetTrimPrice.trim() === '' ? null : Number(draft.targetTrimPrice),
+      buy_rsi_alert: draft.buyRsiAlert.trim() === '' ? null : Number(draft.buyRsiAlert)
     });
 
     try {
@@ -3402,7 +3289,8 @@ function App() {
           accountValueHistory
         }),
         `已删除 ${ticker}`,
-        '删除股票后保存失败'
+        '删除股票后保存失败',
+        { allowDestructiveWrite: true }
       );
       setTickerList(nextTickerList);
       setDeletedTickers(nextDeletedTickers);
@@ -3437,6 +3325,11 @@ function App() {
   }
 
   function handleOpenBuyStock(entry: TickerEntry) {
+    const defaultLossPct =
+      typeof entry.downside_tolerance_pct === 'number' && Number.isFinite(entry.downside_tolerance_pct)
+        ? (entry.downside_tolerance_pct * 100).toFixed(1).replace(/\.0$/, '')
+        : '10';
+
     setBuyStockPreview({
       ticker: entry.ticker,
       currentShares: entry.shares ?? 0,
@@ -3446,7 +3339,14 @@ function App() {
           ? entry.current_price.toFixed(2)
           : typeof entry.average_cost_basis === 'number' && Number.isFinite(entry.average_cost_basis)
             ? entry.average_cost_basis.toFixed(2)
-            : ''
+            : '',
+      tradeType: '中线',
+      investmentLogic: '',
+      expectedUpsidePct: '',
+      maxLossPct: defaultLossPct,
+      plannedHoldingTime: '',
+      exitStrategy: `跌破 -${defaultLossPct}% 止损，或买入逻辑失效时退出`,
+      isOneWayDoor: false
     });
   }
 
@@ -3600,59 +3500,11 @@ function App() {
   }
 
   function applyQuotesPayload(payload: QuotesPayload, requestedTickers: string[]) {
-    const quotes = payload.quotes ?? {};
-    const rsi = payload.rsi ?? {};
-    const rsi1h = payload.rsi1h ?? {};
-    const ma21 = payload.ma21 ?? {};
-    const ma200 = payload.ma200 ?? {};
-    const currentIv = payload.currentIv ?? {};
-    const nextEarningsDate = payload.nextEarningsDate ?? {};
-    const historicalIv = payload.historicalIv ?? {};
-    const ivRank = payload.ivRank ?? {};
-    const ivPercentile = payload.ivPercentile ?? {};
-    const putCallRatio = payload.putCallRatio ?? {};
-    const refreshedAt = payload.as_of ?? new Date().toISOString();
-
-    setTickerList((current) =>
-      current.map((entry) => {
-        if (!requestedTickers.includes(entry.ticker)) {
-          return entry;
-        }
-
-        const hasQuote = typeof quotes[entry.ticker] === 'number';
-        const hasRsi = typeof rsi[entry.ticker] === 'number';
-        const hasRsi1h = typeof rsi1h[entry.ticker] === 'number';
-        const hasMa21 = typeof ma21[entry.ticker] === 'number';
-        const hasMa200 = typeof ma200[entry.ticker] === 'number';
-        const hasCurrentIv = typeof currentIv[entry.ticker] === 'number';
-        const hasHistoricalIv = typeof historicalIv[entry.ticker] === 'number';
-        const hasIvRank = typeof ivRank[entry.ticker] === 'number';
-        const hasIvPercentile = typeof ivPercentile[entry.ticker] === 'number';
-        const hasPutCallRatio = typeof putCallRatio[entry.ticker] === 'number';
-        const hasEarningsDate = typeof nextEarningsDate[entry.ticker] === 'string' && nextEarningsDate[entry.ticker] !== '';
-        const hasAnyMarketDataUpdate =
-          hasQuote || hasRsi || hasMa21 || hasMa200 || hasCurrentIv || hasHistoricalIv || hasIvRank || hasIvPercentile || hasPutCallRatio || hasEarningsDate;
-
-        return {
-          ...entry,
-          current_price: hasQuote ? quotes[entry.ticker] : entry.current_price,
-          last_updated: hasAnyMarketDataUpdate ? refreshedAt : entry.last_updated,
-          next_earnings_date: hasEarningsDate ? nextEarningsDate[entry.ticker] : entry.next_earnings_date,
-          rsi_14: hasRsi ? rsi[entry.ticker] : entry.rsi_14,
-          rsi_14_1h: hasRsi1h ? rsi1h[entry.ticker] : entry.rsi_14_1h,
-          rsi_updated: hasRsi ? refreshedAt : entry.rsi_updated,
-          ma_21: hasMa21 ? ma21[entry.ticker] : entry.ma_21,
-          ma_200: hasMa200 ? ma200[entry.ticker] : entry.ma_200,
-          current_iv: hasCurrentIv ? currentIv[entry.ticker] : entry.current_iv,
-          current_iv_updated: hasCurrentIv ? refreshedAt : entry.current_iv_updated,
-          historical_iv: hasHistoricalIv ? historicalIv[entry.ticker] : entry.historical_iv,
-          iv_rank: hasIvRank ? ivRank[entry.ticker] : entry.iv_rank,
-          iv_percentile: hasIvPercentile ? ivPercentile[entry.ticker] : entry.iv_percentile,
-          put_call_ratio: hasPutCallRatio ? putCallRatio[entry.ticker] : entry.put_call_ratio,
-          put_call_ratio_updated: hasPutCallRatio ? refreshedAt : entry.put_call_ratio_updated
-        };
-      })
-    );
+    const baseTickerList = tickerListRef.current.length > 0 ? tickerListRef.current : tickerList;
+    const nextTickerList = applyQuoteRefreshToTickerList(baseTickerList, payload, requestedTickers);
+    tickerListRef.current = nextTickerList;
+    setTickerList(nextTickerList);
+    return nextTickerList;
   }
 
   async function fetchQuotesForEntries(entries: TickerEntry[], mode: QuoteRefreshMode = 'full') {
@@ -3673,8 +3525,8 @@ function App() {
       throw new Error(payload.error ?? '价格刷新失败');
     }
 
-    applyQuotesPayload(payload, entries.map((entry) => entry.ticker));
-    return payload;
+    const nextTickerList = applyQuotesPayload(payload, entries.map((entry) => entry.ticker));
+    return { payload, nextTickerList };
   }
 
   async function refreshTickerQuotesWithRetry(entry: TickerEntry, mode: QuoteRefreshMode) {
@@ -3693,8 +3545,8 @@ function App() {
   }
 
   async function refreshTickerMarketData(entry: TickerEntry, mode: QuoteRefreshMode) {
-    const payload = await refreshTickerQuotesWithRetry(entry, mode);
-    return { payload, pcrUpdated: typeof payload.putCallRatio?.[entry.ticker] === 'number', pcrError: '' };
+    const { payload, nextTickerList } = await refreshTickerQuotesWithRetry(entry, mode);
+    return { payload, nextTickerList, pcrUpdated: typeof payload.putCallRatio?.[entry.ticker] === 'number', pcrError: '' };
   }
 
   async function handleRefreshTicker(entry: TickerEntry) {
@@ -3707,10 +3559,25 @@ function App() {
     setPriceRefreshMessage('');
 
     try {
-      const { payload, pcrUpdated, pcrError } = await refreshTickerMarketData(entry, 'full');
+      const { payload, nextTickerList, pcrUpdated, pcrError } = await refreshTickerMarketData(entry, 'full');
       const quotes = payload.quotes ?? {};
 
       if (typeof quotes[entry.ticker] === 'number') {
+        await persistAppStateSnapshot(
+          buildAppStateSnapshot({
+            config,
+            puts,
+            closedTrades,
+            stockTrades,
+            tickerList: nextTickerList,
+            scenario,
+            vixHistory,
+            accountValueHistory
+          }),
+          undefined,
+          `${entry.ticker} 刷新后保存失败`,
+          { saveMode: 'merge' }
+        );
         const errorMessage = payload.errors?.[entry.ticker];
         setPriceRefreshMessage(
           errorMessage || pcrError
@@ -3729,6 +3596,37 @@ function App() {
     }
   }
 
+  async function handleToggleOptionSnapshot(entry: TickerEntry) {
+    const nowEnabled = entry.option_snapshot_enabled === true;
+    const nextEnabled = !nowEnabled;
+    const nextTickerList = tickerList.map((item) =>
+      item.ticker === entry.ticker
+        ? { ...item, option_snapshot_enabled: nextEnabled }
+        : item
+    );
+    try {
+      await persistAppStateSnapshot(
+        buildAppStateSnapshot({
+          config,
+          puts,
+          closedTrades,
+          stockTrades,
+          tickerList: nextTickerList,
+          scenario,
+          vixHistory,
+          accountValueHistory
+        }),
+        nextEnabled
+          ? `已为 ${entry.ticker} 启用期权快照采集`
+          : `已为 ${entry.ticker} 停用期权快照采集`,
+        '保存期权快照设置失败'
+      );
+      setTickerList(nextTickerList);
+    } catch (error) {
+      setPriceRefreshMessage(error instanceof Error ? error.message : '保存期权快照设置失败');
+    }
+  }
+
   async function handleRefreshAllTickers() {
     if (tickerList.length === 0) {
       setPriceRefreshMessage('没有可刷新的股票代码');
@@ -3739,6 +3637,10 @@ function App() {
     if (entries.length === 0) {
       setPriceRefreshMessage('没有可刷新的股票代码');
       return;
+    }
+
+    if (tickerListRef.current.length === 0) {
+      tickerListRef.current = entries;
     }
 
     setIsRefreshingAllTickers(true);
@@ -3805,6 +3707,28 @@ function App() {
           ? `已慢速刷新 ${successCount} 个股票价格，${partialFailures} 个未成功更新：${failureMessages.slice(0, 4).join('；')}${failureMessages.length > 4 ? '……' : ''}`
           : `已慢速刷新全部 ${successCount} 个股票价格`
       );
+
+      if (successCount > 0) {
+        try {
+          await persistAppStateSnapshot(
+            buildAppStateSnapshot({
+              config,
+              puts,
+              closedTrades,
+              stockTrades,
+              tickerList: tickerListRef.current,
+              scenario,
+              vixHistory,
+              accountValueHistory
+            }),
+            undefined,
+            '全部刷新后保存失败',
+            { saveMode: 'merge' }
+          );
+        } catch (error) {
+          setPriceRefreshMessage(`部分股票刷新成功，但整体保存失败: ${error instanceof Error ? error.message : '未知错误'}`);
+        }
+      }
     } finally {
       setRefreshAllProgress(null);
       setIsRefreshingAllTickers(false);
@@ -3885,104 +3809,6 @@ function App() {
     }
   }
 
-  async function handleAnalyzePreTrade() {
-    if (!preTradeCandidate) {
-      return;
-    }
-
-    if (!isPreTradeQuestionnaireComplete(preTradeQuestionnaire)) {
-      setPreTradeError('请先完成所有卖前选择题');
-      return;
-    }
-
-    const rationale = buildPreTradeRationale(preTradeCandidate, preTradeQuestionnaire);
-    const tickerEntry = tickerMap.get(preTradeCandidate.ticker);
-    setIsPreTradeAnalyzing(true);
-    setPreTradeError('');
-    setPreTradeAnalysis(null);
-
-    try {
-      const response = await fetch('/api/pre-trade-analysis', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          ticker: preTradeCandidate.ticker,
-          option_side: preTradeCandidate.option_side ?? 'put',
-          contracts: preTradeCandidate.contracts,
-          put_strike: preTradeCandidate.put_strike,
-          premium_per_share: preTradeCandidate.premium_per_share,
-          expiration_date: preTradeCandidate.expiration_date,
-          date_sold: preTradeCandidate.date_sold,
-          current_price: tickerEntry?.current_price?.toFixed(2) ?? '-',
-          beta: tickerEntry?.beta?.toFixed(2) ?? '-',
-          rsi_14: tickerEntry?.rsi_14?.toFixed(1) ?? '-',
-          ma_21: tickerEntry?.ma_21?.toFixed(2) ?? '-',
-          ma_200: tickerEntry?.ma_200?.toFixed(2) ?? '-',
-          current_iv:
-            tickerEntry?.current_iv === null || tickerEntry?.current_iv === undefined
-              ? '-'
-              : tickerEntry.current_iv.toFixed(6),
-          user_rationale: rationale
-        })
-      });
-
-      const payload = (await response.json()) as {
-        analysis?: PreTradeAnalysisResult['analysis'];
-        sources?: Array<{ title: string; url: string }>;
-        market_context?: PreTradeAnalysisResult['marketContext'];
-        as_of?: string;
-        error?: string;
-      };
-
-      if (!response.ok || payload.error || typeof payload.analysis !== 'object' || payload.analysis === null) {
-        throw new Error(payload.error ?? 'Gemini 卖前分析失败');
-      }
-
-      setPreTradeAnalysis({
-        analysis: payload.analysis,
-        sources: Array.isArray(payload.sources) ? payload.sources : [],
-        marketContext: payload.market_context && typeof payload.market_context === 'object' ? payload.market_context : undefined,
-        asOf: payload.as_of ?? new Date().toISOString()
-      });
-    } catch (error) {
-      setPreTradeError(formatGeminiError(error, 'Gemini 卖前分析失败'));
-    } finally {
-      setIsPreTradeAnalyzing(false);
-    }
-  }
-
-  async function handleConfirmPreTrade() {
-    if (!preTradeCandidate) {
-      return;
-    }
-
-    if (!preTradeAnalysis) {
-      setPreTradeError('请先完成 Gemini 卖前分析，再决定是否继续');
-      return;
-    }
-
-    try {
-      const candidate = buildPutCandidateFromPreTrade(
-        preTradeCandidate,
-        buildPreTradeRationale(preTradeCandidate, preTradeQuestionnaire),
-        preTradeAnalysis
-      );
-      const result = await runPutChecksAndSave(candidate);
-
-      if (shouldClearPreTradeState(result)) {
-        setPreTradeCandidate(null);
-        setPreTradeQuestionnaire(createEmptyPreTradeQuestionnaire());
-        setPreTradeError('');
-        setPreTradeAnalysis(null);
-        setPreTradeContext(null);
-      }
-    } catch (error) {
-      setPreTradeError(error instanceof Error ? error.message : '进入风险检查时发生异常，已保留当前输入');
-    }
-  }
-
   function handleExportData() {
     const payload = buildAppStateSnapshot({
       config: configForm ?? config,
@@ -4035,26 +3861,46 @@ function App() {
   async function persistAppStateSnapshot(
     snapshot: ReturnType<typeof buildAppStateSnapshot>,
     successMessage?: string,
-    failureFallback = '保存失败'
+    failureFallback = '保存失败',
+    options?: { saveMode?: 'merge' | 'replace'; allowDestructiveWrite?: boolean }
   ) {
-    const response = await fetch('/api/app-state', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-App-State-Save-Mode': options?.saveMode === 'merge' ? 'merge' : 'replace',
+      'X-App-State-Allow-Destructive': options?.allowDestructiveWrite ? 'true' : 'false'
+    };
+
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const response = await fetch('/api/app-state', {
+          method: 'POST',
+      headers,
       body: JSON.stringify(snapshot)
-    });
-    const payload = (await response.json()) as { ok?: boolean; error?: string };
+        });
+        const payload = await readJsonResponse<{ ok?: boolean; error?: string; storage?: { driver?: string | null } }>(response);
 
-    if (!response.ok || payload.error) {
-      throw new Error(payload.error ?? failureFallback);
+        if (!response.ok || payload.error) {
+          throw new Error(payload.error ?? failureFallback);
+        }
+
+        hasLoadedRemoteSnapshotRef.current = true;
+        lastAutoSavedSnapshotRef.current = JSON.stringify(snapshot);
+        clearCoreAppStateCache();
+        if (successMessage) {
+          setImportExportMessage(formatPersistSuccessMessage(successMessage, payload.storage) ?? successMessage);
+        }
+        return;
+      } catch (error) {
+        lastError = error;
+        if (!(error instanceof TypeError && error.message === 'Failed to fetch') || attempt === 1) {
+          break;
+        }
+        await sleep(400);
+      }
     }
 
-    hasLoadedRemoteSnapshotRef.current = true;
-    clearCoreAppStateCache();
-    if (successMessage) {
-      setImportExportMessage(successMessage);
-    }
+    throw new Error(formatFetchFailure(lastError, failureFallback));
   }
 
   async function handleSaveAppState(configOverride?: Config | null) {
@@ -4093,6 +3939,7 @@ function App() {
         setClosedTrades(snapshot.data.closedTrades);
         setStockTrades(snapshot.data.stockTrades);
         setAccountValueHistory(snapshot.data.accountValueHistory);
+        tickerListRef.current = snapshot.data.tickerList;
         setTickerList(snapshot.data.tickerList);
         setDeletedTickers([]);
         setDeletedPositionIds([]);
@@ -4104,6 +3951,7 @@ function App() {
         const payload = parsePutPositionsImportPayload(raw);
         const imported = applyPutPositionsImportPayload(payload);
         setPuts(imported.puts);
+        tickerListRef.current = imported.tickerList;
         setTickerList(imported.tickerList);
         setDeletedTickers([]);
         setImportExportMessage('Option 数据导入成功');
@@ -4147,27 +3995,15 @@ function App() {
       ].filter((point, index, list) => list.findIndex((candidate) => candidate.timestamp === point.timestamp) === index);
   const riskCurveMinCapital = Math.min(...riskCurvePoints.map((point) => point.capital), riskCurveCapitalBase || 0);
   const riskCurveMaxCapital = Math.max(...riskCurvePoints.map((point) => point.capital), riskCurveCapitalBase || 0);
-  const riskCurveRange = Math.max(riskCurveMaxCapital - riskCurveMinCapital, Math.max((riskCurveCapitalBase || 0) * 0.05, 1));
-  const riskCurvePointsChart = riskCurvePoints.map((point, index) => {
-    const x = riskCurvePoints.length === 1 ? chartLeft + plotWidth / 2 : chartLeft + (index / (riskCurvePoints.length - 1)) * plotWidth;
-    const y = chartTop + ((riskCurveMaxCapital - point.capital) / riskCurveRange) * plotHeight;
-    return { ...point, x, y };
-  });
-  const riskCurveLinePath = buildSmoothLinePath(riskCurvePointsChart);
-  const riskCurveAreaPath =
-    riskCurvePointsChart.length === 0
-      ? ''
-      : `${riskCurveLinePath} L ${riskCurvePointsChart[riskCurvePointsChart.length - 1].x.toFixed(2)} ${(chartTop + plotHeight).toFixed(2)} L ${riskCurvePointsChart[0].x.toFixed(2)} ${(chartTop + plotHeight).toFixed(2)} Z`;
-  const riskCurveMinScenarioPct = riskCurvePoints[0]?.scenarioPct ?? -0.3;
-  const riskCurveMaxScenarioPct = riskCurvePoints[riskCurvePoints.length - 1]?.scenarioPct ?? 0.3;
-  const currentRiskCurvePoint = (() => {
-    const capital = riskCalculator.scenarioCapital;
-    const clampedPct = Math.min(Math.max(riskCalculatorDropPct, -1), 1);
-    const scenarioSpan = Math.max(riskCurveMaxScenarioPct - riskCurveMinScenarioPct, 0.0001);
-    const x = chartLeft + ((clampedPct - riskCurveMinScenarioPct) / scenarioSpan) * plotWidth;
-    const y = chartTop + ((riskCurveMaxCapital - capital) / riskCurveRange) * plotHeight;
-    return { x: Math.min(chartLeft + plotWidth, Math.max(chartLeft, x)), y, capital };
-  })();
+  const currentRiskCurvePoint = useMemo(
+    () =>
+      riskCurvePoints.find((point) => Math.abs(point.scenarioPct - riskCalculatorDropPct) < 0.000001) ?? {
+        scenarioPct: riskCalculatorDropPct,
+        capital: riskCalculator.scenarioCapital,
+        netChange: riskCalculator.totalNetChange
+      },
+    [riskCalculator.scenarioCapital, riskCalculator.totalNetChange, riskCalculatorDropPct, riskCurvePoints]
+  );
 
   return (
     <div className="app-shell">
@@ -4206,6 +4042,15 @@ function App() {
           aria-selected={activeTab === 'dashboard'}
         >
           Dashboard
+        </button>
+        <button
+          className={`segment ${activeTab === 'risk_first' ? 'active' : ''}`}
+          onClick={() => setActiveTab('risk_first')}
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'risk_first'}
+        >
+          Stop Loss
         </button>
         <button
           className={`segment ${activeTab === 'sell' ? 'active' : ''}`}
@@ -4350,6 +4195,18 @@ function App() {
                                 <small>总 Delta</small>
                                 <strong className={holding != null && holding.totalDelta < 0 ? 'value-negative' : holding != null && holding.totalDelta > 0 ? 'value-positive' : ''}>
                                   {holding == null ? '-' : `${holding.totalDelta >= 0 ? '+' : ''}${holding.totalDelta.toFixed(1)}`}
+                                </strong>
+                              </span>
+                              <span>
+                                <small>价格变化 1%</small>
+                                <strong className={item.totalDeltaOnePctImpact != null && item.totalDeltaOnePctImpact < 0 ? 'value-negative' : item.totalDeltaOnePctImpact != null && item.totalDeltaOnePctImpact > 0 ? 'value-positive' : ''}>
+                                  {item.totalDeltaOnePctImpact == null ? '-' : formatSignedCurrency(item.totalDeltaOnePctImpact)}
+                                </strong>
+                              </span>
+                              <span>
+                                <small>期权 Theta / day</small>
+                                <strong className={item.totalOptionThetaIncomePerDay != null && item.totalOptionThetaIncomePerDay > 0 ? 'value-positive' : ''}>
+                                  {item.totalOptionThetaIncomePerDay == null ? '-' : formatCurrency(item.totalOptionThetaIncomePerDay)}
                                 </strong>
                               </span>
                             </div>
@@ -4631,6 +4488,101 @@ function App() {
                 </div>
               ))}
             </div>
+            <div className="trend-card account-value-card">
+              <div className="account-value-card-header">
+                <div>
+                  <p className="section-kicker">Portfolio Value</p>
+                  <h3>Daily Equity Curve</h3>
+                </div>
+                <div className="account-value-range-switch" role="tablist" aria-label="Portfolio value range">
+                  {ACCOUNT_VALUE_RANGE_OPTIONS.map((range) => (
+                    <button
+                      key={range}
+                      type="button"
+                      className={`range-chip ${accountValueRange === range ? 'active' : ''}`}
+                      onClick={() => setAccountValueRange(range)}
+                    >
+                      {range}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="account-value-summary">
+                <div className="trend-summary-item">
+                  <span>Latest</span>
+                  <strong>
+                    {accountValueChartSummary.lastPoint ? formatCurrency(accountValueChartSummary.lastPoint.totalCapital) : '暂无数据'}
+                  </strong>
+                  <small>{accountValueChartSummary.lastPoint?.date || '等待日历史生成'}</small>
+                </div>
+                <div className="trend-summary-item">
+                  <span>{accountValueRange} change</span>
+                  <strong
+                    className={
+                      accountValueChartSummary.changeAmount == null
+                        ? ''
+                        : accountValueChartSummary.changeAmount >= 0
+                          ? 'value-positive'
+                          : 'value-negative'
+                    }
+                  >
+                    {formatSignedCurrency(accountValueChartSummary.changeAmount)}
+                  </strong>
+                  <small>{formatSignedPercent(accountValueChartSummary.changePct)}</small>
+                </div>
+                <div className="trend-summary-item">
+                  <span>Points</span>
+                  <strong>{accountValueChartData.length}</strong>
+                  <small>{accountValueChartData.length > 1 ? '按日资产快照' : '需要更多历史点位'}</small>
+                </div>
+              </div>
+              {accountValueChartData.length > 0 ? (
+                <div className="account-value-chart-shell">
+                  <ResponsiveContainer width="100%" height={290}>
+                    <AreaChart data={accountValueChartData} margin={{ top: 8, right: 12, left: 4, bottom: 4 }}>
+                      <defs>
+                        <linearGradient id="accountValueFill" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#0f766e" stopOpacity={0.34} />
+                          <stop offset="55%" stopColor="#1d8f84" stopOpacity={0.16} />
+                          <stop offset="100%" stopColor="#d7f3ee" stopOpacity={0.02} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid stroke="rgba(148, 163, 184, 0.18)" vertical={false} />
+                      <XAxis
+                        dataKey="shortDate"
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fill: '#6b7b8c', fontSize: 12 }}
+                        minTickGap={28}
+                      />
+                      <YAxis
+                        axisLine={false}
+                        tickLine={false}
+                        tick={{ fill: '#6b7b8c', fontSize: 12 }}
+                        width={76}
+                        domain={accountValueChartDomain ?? ['auto', 'auto']}
+                        tickFormatter={renderAccountValueAxisTick}
+                      />
+                      <Tooltip content={<AccountValueTooltip />} cursor={{ stroke: 'rgba(15, 118, 110, 0.16)', strokeWidth: 1 }} />
+                      <Area
+                        type="monotone"
+                        dataKey="totalCapital"
+                        stroke="#0f5f73"
+                        strokeWidth={3}
+                        fill="url(#accountValueFill)"
+                        dot={false}
+                        activeDot={{ r: 5, strokeWidth: 2, stroke: '#ffffff', fill: '#0f766e' }}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <div className="dashboard-empty-state account-value-empty-state">
+                  <strong>还没有足够的资产历史</strong>
+                  <span>等今天的组合快照写入后，这里会开始显示每天的净资产变化。</span>
+                </div>
+              )}
+            </div>
             <div className="section-header">
               <div>
                 <p className="section-kicker">Scenario</p>
@@ -4694,68 +4646,68 @@ function App() {
                   </small>
                 </div>
               </div>
-              <svg className="trend-chart trend-chart-rich" viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none" role="img" aria-label="Risk curve">
-                <defs>
-                  <linearGradient id="riskCurveFill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="rgba(37, 99, 235, 0.22)" />
-                    <stop offset="100%" stopColor="rgba(37, 99, 235, 0.02)" />
-                  </linearGradient>
-                </defs>
-                <rect x="0" y="0" width={chartWidth} height={chartHeight} className="trend-surface" />
-                {[0.25, 0.5, 0.75].map((step) => {
-                  const y = chartTop + plotHeight * step;
-                  return <line key={step} x1={chartLeft} y1={y} x2={chartLeft + plotWidth} y2={y} className="grid-line" />;
-                })}
-                {[-0.3, -0.2, -0.1, 0, 0.1, 0.2, 0.3].map((pct) => {
-                  const scenarioSpan = Math.max(riskCurvePoints[riskCurvePoints.length - 1].scenarioPct - riskCurvePoints[0].scenarioPct, 0.0001);
-                  const x = chartLeft + ((pct - riskCurvePoints[0].scenarioPct) / scenarioSpan) * plotWidth;
-                  return (
-                    <g key={pct}>
-                      <line x1={x} y1={chartTop} x2={x} y2={chartTop + plotHeight} className="grid-line vertical" />
-                      <text x={x} y={chartHeight - 10} textAnchor="middle" className="chart-axis-label">
-                        {formatSignedPercent(pct)}
-                      </text>
-                    </g>
-                  );
-                })}
-                {[riskCurveMaxCapital, riskCalculator.capitalBase, riskCurveMinCapital].map((capital, index) => {
-                  const y = chartTop + ((riskCurveMaxCapital - capital) / riskCurveRange) * plotHeight;
-                  return (
-                    <g key={`${capital}-${index}`}>
-                      <text x={chartLeft + 4} y={y - 6} className="chart-label">
-                        {formatCurrency(capital)}
-                      </text>
-                    </g>
-                  );
-                })}
-                {riskCurveAreaPath && <path d={riskCurveAreaPath} className="risk-curve-area" />}
-                {riskCurveLinePath && <path d={riskCurveLinePath} className="risk-curve-line" />}
-                <g>
-                  <line
-                    x1={currentRiskCurvePoint.x}
-                    y1={currentRiskCurvePoint.y}
-                    x2={currentRiskCurvePoint.x}
-                    y2={chartTop + plotHeight}
-                    className="latest-guide"
-                  />
-                  <circle cx={currentRiskCurvePoint.x} cy={currentRiskCurvePoint.y} r="6" className="trend-point yellow" />
-                  <text x={Math.max(chartLeft + 6, currentRiskCurvePoint.x - 10)} y={currentRiskCurvePoint.y - 12} className="latest-point-label">
-                    {formatCurrency(currentRiskCurvePoint.capital)}
-                  </text>
-                </g>
-                <text x={chartLeft + plotWidth / 2} y={chartHeight - 2} textAnchor="middle" className="chart-axis-title">
-                  涨跌幅情景（横轴）
-                </text>
-                <text
-                  x={10}
-                  y={chartTop + plotHeight / 2}
-                  textAnchor="middle"
-                  transform={`rotate(-90 10 ${chartTop + plotHeight / 2})`}
-                  className="chart-axis-title"
-                >
-                  总资金（纵轴）
-                </text>
-              </svg>
+              <div className="account-value-chart-shell risk-curve-chart-shell">
+                <ResponsiveContainer width="100%" height={220}>
+                  <AreaChart data={riskCurvePoints} margin={{ top: 8, right: 14, left: 6, bottom: 8 }}>
+                    <defs>
+                      <linearGradient id="riskCurveFillRecharts" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#2563eb" stopOpacity={0.24} />
+                        <stop offset="58%" stopColor="#60a5fa" stopOpacity={0.12} />
+                        <stop offset="100%" stopColor="#dbeafe" stopOpacity={0.02} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke="rgba(148, 163, 184, 0.18)" vertical={false} />
+                    <XAxis
+                      dataKey="scenarioPct"
+                      type="number"
+                      domain={[-0.3, 0.3]}
+                      ticks={[-0.3, -0.2, -0.1, 0, 0.1, 0.2, 0.3]}
+                      axisLine={false}
+                      tickLine={false}
+                      tick={{ fill: '#6b7b8c', fontSize: 12 }}
+                      tickFormatter={(value) => formatSignedPercent(value)}
+                      label={{ value: '涨跌幅情景（横轴）', position: 'insideBottom', offset: -2, fill: '#6b7b8c', fontSize: 12 }}
+                    />
+                    <YAxis
+                      type="number"
+                      domain={[Math.floor(riskCurveMinCapital), Math.ceil(riskCurveMaxCapital)]}
+                      axisLine={false}
+                      tickLine={false}
+                      width={76}
+                      tick={{ fill: '#6b7b8c', fontSize: 12 }}
+                      tickFormatter={renderAccountValueAxisTick}
+                    />
+                    <Tooltip content={<RiskCurveTooltip />} cursor={{ stroke: 'rgba(37, 99, 235, 0.16)', strokeWidth: 1 }} />
+                    <ReferenceLine
+                      y={riskCalculator.capitalBase}
+                      stroke="rgba(100, 116, 139, 0.55)"
+                      strokeDasharray="5 5"
+                    />
+                    <ReferenceLine
+                      x={currentRiskCurvePoint.scenarioPct}
+                      stroke="rgba(214, 163, 0, 0.82)"
+                      strokeDasharray="5 5"
+                    />
+                    <ReferenceDot
+                      x={currentRiskCurvePoint.scenarioPct}
+                      y={currentRiskCurvePoint.capital}
+                      r={5}
+                      fill="#d6a300"
+                      stroke="#ffffff"
+                      strokeWidth={2}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="capital"
+                      stroke="#2563eb"
+                      strokeWidth={3}
+                      fill="url(#riskCurveFillRecharts)"
+                      dot={false}
+                      activeDot={{ r: 5, strokeWidth: 2, stroke: '#ffffff', fill: '#2563eb' }}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
               <div className="trend-footnote">
                 横轴范围固定为 -30% 到 +30%。黄色圆点表示你当前输入情景对应的总资金。
               </div>
@@ -4895,7 +4847,7 @@ function App() {
               ) : (
                 <div className="ticker-risk-list">
                   {topIvRankStocks.map((item, index) => (
-                    <div key={`iv-rank-${item.ticker}`} className="ticker-risk-item">
+                    <div key={`iv-rank-${item.ticker}`} className="ticker-risk-item top-iv-rank-item">
                       <div className="ticker-risk-main">
                         <span>{`${index + 1}. ${item.ticker}`}</span>
                         <small>
@@ -4903,9 +4855,17 @@ function App() {
                           {item.currentIv == null ? '' : ` · Current IV ${(item.currentIv * 100).toFixed(1)}%`}
                         </small>
                       </div>
-                      <div className="ticker-risk-main" style={{ justifyItems: 'end' }}>
+                      <div className="ticker-risk-main top-iv-rank-meta">
                         <span className={`pill-badge ${getIvRankTone(item.ivRank)}`}>{`IV Rank ${item.ivRank.toFixed(1)}`}</span>
-                        <small>{item.marketValue > 0 ? `持仓 ${formatCurrency(item.marketValue)}` : '未录入持仓金额'}</small>
+                        {item.totalCapitalUsage > 0 ? (
+                          <div className="top-iv-rank-usage">
+                            <span><strong>股票</strong>{formatCurrency(item.marketValue)}</span>
+                            <span><strong>期权占用</strong>{formatCurrency(item.optionCapitalUsage)}</span>
+                            <span><strong>占总资金</strong>{item.capitalUsagePct == null ? '-' : formatPercent(item.capitalUsagePct)}</span>
+                          </div>
+                        ) : (
+                          <small>未录入持仓金额</small>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -5001,6 +4961,8 @@ function App() {
                           买回价 {row.option_market_price_per_share == null ? '-' : formatCurrency(row.option_market_price_per_share)}
                           {' · '}
                           盈利百分比 {row.premiumCapturedPct == null ? '-' : formatPercent(row.premiumCapturedPct)}
+                          {' · '}
+                          剩余年化收益 {formatPercent(row.annualizedYield)}
                         </small>
                         <small>
                           {reasons.join(' · ')}
@@ -5285,6 +5247,123 @@ function App() {
           </>
         )}
 
+        {activeTab === 'risk_first' && (
+        <section className="card risk-first-system">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">止损价计算</p>
+              <h2>Stop Loss</h2>
+            </div>
+          </div>
+          {copyMessage && <div className="copy-message">{copyMessage}</div>}
+          <div className="section-subhead">
+            <h3>现有股票持仓检查</h3>
+          </div>
+          {currentStockRiskFirstDecisions.length === 0 ? (
+            <div className="empty-state compact-empty">当前没有股票持仓可分析。</div>
+          ) : (
+            <div className="risk-first-holdings">
+              {currentStockRiskFirstDecisions.map((item) => {
+                const isTriggered = 
+                  (item.onePercentStopPrice != null && item.currentPrice != null && item.currentPrice <= item.onePercentStopPrice) ||
+                  (item.atrStopPrice != null && item.currentPrice != null && item.currentPrice <= item.atrStopPrice);
+                const isApproached =
+                  !isTriggered &&
+                  ((item.onePercentStopPrice != null && item.currentPrice != null && item.currentPrice <= item.onePercentStopPrice * 1.02) ||
+                  (item.atrStopPrice != null && item.currentPrice != null && item.currentPrice <= item.atrStopPrice * 1.02));
+                  
+                let cardClass = '';
+                let badgeText = 'SAFE';
+                let badgeColor = 'green';
+                let customStyle = {};
+
+                if (isTriggered) {
+                  cardClass = 'risk-first-block';
+                  badgeText = 'STOP';
+                  badgeColor = 'red';
+                } else if (isApproached) {
+                  badgeText = 'WARN';
+                  badgeColor = 'yellow';
+                  customStyle = { borderColor: 'rgba(245, 158, 11, 0.4)', backgroundColor: 'rgba(245, 158, 11, 0.05)' };
+                } else {
+                  cardClass = 'risk-first-pass';
+                }
+
+                return (
+                  <article
+                    key={`risk-first-${item.ticker}`}
+                    className={`risk-first-decision-card ${cardClass}`}
+                    style={customStyle}
+                  >
+                    <div className="risk-first-decision-head">
+                      <div>
+                        <strong>{item.ticker}</strong>
+                        <small>
+                          {item.shares} 股 · 仓位 {formatPercent(item.positionPct)}
+                          {item.unrealizedPnlPct === null ? '' : ` · 当前盈亏 ${formatSignedPercent(item.unrealizedPnlPct)}`}
+                          {item.currentPrice != null ? ` · 现价 $${item.currentPrice.toFixed(2)}` : ''}
+                        </small>
+                      </div>
+                      <span className={`pill-badge ${badgeColor}`}>
+                        {badgeText}
+                      </span>
+                    </div>
+
+                  {/* ── Risk Metrics Row ── */}
+                  <div className="rf-risk-metrics-grid">
+                    {/* 1% Risk Stop */}
+                    <div className="rf-risk-metric rf-risk-metric--primary">
+                      <div className="rf-risk-metric-label">
+                        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                          <circle cx="6" cy="6" r="5" stroke="currentColor" strokeWidth="1.5"/>
+                          <path d="M6 4v3M6 8.5v.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                        </svg>
+                        1% 风险止损价
+                      </div>
+                      <div className="rf-risk-metric-value" style={{ color: getStopLossColor(item.currentPrice, item.onePercentStopPrice) }}>
+                        {item.onePercentStopPrice != null
+                          ? `$${item.onePercentStopPrice.toFixed(2)}`
+                          : '–'}
+                      </div>
+                      {item.onePercentStopPrice != null && item.averageCostBasis != null && (
+                        <div className="rf-risk-metric-sub">
+                          {`较成本 $${item.averageCostBasis.toFixed(2)} 跌 ${(((item.averageCostBasis - item.onePercentStopPrice) / item.averageCostBasis) * 100).toFixed(1)}%`}
+                          {' · 亏损 ≤ 账户 1%'}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* ATR Stop */}
+                    <div className="rf-risk-metric rf-risk-metric--atr">
+                      <div className="rf-risk-metric-label">
+                        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                          <path d="M1 9 L3 5 L5 7 L7 3 L9 6 L11 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                        ATR(14) 止损价
+                      </div>
+                      <div className="rf-risk-metric-value" style={{ color: getStopLossColor(item.currentPrice, item.atrStopPrice) }}>
+                        {item.atrStopPrice != null
+                          ? `$${item.atrStopPrice.toFixed(2)}`
+                          : item.atr14 == null ? '待刷新数据' : '–'}
+                      </div>
+                      {item.atr14 != null && (
+                        <div className="rf-risk-metric-sub">
+                          {`ATR = $${item.atr14.toFixed(2)}`}
+                          {item.atrBasisPrice != null ? ` · 基于${item.atrBasisLabel} $${item.atrBasisPrice.toFixed(2)}` : ''}
+                          {item.atrStopPrice != null && item.currentPrice != null
+                            ? ` · 跌 ${(((item.currentPrice - item.atrStopPrice) / item.currentPrice) * 100).toFixed(1)}%`
+                            : ''}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </article>
+              )})}
+            </div>
+          )}
+        </section>
+        )}
+
         {activeTab === 'sell' && (
           <>
         <section ref={addPutSectionRef} className="card">
@@ -5387,8 +5466,8 @@ function App() {
             </label>
           </div>
           <div className="inline-actions">
-            <button className="primary-button" onClick={handleSavePut} type="button" disabled={isCheckingPut}>
-              {isCheckingPut ? 'Checking...' : editingPutId ? 'Update option' : 'Add option'}
+            <button className="primary-button" onClick={handleSavePut} type="button" disabled={isSavingPut}>
+              {isSavingPut ? 'Saving...' : editingPutId ? 'Update option' : '卖出'}
             </button>
             {editingPutId && (
               <button
@@ -5423,475 +5502,6 @@ function App() {
               <strong>{formatPercent(putFormAnnualizedYield)}</strong>
             </article>
           </div>
-          {putCheckResult && (
-            <div className={putCheckResult.ok ? 'copy-message' : 'risk-check-banner'}>
-              <strong>{putCheckResult.summary}</strong>
-              {!putCheckResult.ok && putCheckResult.failures.length > 0 && (
-                <ul className="risk-check-list">
-                  {putCheckResult.failures.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
-          {preTradeCandidate && (
-            <section className="card pretrade-inline" aria-labelledby="pre-trade-title">
-              <div className="pretrade-header">
-                <p className="section-kicker">Pre-Trade Check</p>
-                <h3 id="pre-trade-title">{preTradeCandidate.ticker} {getOptionSideLabel(preTradeCandidate.option_side)} 前确认</h3>
-                <div className="copy-message">
-                  <strong>第 1 步：</strong> 系统先自动读取财报日、IV、监管/宏观事件摘要
-                  <br />
-                  <strong>第 2 步：</strong> 完成选择题并点 `开始 Gemini 分析`
-                  <br />
-                  <strong>第 3 步：</strong> 看完分析后点 `下一步：进入风险检查`
-                </div>
-              </div>
-              <div className="pretrade-intro">
-                <p className="modal-copy">
-                  先看系统自动抓取的卖前信息，再用下拉选项确认你的计划。系统会把这些选择整理成卖前理由，再结合市场和公司情况做分析。
-                </p>
-              </div>
-              <div className="summary-grid preview-grid">
-                <article className="summary-card">
-                  <span>Current IV</span>
-                  <strong>
-                    {preTradeContext?.marketContext?.current_iv == null
-                      ? isLoadingPreTradeContext
-                        ? '读取中...'
-                        : '未确认'
-                      : `${(preTradeContext.marketContext.current_iv * 100).toFixed(2)}%`}
-                  </strong>
-                </article>
-                <article className="summary-card">
-                  <span>IV Rank</span>
-                  <strong>
-                    {preTradeContext?.marketContext?.iv_rank == null
-                      ? isLoadingPreTradeContext
-                        ? '读取中...'
-                        : '未确认'
-                      : preTradeContext.marketContext.iv_rank.toFixed(1)}
-                  </strong>
-                </article>
-                <article className="summary-card">
-                  <span>Put/Call Ratio</span>
-                  <strong>
-                    {preTradeContext?.marketContext?.put_call_ratio == null
-                      ? isLoadingPreTradeContext
-                        ? '读取中...'
-                        : '未确认'
-                      : preTradeContext.marketContext.put_call_ratio.toFixed(2)}
-                  </strong>
-                </article>
-                <article className="summary-card">
-                  <span>Next earnings</span>
-                  <strong>{preTradeContext?.marketContext?.next_earnings_date ?? (isLoadingPreTradeContext ? '读取中...' : '未确认')}</strong>
-                </article>
-              </div>
-              <div className="analysis-section">
-                <h4>系统已读取的卖前重点</h4>
-                <div className="analysis-section">
-                  <h4>IV 与权利金环境</h4>
-                  <p>{preTradeContext?.summary.iv_assessment ?? (isLoadingPreTradeContext ? '正在读取 IV 与权利金环境...' : 'IV 摘要暂不可用')}</p>
-                  {renderPreTradeSources(preTradeContext?.source_map?.iv_assessment)}
-                </div>
-                <div className="analysis-section">
-                  <h4>Put/Call Ratio</h4>
-                  <p>
-                    {preTradeContext?.marketContext?.put_call_ratio == null
-                      ? isLoadingPreTradeContext
-                        ? '正在读取 Put/Call Ratio...'
-                        : 'Put/Call Ratio 暂不可用'
-                      : `当前 Put/Call OI Ratio ${preTradeContext.marketContext.put_call_ratio.toFixed(2)}。数值越高，通常表示保护性 Put 或避险需求更强；数值越低，则更偏向 Call 活跃。`}
-                  </p>
-                  {renderPreTradeSources(
-                    preTradeContext?.sources?.filter((source) => source.title.toLowerCase().includes('put/call')) ?? []
-                  )}
-                </div>
-                <div className="analysis-section">
-                  <h4>财报窗口</h4>
-                  <p>{preTradeContext?.summary.earnings_assessment ?? (isLoadingPreTradeContext ? '正在读取财报日...' : '财报信息暂不可用')}</p>
-                  {renderPreTradeSources(preTradeContext?.source_map?.earnings_assessment)}
-                </div>
-                <div className="analysis-section">
-                  <h4>特殊事件窗口</h4>
-                  {preTradeContext?.summary.special_window_assessment &&
-                  !preTradeContext.summary.special_window_assessment.includes('网站暂未直接提供')
-                    ? <p>{preTradeContext.summary.special_window_assessment}</p>
-                    : null}
-                  {isEnrichingPreTradeContext ? <div className="copy-message">正在补充 Gemini 搜索结果...</div> : null}
-                  {renderPreTradeSources(preTradeContext?.source_map?.special_window_assessment)}
-                </div>
-                <div className="analysis-section">
-                  <h4>基本面风险</h4>
-                  {preTradeContext?.summary.fundamental_risk_assessment &&
-                  !preTradeContext.summary.fundamental_risk_assessment.includes('网站暂未直接提供')
-                    ? <p>{preTradeContext.summary.fundamental_risk_assessment}</p>
-                    : null}
-                  {isEnrichingPreTradeContext ? <div className="copy-message">正在补充 Gemini 搜索结果...</div> : null}
-                  {renderPreTradeSources(preTradeContext?.source_map?.fundamental_risk_assessment)}
-                </div>
-                {preTradeContext?.summary.key_flags && preTradeContext.summary.key_flags.length > 0 ? (
-                  <div className="analysis-section">
-                    <h4>重点提醒</h4>
-                    <ul className="risk-check-list">
-                      {preTradeContext.summary.key_flags.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-                {preTradeContext?.sources && preTradeContext.sources.length > 0 ? (
-                  <div className="analysis-sources">
-                    <span>系统读取来源</span>
-                    {preTradeContext.sources.map((source) => (
-                      <a key={source.url} href={source.url} target="_blank" rel="noreferrer">
-                        {source.title}
-                      </a>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-              <div className="form-grid compact pretrade-question-grid">
-                <label>
-                  <span>当前 IV 是否够高？</span>
-                  <select
-                    value={preTradeQuestionnaire.ivView}
-                    onChange={(event) =>
-                      setPreTradeQuestionnaire((current) => ({ ...current, ivView: event.target.value }))
-                    }
-                  >
-                    <option value="">请选择</option>
-                    {PRE_TRADE_IV_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>现在是不是特殊事件窗口？</span>
-                  <select
-                    value={preTradeQuestionnaire.eventWindowView}
-                    onChange={(event) =>
-                      setPreTradeQuestionnaire((current) => ({ ...current, eventWindowView: event.target.value }))
-                    }
-                  >
-                    <option value="">请选择</option>
-                    {PRE_TRADE_EVENT_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>如果价格快速反向，我怎么处理？</span>
-                  <select
-                    value={preTradeQuestionnaire.reversalPlan}
-                    onChange={(event) =>
-                      setPreTradeQuestionnaire((current) => ({ ...current, reversalPlan: event.target.value }))
-                    }
-                  >
-                    <option value="">请选择</option>
-                    {getReversalPlanOptions(preTradeCandidate.option_side).map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>这笔交易的目的是什么？</span>
-                  <select
-                    value={preTradeQuestionnaire.tradeGoal}
-                    onChange={(event) =>
-                      setPreTradeQuestionnaire((current) => ({ ...current, tradeGoal: event.target.value }))
-                    }
-                  >
-                    <option value="">请选择</option>
-                    {getTradeGoalOptions(preTradeCandidate.option_side).map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>退出条件是什么？</span>
-                  <select
-                    value={preTradeQuestionnaire.exitRule}
-                    onChange={(event) =>
-                      setPreTradeQuestionnaire((current) => ({ ...current, exitRule: event.target.value }))
-                    }
-                  >
-                    <option value="">请选择</option>
-                    {PRE_TRADE_EXIT_RULE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              {preTradeError && <div className="risk-check-banner">{preTradeError}</div>}
-              <div className="pretrade-progress">
-                {preTradeAnalysis
-                  ? 'Gemini 分析已完成，可以进入下一步。'
-                  : isLoadingPreTradeContext
-                    ? '系统正在读取财报、监管和宏观信息...'
-                    : isEnrichingPreTradeContext
-                      ? '网站信息已展示，Gemini 搜索结果会稍后自动补上。'
-                    : '完成选择题并做完 Gemini 分析后，下一步按钮会解锁。'}
-              </div>
-              {preTradeAnalysis && (
-                <div className="analysis-body">
-                  <div className="analysis-topline">
-                    <div className="summary-card emphasized">
-                      <span>结论</span>
-                      <strong>{preTradeAnalysis.analysis.verdict}</strong>
-                    </div>
-                    <div className="summary-card">
-                      <span>一句话总结</span>
-                      <strong>{preTradeAnalysis.analysis.summary}</strong>
-                    </div>
-                  </div>
-                  <div className="analysis-section">
-                    <h4>你的交易理由</h4>
-                    <p>{preTradeAnalysis.analysis.rationale_check}</p>
-                  </div>
-                  <div className="analysis-section">
-                    <h4>核心风险</h4>
-                    <ul className="risk-check-list">
-                      {preTradeAnalysis.analysis.key_risks.map((risk) => (
-                        <li key={risk}>{risk}</li>
-                      ))}
-                    </ul>
-                  </div>
-                  <div className="analysis-section">
-                    <h4>核心测算</h4>
-                    <div className="analysis-calcs">
-                      <div className="summary-card">
-                        <span>最多盈利</span>
-                        <strong>{preTradeAnalysis.analysis.calc.max_profit}</strong>
-                      </div>
-                      <div className="summary-card">
-                        <span>回撤 10% 风险</span>
-                        <strong>{preTradeAnalysis.analysis.calc.risk_at_10pct_drop}</strong>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="analysis-section">
-                    <h4>最坏情况</h4>
-                    <p>{preTradeAnalysis.analysis.worst_case}</p>
-                  </div>
-                  <div className="analysis-section">
-                    <h4>基本面提醒</h4>
-                    <p>{preTradeAnalysis.analysis.fundamental_note}</p>
-                  </div>
-                  <div className="analysis-section">
-                    <h4>数据快照（Barchart 优先）</h4>
-                    <p>
-                      IV Rank：{preTradeAnalysis.marketContext?.iv_rank == null ? '未确认' : preTradeAnalysis.marketContext.iv_rank.toFixed(1)}
-                      <br />
-                      Current IV：
-                      {preTradeAnalysis.marketContext?.current_iv == null
-                        ? '未确认'
-                        : `${(preTradeAnalysis.marketContext.current_iv * 100).toFixed(2)}%`}
-                      <br />
-                      Historical IV：
-                      {preTradeAnalysis.marketContext?.historical_iv == null
-                        ? '未确认'
-                        : `${(preTradeAnalysis.marketContext.historical_iv * 100).toFixed(2)}%`}
-                      <br />
-                      IV Percentile：
-                      {preTradeAnalysis.marketContext?.iv_percentile == null
-                        ? '未确认'
-                        : preTradeAnalysis.marketContext.iv_percentile.toFixed(1)}
-                      <br />
-                      PCR (OI)：
-                      {preTradeAnalysis.marketContext?.put_call_ratio == null
-                        ? '未确认'
-                        : preTradeAnalysis.marketContext.put_call_ratio.toFixed(2)}
-                    </p>
-                  </div>
-                  <div className="analysis-section">
-                    <h4>IV Rank 观察（结构化数据参考）</h4>
-                    <p>
-                      当前 IV Rank：{preTradeAnalysis.analysis.current_iv_rank || '未确认'}
-                      <br />
-                      {preTradeAnalysis.analysis.iv_rank_note}
-                      <br />
-                      出处：{preTradeAnalysis.analysis.iv_rank_source || '未确认'}
-                      <br />
-                      时间：{preTradeAnalysis.analysis.iv_rank_time || '未确认'}
-                      {preTradeAnalysis.analysis.iv_rank_link ? (
-                        <>
-                          <br />
-                          <a href={preTradeAnalysis.analysis.iv_rank_link} target="_blank" rel="noreferrer">
-                            打开 IV Rank 来源链接
-                          </a>
-                        </>
-                      ) : null}
-                    </p>
-                  </div>
-                  <div className="analysis-section">
-                    <h4>Current IV 判断</h4>
-                    <p>{preTradeAnalysis.analysis.current_iv_check || '未确认'}</p>
-                  </div>
-                  <div className="analysis-section">
-                    <h4>技术面检查</h4>
-                    <p>
-                      MA+RSI：{preTradeAnalysis.analysis.marsi_check || '未确认'}
-                      <br />
-                      RSI 是否超卖：{preTradeAnalysis.analysis.rsi_check || '未确认'}
-                      <br />
-                      200 日均线：{preTradeAnalysis.analysis.ma200_check || '未确认'}
-                    </p>
-                  </div>
-                  <div className="analysis-section">
-                    <h4>财报日预警</h4>
-                    <p>
-                      下一个财报日：{preTradeAnalysis.analysis.next_earnings_date || '未确认'}
-                      <br />
-                      {preTradeAnalysis.analysis.earnings_warning}
-                    </p>
-                  </div>
-                  {preTradeAnalysis.analysis.fundamental_events.length > 0 && (
-                    <div className="analysis-section">
-                      <h4>具体事件</h4>
-                      <ul className="risk-check-list">
-                        {preTradeAnalysis.analysis.fundamental_events.map((item) => (
-                          <li key={item}>{item}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  <div className="analysis-section">
-                    <h4>建议动作</h4>
-                    <p>{preTradeAnalysis.analysis.action}</p>
-                  </div>
-                  {preTradeAnalysis.sources.length > 0 && (
-                    <div className="analysis-sources">
-                      <span>参考来源</span>
-                      {preTradeAnalysis.sources.map((source) => (
-                        <a key={source.url} href={source.url} target="_blank" rel="noreferrer">
-                          {source.title}
-                        </a>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-              <div className="modal-actions pretrade-actions">
-                <button
-                  className="ghost-button"
-                  onClick={() => {
-                    setPreTradeCandidate(null);
-                    setPreTradeQuestionnaire(createEmptyPreTradeQuestionnaire());
-                    setPreTradeError('');
-                    setPreTradeAnalysis(null);
-                    setPreTradeContext(null);
-                  }}
-                  type="button"
-                >
-                  取消
-                </button>
-                <button
-                  className="ghost-button"
-                  onClick={() => void handleAnalyzePreTrade()}
-                  type="button"
-                  disabled={isPreTradeAnalyzing || isLoadingPreTradeContext || !isPreTradeQuestionnaireComplete(preTradeQuestionnaire)}
-                >
-                  {isPreTradeAnalyzing ? '分析中...' : '开始 Gemini 分析'}
-                </button>
-                <button
-                  className="primary-button"
-                  onClick={() => void handleConfirmPreTrade()}
-                  type="button"
-                  disabled={!preTradeAnalysis || isPreTradeAnalyzing}
-                >
-                  下一步：进入风险检查
-                </button>
-              </div>
-            </section>
-          )}
-
-          {forceSellCandidate && putCheckResult && !putCheckResult.ok && (
-            <div className="modal-backdrop" role="presentation">
-              <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="force-sell-title">
-                <p className="section-kicker">Risk Warning</p>
-                <h3 id="force-sell-title">你确定要卖吗？</h3>
-                <p className="modal-copy">系统判断这笔交易有提示风险。默认不要执行；如果你确认承担风险，可以强制继续。</p>
-                <div className="risk-check-list-wrap">
-                  <ul className="risk-check-list">
-                    {putCheckResult.failures.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </div>
-                <div className="modal-actions">
-                  <button
-                    className="ghost-button"
-                    onClick={() => {
-                      setForceSellCandidate(null);
-                      setPreTradeCandidate(null);
-                      setPreTradeQuestionnaire(createEmptyPreTradeQuestionnaire());
-                      setPreTradeError('');
-                      setPreTradeAnalysis(null);
-                      setPreTradeContext(null);
-                    }}
-                    type="button"
-                  >
-                    取消
-                  </button>
-                  <button
-                    className="ghost-button"
-                    onClick={() => {
-                      setForceSellCandidate(null);
-                      setPreTradeCandidate(null);
-                      setPreTradeQuestionnaire(createEmptyPreTradeQuestionnaire());
-                      setPreTradeError('');
-                      setPreTradeAnalysis(null);
-                      setPreTradeContext(null);
-                      addPutSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                    }}
-                    type="button"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    className="primary-button"
-                    onClick={() => {
-                      savePutPosition(forceSellCandidate, editingPutId, setPuts, setTickerList);
-                      const nextConfig = applyOptionOpenCash(
-                        config,
-                        configForm ?? DEFAULT_CONFIG,
-                        forceSellCandidate,
-                        editingPutId !== null
-                      );
-                      setConfig(nextConfig);
-                      setConfigForm(nextConfig);
-                      setConfigErrors({});
-                      setForceSellCandidate(null);
-                      setPreTradeCandidate(null);
-                      setPreTradeQuestionnaire(createEmptyPreTradeQuestionnaire());
-                      setPreTradeError('');
-                      setPreTradeAnalysis(null);
-                      setPreTradeContext(null);
-                      setPutForm(createEmptyPut());
-                      setPutErrors({});
-                      setEditingPutId(null);
-                    }}
-                    type="button"
-                  >
-                    Process Anyway
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
         </section>
 
           </>
@@ -5961,19 +5571,28 @@ function App() {
               </select>
             </label>
             <label className="filter-chip">
-              <span>Sort</span>
+              <span>Sort by</span>
               <select
                 className="ticker-filter-select"
                 value={positionSort}
-                onChange={(event) =>
-                  setPositionSort(event.target.value as 'DEFAULT' | 'EXPIRATION' | 'PUT_RISK' | 'LOSS_PCT' | 'ANNUALIZED_YIELD')
-                }
+                onChange={(event) => setPositionSort(event.target.value as PositionSortField)}
               >
                 <option value="DEFAULT">Ticker / expiration</option>
                 <option value="EXPIRATION">Expiration date</option>
-                <option value="PUT_RISK">Risk high to low</option>
-                <option value="LOSS_PCT">Loss % worst first</option>
-                <option value="ANNUALIZED_YIELD">Annualized yield high to low</option>
+                <option value="PUT_RISK">Risk</option>
+                <option value="LOSS_PCT">Loss %</option>
+                <option value="ANNUALIZED_YIELD">Annualized yield</option>
+              </select>
+            </label>
+            <label className="filter-chip">
+              <span>Direction</span>
+              <select
+                className="ticker-filter-select"
+                value={positionSortDirection}
+                onChange={(event) => setPositionSortDirection(event.target.value as PositionSortDirection)}
+              >
+                <option value="ASC">Ascending / Low to high</option>
+                <option value="DESC">Descending / High to low</option>
               </select>
             </label>
           </div>
@@ -5987,27 +5606,7 @@ function App() {
               {isRefreshingAllOptions ? 'Refreshing all options...' : 'Refresh all options'}
             </button>
           </div>
-          {autoRefreshOptionsProgress && (
-            <div className="copy-message refresh-progress-card">
-              <div className="refresh-progress-header">
-                <strong>
-                  系统正在自动刷新第 {autoRefreshOptionsProgress.current}/{autoRefreshOptionsProgress.total} 笔期权
-                  {autoRefreshOptionsProgress.ticker ? `：${autoRefreshOptionsProgress.ticker}` : ''}
-                </strong>
-                <span>
-                  成功 {autoRefreshOptionsProgress.successCount} · 失败 {autoRefreshOptionsProgress.failureCount}
-                </span>
-              </div>
-              <div className="refresh-progress-bar" aria-hidden="true">
-                <div
-                  className="refresh-progress-fill"
-                  style={{
-                    width: `${autoRefreshOptionsProgress.total === 0 ? 0 : (autoRefreshOptionsProgress.current / autoRefreshOptionsProgress.total) * 100}%`
-                  }}
-                />
-              </div>
-            </div>
-          )}
+
           {refreshAllOptionsProgress && (
             <div className="copy-message refresh-progress-card">
               <div className="refresh-progress-header">
@@ -6098,13 +5697,11 @@ function App() {
                       <button
                         onClick={() => void handleRefreshOptionPrice(row)}
                         type="button"
-                        disabled={isRefreshingAllOptions || refreshingOptionPriceId !== null || autoRefreshingOptionPriceId === row.id}
+                        disabled={isRefreshingAllOptions || refreshingOptionPriceId !== null}
                       >
                         {refreshingOptionPriceId === row.id
                           ? 'Refreshing option...'
-                          : autoRefreshingOptionPriceId === row.id
-                            ? 'Auto refreshing...'
-                            : 'Refresh option'}
+                          : 'Refresh option'}
                       </button>
                       <button onClick={() => handleEditPut(row)} type="button">
                         Edit
@@ -6235,64 +5832,6 @@ function App() {
                     <div className="position-metric"><span>Option price updated</span><strong>{displayedOptionUpdatedAt ? new Date(displayedOptionUpdatedAt).toLocaleString() : '-'}</strong></div>
                   </div>
                   </div>
-                  {row.decision_snapshot && (
-                    <div className="analysis-section">
-                      <h4>卖出决策记录</h4>
-                      <div className="decision-record-header">
-                        <div className="summary-card">
-                          <span>当时结论</span>
-                          <strong>{row.decision_snapshot.verdict}</strong>
-                        </div>
-                        <div className="summary-card">
-                          <span>一句话总结</span>
-                          <strong>{row.decision_snapshot.summary}</strong>
-                        </div>
-                      </div>
-                      {row.decision_rationale ? (
-                        <div className="decision-record-grid">
-                          {parseDecisionRationale(row.decision_rationale).map((item) => (
-                            <div className="decision-record-item" key={`${row.id}-${item.label}`}>
-                              <span>{item.label}</span>
-                              <strong>{item.value || '—'}</strong>
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
-                      <div className="decision-record-meta">
-                        <p><strong>IV Rank（参考）</strong>{row.decision_snapshot.current_iv_rank || '未确认'} · {row.decision_snapshot.iv_rank_note || '—'}</p>
-                        <p><strong>IV Rank 出处</strong>{row.decision_snapshot.iv_rank_source || '未确认'}</p>
-                        <p><strong>IV Rank 时间</strong>{row.decision_snapshot.iv_rank_time || '未确认'}</p>
-                      </div>
-                      {row.decision_snapshot.iv_rank_link ? (
-                        <p className="decision-record-link">
-                          <strong>IV Rank 链接</strong>
-                          <a href={row.decision_snapshot.iv_rank_link} target="_blank" rel="noreferrer">
-                            {row.decision_snapshot.iv_rank_link}
-                          </a>
-                        </p>
-                      ) : null}
-                      <p><strong>建议动作：</strong>{row.decision_snapshot.action}</p>
-                      <div className="analysis-calcs">
-                        <div className="summary-card">
-                          <span>最多盈利</span>
-                          <strong>{row.decision_snapshot.max_profit}</strong>
-                        </div>
-                        <div className="summary-card">
-                          <span>10% 回撤风险</span>
-                          <strong>{row.decision_snapshot.risk_at_10pct_drop}</strong>
-                        </div>
-                      </div>
-                      <p><strong>最坏情况：</strong>{row.decision_snapshot.worst_case}</p>
-                      <p><strong>基本面提醒：</strong>{row.decision_snapshot.fundamental_note}</p>
-                      {row.decision_snapshot.fundamental_events.length > 0 && (
-                        <ul className="risk-check-list">
-                          {row.decision_snapshot.fundamental_events.map((item) => (
-                            <li key={item}>{item}</li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  )}
                       </>
                     );
                   })()}
@@ -6367,6 +5906,13 @@ function App() {
                           <small>
                             收入 {formatCurrency(item.trade.premium_sold_per_share)}/share · {item.trade.close_reason === 'expired' ? 'Expired 到期（权利金全额回收）' : `买回 ${formatCurrency(item.trade.premium_bought_back_per_share)}/share`}
                           </small>
+                          <small>
+                            盈利百分比 {formatPercent(getHistoryProfitPct(item.trade))}
+                            {' · '}
+                            持有时间 {getHistoryHoldingDays(item.trade.date_sold, item.trade.closed_at)} 天
+                            {' · '}
+                            年化收益 {formatPercent(getHistoryAnnualizedYield(item.trade))}
+                          </small>
                         </div>
                         <label className="history-reflection-field">
                           <span>复盘 / 反思总结</span>
@@ -6381,6 +5927,9 @@ function App() {
                         <strong>{formatCurrency(item.trade.realized_pnl)}</strong>
                         <button type="button" className="ghost-button" onClick={() => handleEditClosedTrade(item.trade)}>
                           Edit
+                        </button>
+                        <button type="button" className="ghost-button" onClick={() => void handleDeleteClosedTrade(item.trade)}>
+                          Delete
                         </button>
                       </div>
                     </div>
@@ -6400,6 +5949,9 @@ function App() {
                       </div>
                       <div className="history-row-actions">
                         <strong>{formatCurrency(item.trade.realized_pnl)}</strong>
+                        <button type="button" className="ghost-button" onClick={() => void handleDeleteStockTrade(item.trade)}>
+                          Delete
+                        </button>
                       </div>
                     </div>
                   )
@@ -6466,12 +6018,21 @@ function App() {
                 {' '}
                 {formatCurrency(Number(closePreview.buybackPremiumPerShare || 0))}/share。
               </div>
+              {closePreviewError !== '' && <div className="copy-message">{closePreviewError}</div>}
               <div className="modal-actions">
-                <button className="ghost-button" onClick={() => setClosePreview(null)} type="button">
+                <button
+                  className="ghost-button"
+                  onClick={() => {
+                    setClosePreview(null);
+                    setClosePreviewError('');
+                  }}
+                  type="button"
+                  disabled={isClosingPosition}
+                >
                   Cancel
                 </button>
-                <button className="primary-button" onClick={confirmClosePut} type="button">
-                  Confirm Close
+                <button className="primary-button" onClick={confirmClosePut} type="button" disabled={isClosingPosition}>
+                  {isClosingPosition ? 'Saving...' : 'Confirm Close'}
                 </button>
               </div>
             </div>
@@ -6731,7 +6292,7 @@ function App() {
         {deletePreview && (
           <div className="modal-backdrop" role="presentation" onClick={() => setDeletePreview(null)}>
             <div
-              className="modal-card"
+              className="modal-card modal-wide"
               role="dialog"
               aria-modal="true"
               aria-labelledby="delete-preview-title"
@@ -6827,7 +6388,7 @@ function App() {
         {buyStockPreview && (
           <div className="modal-backdrop" role="presentation" onClick={() => setBuyStockPreview(null)}>
             <div
-              className="modal-card"
+              className="modal-card modal-wide"
               role="dialog"
               aria-modal="true"
               aria-labelledby="buy-stock-title"
@@ -6867,16 +6428,53 @@ function App() {
                     }
                   />
                 </label>
+                <label>
+                  <span>交易类型</span>
+                  <select
+                    value={buyStockPreview.tradeType}
+                    onChange={(event) =>
+                      setBuyStockPreview((current) =>
+                        current ? { ...current, tradeType: event.target.value as StockTradeType } : current
+                      )
+                    }
+                  >
+                    <option value="短线">短线</option>
+                    <option value="中线">中线</option>
+                    <option value="长线">长线</option>
+                  </select>
+                </label>
+                <label>
+                  <span>预期上涨空间 %</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={buyStockPreview.expectedUpsidePct}
+                    onChange={(event) =>
+                      setBuyStockPreview((current) =>
+                        current ? { ...current, expectedUpsidePct: event.target.value } : current
+                      )
+                    }
+                    placeholder="例如 25"
+                  />
+                </label>
+                <label>
+                  <span>最大可承受亏损 / 止损 %</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={buyStockPreview.maxLossPct}
+                    onChange={(event) =>
+                      setBuyStockPreview((current) =>
+                        current ? { ...current, maxLossPct: event.target.value } : current
+                      )
+                    }
+                    placeholder="例如 10"
+                  />
+                </label>
               </div>
-              <p className="modal-copy">
-                预计占用现金：
-                <strong>
-                  {formatCurrency(
-                    Math.max(Number(buyStockPreview.sharesToBuy) || 0, 0) *
-                      Math.max(Number(buyStockPreview.buyPricePerShare) || 0, 0)
-                  )}
-                </strong>
-              </p>
+
               <div className="modal-actions">
                 <button className="ghost-button" onClick={() => setBuyStockPreview(null)} type="button">
                   Cancel
@@ -6920,61 +6518,7 @@ function App() {
             </div>
           </div>
           {importExportMessage && <div className="copy-message">{importExportMessage}</div>}
-          {backgroundRefreshStatus && (
-            <div className="refresh-progress-card background-refresh-card">
-              <div className="refresh-progress-header">
-                <strong>
-                  后台刷新
-                  {backgroundRefreshStatus.status === 'running'
-                    ? '进行中'
-                    : backgroundRefreshStatus.status === 'success'
-                      ? '已完成'
-                      : backgroundRefreshStatus.status === 'error'
-                        ? '失败'
-                        : '待命'}
-                </strong>
-                <span>
-                  {backgroundRefreshStatus.finishedAt
-                    ? `最近完成：${new Date(backgroundRefreshStatus.finishedAt).toLocaleString()}`
-                    : backgroundRefreshStatus.startedAt
-                      ? `开始于：${new Date(backgroundRefreshStatus.startedAt).toLocaleString()}`
-                      : '尚未检测到后台刷新记录'}
-                </span>
-              </div>
-              <div className="refresh-progress-bar" aria-hidden="true">
-                <div
-                  className="refresh-progress-fill"
-                  style={{
-                    width: `${
-                      backgroundRefreshStatus.totalSteps > 0
-                        ? Math.min(
-                            100,
-                            Math.round((backgroundRefreshStatus.completedSteps / backgroundRefreshStatus.totalSteps) * 100)
-                          )
-                        : backgroundRefreshStatus.status === 'success'
-                          ? 100
-                          : 0
-                    }%`
-                  }}
-                />
-              </div>
-              <div className="background-refresh-meta">
-                <span>
-                  {backgroundRefreshStatus.message ??
-                    (backgroundRefreshStatus.marketOpen === false
-                      ? '当前非盘中，后台任务会跳过股票与期权刷新'
-                      : '后台任务会按 20 / 30 分钟规则自动刷新')}
-                </span>
-                <span>
-                  已刷新 {backgroundRefreshStatus.refreshedTickers} 个股票，{backgroundRefreshStatus.refreshedOptions} 笔期权
-                </span>
-              </div>
-              {backgroundRefreshStatus.currentLabel && (
-                <div className="copy-message">{backgroundRefreshStatus.currentLabel}</div>
-              )}
-              {backgroundRefreshStatus.error && <div className="validation-message">{backgroundRefreshStatus.error}</div>}
-            </div>
-          )}
+
           <div className="form-grid">
             <label>
               <span>当前现金余额</span>
@@ -7135,6 +6679,240 @@ function App() {
         </section>
         )}
 
+        {/* ── Section 2: Position Size Calculator (1% Risk Model) ── */}
+        {activeTab === 'calculator' && (
+        <section className="card pos-size-card">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">Section 2</p>
+              <h2>动态仓位计算器 <span className="section-kicker-badge">1% 风险模型</span></h2>
+            </div>
+          </div>
+          <div className="copy-message">
+            单笔交易最大亏损不超过账户总资金的 <strong>1%</strong>。根据止损距离动态决定仓位大小：止损越近仓位越大，止损越远仓位越小。
+          </div>
+          <div className="form-grid compact pos-size-grid">
+            <label>
+              <span>账户总资金 (Account Equity)</span>
+              <div className="input-with-prefix">
+                <span className="input-prefix">$</span>
+                <input
+                  id="pos-size-equity"
+                  type="number"
+                  min="0"
+                  step="1000"
+                  placeholder="例如 100000"
+                  value={posSizeAccountEquity}
+                  onChange={(e) => setPosSizeAccountEquity(e.target.value)}
+                />
+              </div>
+            </label>
+            <label>
+              <span>入场价格 (Entry Price)</span>
+              <div className="input-with-prefix">
+                <span className="input-prefix">$</span>
+                <input
+                  id="pos-size-entry"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="例如 150.00"
+                  value={posSizeEntryPrice}
+                  onChange={(e) => setPosSizeEntryPrice(e.target.value)}
+                />
+              </div>
+            </label>
+            <label>
+              <span>初始止损价 (Initial Stop Price)</span>
+              <div className="input-with-prefix">
+                <span className="input-prefix">$</span>
+                <input
+                  id="pos-size-stop"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="例如 142.00"
+                  value={posSizeStopPrice}
+                  onChange={(e) => setPosSizeStopPrice(e.target.value)}
+                />
+              </div>
+            </label>
+          </div>
+
+          {posSizeResult == null ? (
+            <div className="pos-size-placeholder">
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 7H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-3"/>
+                <path d="M9 15h3l8.5-8.5a2.121 2.121 0 0 0-3-3L9 12v3"/>
+                <line x1="16" y1="5" x2="19" y2="8"/>
+              </svg>
+              <span>请输入账户总资金、入场价格和止损价格</span>
+            </div>
+          ) : (
+            <>
+              <div className="pos-size-formula-banner">
+                <span className="pos-size-formula-text">
+                  PositionSize = AccountEquity × 1% ÷ |EntryPrice − StopPrice|
+                </span>
+                <span className="pos-size-formula-values">
+                  = {formatCurrency(posSizeResult.dollarRisk)} ÷ {formatCurrency(posSizeResult.riskPerShare)} = <strong>{posSizeResult.positionSize} 股</strong>
+                </span>
+              </div>
+              <div className="summary-grid pos-size-result-grid">
+                <article className="summary-card emphasized pos-size-highlight">
+                  <span>建议仓位 (Position Size)</span>
+                  <strong className="pos-size-big-number">{posSizeResult.positionSize.toLocaleString()} <em>股</em></strong>
+                  <small className="summary-card-footnote">市值约 {formatCurrency(posSizeResult.positionSize * posSizeResult.entryPrice)}</small>
+                </article>
+                <article className="summary-card">
+                  <span>入场价 (Entry Price)</span>
+                  <strong>{formatCurrency(posSizeResult.entryPrice)}</strong>
+                </article>
+                <article className="summary-card">
+                  <span>止损价 (Stop Price)</span>
+                  <strong>{formatCurrency(posSizeResult.stopPrice)}</strong>
+                </article>
+                <article className="summary-card">
+                  <span>每股风险 (Risk Per Share)</span>
+                  <strong>{formatCurrency(posSizeResult.riskPerShare)}</strong>
+                </article>
+                <article className="summary-card pos-size-dollar-risk">
+                  <span>最大风险金额 (Dollar Risk)</span>
+                  <strong className="value-negative">{formatCurrency(posSizeResult.dollarRisk)}</strong>
+                  <small className="summary-card-footnote">= 账户 × 1%</small>
+                </article>
+              </div>
+              <div className="pos-size-tip">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                止损越远 → 每股风险越大 → 仓位越小；止损越近 → 每股风险越小 → 仓位越大。
+              </div>
+            </>
+          )}
+        </section>
+        )}
+
+        {/* ── Section 3: ATR Structural Stop System ── */}
+        {activeTab === 'calculator' && (
+        <section className="card atr-stop-card">
+          <div className="section-header">
+            <div>
+              <p className="section-kicker">Section 3</p>
+              <h2>ATR 结构止损系统 <span className="section-kicker-badge">支撑位 + 波动率缓冲</span></h2>
+            </div>
+          </div>
+          <div className="copy-message">
+            基于支撑位和 ATR 波动率设置智能止损，避免被正常市场波动洗出，同时保留足够的趋势空间。
+            公式：<strong>Stop = SupportLevel − ATR × Multiplier</strong>
+          </div>
+
+          <div className="form-grid compact atr-stop-grid">
+            <label>
+              <span>支撑位价格 (Support Level)</span>
+              <div className="input-with-prefix">
+                <span className="input-prefix">$</span>
+                <input
+                  id="atr-support"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="例如 148.00"
+                  value={atrSupportLevel}
+                  onChange={(e) => setAtrSupportLevel(e.target.value)}
+                />
+              </div>
+            </label>
+            <label>
+              <span>ATR 值 (Average True Range)</span>
+              <div className="input-with-prefix">
+                <span className="input-prefix">$</span>
+                <input
+                  id="atr-value"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="例如 3.50"
+                  value={atrValue}
+                  onChange={(e) => setAtrValue(e.target.value)}
+                />
+              </div>
+            </label>
+            <label>
+              <span>ATR 倍数 (Multiplier)</span>
+              <select
+                id="atr-multiplier"
+                value={atrMultiplier}
+                onChange={(e) => setAtrMultiplier(e.target.value)}
+              >
+                <option value="0.5">0.5× ATR（止损更近）</option>
+                <option value="1.0">1.0× ATR（默认）</option>
+                <option value="1.5">1.5× ATR（中等空间）</option>
+                <option value="2.0">2.0× ATR（止损更远）</option>
+              </select>
+            </label>
+          </div>
+
+          {atrStopResult == null ? (
+            <div className="pos-size-placeholder">
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+              </svg>
+              <span>请输入支撑位价格和 ATR 值</span>
+            </div>
+          ) : (
+            <>
+              {atrStopResult.activeStop != null && (
+                <div className="atr-active-stop-banner">
+                  <div className="atr-active-stop-label">当前止损价</div>
+                  <div className="atr-active-stop-value">{formatCurrency(atrStopResult.activeStop)}</div>
+                  <div className="atr-active-stop-meta">
+                    支撑位 {formatCurrency(atrStopResult.support)} − {atrMultiplier}× ATR ({formatCurrency(atrStopResult.atr)}) = {formatCurrency(atrStopResult.activeStop)}
+                  </div>
+                </div>
+              )}
+
+              <div className="atr-scenarios-header">
+                <span>参数化对比测试</span>
+                <small>不同 ATR 倍数下的止损位置</small>
+              </div>
+              <div className="atr-scenarios-grid">
+                {atrStopResult.scenarios.map((s) => {
+                  const isActive = String(s.multiplier) === atrMultiplier;
+                  return (
+                    <article
+                      key={s.multiplier}
+                      className={`atr-scenario-card${isActive ? ' atr-scenario-active' : ''}`}
+                      onClick={() => setAtrMultiplier(String(s.multiplier))}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setAtrMultiplier(String(s.multiplier)); }}
+                    >
+                      <div className="atr-scenario-top">
+                        <span className="atr-scenario-mult">{s.multiplier}× ATR</span>
+                        {isActive && <span className="atr-scenario-badge">当前</span>}
+                      </div>
+                      <strong className="atr-scenario-stop">{formatCurrency(s.stopLevel)}</strong>
+                      <div className="atr-scenario-meta">
+                        <span>缓冲区</span>
+                        <em>{formatCurrency(s.buffer)}</em>
+                      </div>
+                      <div className="atr-scenario-bar-wrap">
+                        <div
+                          className="atr-scenario-bar"
+                          style={{ width: `${Math.min((s.multiplier / 2) * 100, 100)}%` }}
+                        />
+                      </div>
+                      <small className="atr-scenario-note">
+                        {s.multiplier <= 0.5 ? '⚠️ 易被波动洗出' : s.multiplier >= 2 ? '✅ 趋势空间充足' : '✅ 较为合理'}
+                      </small>
+                    </article>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </section>
+        )}
+
         {activeTab === 'stocks' && (
         <section className="card">
           <div className="section-header">
@@ -7180,17 +6958,6 @@ function App() {
                 placeholder="例如 185.50"
               />
             </label>
-            <label>
-              <span>Downside tolerance %</span>
-              <input
-                type="number"
-                step="0.1"
-                min="0"
-                value={newTickerTolerancePct}
-                onChange={(event) => setNewTickerTolerancePct(event.target.value)}
-                placeholder="例如 30"
-              />
-            </label>
           </div>
           <div className="inline-actions">
             <button className="primary-button" onClick={handleAddTicker} type="button">
@@ -7205,36 +6972,87 @@ function App() {
               {isRefreshingAllTickers ? 'Refreshing all...' : 'Refresh all'}
             </button>
           </div>
-          <div className="copy-message">手动 Refresh 会刷新价格、技术指标，以及来自 Barchart 的 PCR、财报日、IV History、IV Rank、IV Percentage；仅在美股盘中自动刷新股价，每 20 分钟一次；期权价格仅在盘中每 30 分钟自动刷新一次，盘后不会自动刷新。全量刷新会慢速逐只进行。</div>
+          <div className="copy-message">
+            <div style={{ marginBottom: '4px' }}>
+              <strong>最后刷新时间：</strong>
+              {(() => {
+                const timestamps = tickerList.map(getTickerLastUpdated).filter((t): t is string => typeof t === 'string');
+                const latest = timestamps.length > 0 ? timestamps.reduce((a, b) => (a > b ? a : b)) : null;
+                return latest ? new Date(latest).toLocaleString() : '尚未刷新';
+              })()}
+            </div>
+            {refreshAllProgress ? (
+              <div style={{ color: 'var(--text-secondary)' }}>
+                <strong>刷新进度：</strong> 正在刷新第 {refreshAllProgress.current}/{refreshAllProgress.total} 个股票
+                {refreshAllProgress.ticker ? `（${refreshAllProgress.ticker}）` : ''}
+                。已成功 {refreshAllProgress.successCount}，失败 {refreshAllProgress.failureCount}
+              </div>
+            ) : priceRefreshMessage ? (
+              <div style={{ color: 'var(--text-secondary)' }}>
+                <strong>刷新明细：</strong> {priceRefreshMessage}
+              </div>
+            ) : (
+              <div style={{ color: 'var(--text-muted)' }}>
+                手动全量刷新会慢速逐只进行。可以点击单只股票右侧的 Refresh 单独刷新。
+              </div>
+            )}
+          </div>
           {metrics.missingStockBetaTickers.length > 0 && (
             <div className="copy-message">
               Beta 忘记输入了：{metrics.missingStockBetaTickers.join('、')}。当前股票风险先按 Beta 1.00 估算。
             </div>
           )}
           {tickerMessage && <div className="copy-message">{tickerMessage}</div>}
-          {refreshAllProgress && (
-            <div className="copy-message">
-              正在刷新第 {refreshAllProgress.current}/{refreshAllProgress.total} 个股票
-              {refreshAllProgress.ticker ? `：${refreshAllProgress.ticker}` : ''}
-              。成功 {refreshAllProgress.successCount}，失败 {refreshAllProgress.failureCount}
-            </div>
-          )}
-          {priceRefreshMessage && <div className="copy-message">{priceRefreshMessage}</div>}
           {tickerList.length === 0 ? (
             <div className="empty-state">当前还没有股票列表。先加几个 ticker，后面新增 Put 时可以直接下拉选择。</div>
           ) : (
             <div className="ticker-list-grid">
-              {tickerList.map((entry) => {
+              {[...tickerList]
+                .sort((a, b) => {
+                  const aAlert = typeof a.buy_rsi_alert === 'number' ? a.buy_rsi_alert : null;
+                  const bAlert = typeof b.buy_rsi_alert === 'number' ? b.buy_rsi_alert : null;
+                  const aRsi = typeof a.rsi_14 === 'number' ? a.rsi_14 : null;
+                  const bRsi = typeof b.rsi_14 === 'number' ? b.rsi_14 : null;
+                  const aProximity = aAlert !== null && aRsi !== null ? aRsi - aAlert : null;
+                  const bProximity = bAlert !== null && bRsi !== null ? bRsi - bAlert : null;
+                  if (aProximity !== null && bProximity !== null) return aProximity - bProximity;
+                  if (aProximity !== null) return -1;
+                  if (bProximity !== null) return 1;
+                  return a.ticker.localeCompare(b.ticker);
+                })
+                .map((entry) => {
                 const isEditingTicker = editingTickers[entry.ticker] === true;
                 const tickerDraft = tickerDrafts[entry.ticker] ?? createTickerEditDraft(entry);
                 const averageCost = entry.average_cost_basis;
                 const currentPrice = entry.current_price;
                 const shares = entry.shares;
-                const tolerancePct = entry.downside_tolerance_pct;
-                const stopLossPrice =
-                  typeof averageCost === 'number' && typeof tolerancePct === 'number'
-                    ? averageCost * (1 - tolerancePct)
+                const atr14 = typeof entry.atr_14 === 'number' && Number.isFinite(entry.atr_14) ? entry.atr_14 : null;
+                const hasStockHolding = typeof shares === 'number' && shares > 0;
+                const atrBasisPrice =
+                  hasStockHolding && typeof averageCost === 'number' && Number.isFinite(averageCost) && averageCost > 0
+                    ? averageCost
+                    : typeof currentPrice === 'number' && Number.isFinite(currentPrice)
+                      ? currentPrice
+                      : null;
+                const atrBasisLabel =
+                  hasStockHolding && typeof averageCost === 'number' && Number.isFinite(averageCost) && averageCost > 0
+                    ? '平均价'
+                    : '现价';
+                const atrStopPrice = atr14 !== null && atrBasisPrice !== null ? atrBasisPrice - atr14 : null;
+
+                const rsi14 = typeof entry.rsi_14 === 'number' ? entry.rsi_14 : null;
+                const buyRsiAlert = typeof entry.buy_rsi_alert === 'number' ? entry.buy_rsi_alert : null;
+                const rsiAlertState: 'triggered' | 'near' | 'approaching' | 'normal' | null =
+                  buyRsiAlert !== null && rsi14 !== null
+                    ? rsi14 <= buyRsiAlert
+                      ? 'triggered'
+                      : rsi14 <= buyRsiAlert + 5
+                        ? 'near'
+                        : rsi14 <= buyRsiAlert + 10
+                          ? 'approaching'
+                          : 'normal'
                     : null;
+
                 const unrealizedPnlAmount =
                   typeof averageCost === 'number' && typeof currentPrice === 'number' && typeof shares === 'number'
                     ? (currentPrice - averageCost) * shares
@@ -7243,11 +7061,12 @@ function App() {
                   typeof averageCost === 'number' && averageCost > 0 && typeof currentPrice === 'number'
                     ? (currentPrice - averageCost) / averageCost
                     : null;
+                const displayedTickerUpdatedAt = getTickerLastUpdated(entry);
 
                 return (
                 <div
                   key={entry.ticker}
-                  className="ticker-list-row"
+                  className={['ticker-list-row', rsiAlertState === 'triggered' ? 'rsi-alert-triggered' : rsiAlertState === 'near' ? 'rsi-alert-near' : rsiAlertState === 'approaching' ? 'rsi-alert-approaching' : ''].filter(Boolean).join(' ')}
                   ref={(element) => {
                     stockRowRefs.current[entry.ticker] = element;
                   }}
@@ -7292,6 +7111,19 @@ function App() {
                     disabled={refreshingTicker !== null || isRefreshingAllTickers}
                   >
                     {refreshingTicker === entry.ticker ? 'Refreshing...' : 'Refresh'}
+                  </button>
+                  <button
+                    className={`ghost-button ticker-refresh-button ticker-option-snapshot-toggle${entry.option_snapshot_enabled === true ? ' ticker-option-snapshot-toggle--on' : ''}`}
+                    onClick={() => handleToggleOptionSnapshot(entry)}
+                    type="button"
+                    disabled={refreshingTicker !== null || isRefreshingAllTickers}
+                    title={
+                      entry.option_snapshot_enabled === true
+                        ? `期权快照已启用（Delta 0.20 / 0.30 / 0.50）${entry.option_snapshot_updated ? `\n最近采集：${entry.option_snapshot_updated.slice(0, 16).replace('T', ' ')}` : ''}`
+                        : '点击启用期权快照采集（DTE≈45，Delta 0.20 / 0.30 / 0.50）'
+                    }
+                  >
+                    {entry.option_snapshot_enabled === true ? '📊 Option ON' : '📊 Option OFF'}
                   </button>
                   {(entry.shares ?? 0) > 0 ? (
                     <button
@@ -7347,15 +7179,37 @@ function App() {
                     />
                   </label>
                   <label className="beta-field">
-                    <span>Downside tolerance %</span>
+                    <span>减仓目标价</span>
                     <input
                       type="number"
-                      step="0.1"
+                      step="0.01"
                       min="0"
-                      value={tickerDraft.downsideTolerancePct}
-                      onChange={(event) => handleChangeTickerDraft(entry.ticker, 'downsideTolerancePct', event.target.value)}
+                      value={tickerDraft.targetTrimPrice}
+                      onChange={(event) => handleChangeTickerDraft(entry.ticker, 'targetTrimPrice', event.target.value)}
                       disabled={!isEditingTicker}
+                      placeholder="到价清仓"
                     />
+                  </label>
+                  <label className="beta-field">
+                    <span>Buy RSI Alert</span>
+                    <input
+                      type="number"
+                      step="1"
+                      min="1"
+                      max="100"
+                      value={tickerDraft.buyRsiAlert}
+                      onChange={(event) => handleChangeTickerDraft(entry.ticker, 'buyRsiAlert', event.target.value)}
+                      disabled={!isEditingTicker}
+                      placeholder="e.g. 35"
+                    />
+                    {!isEditingTicker && buyRsiAlert !== null && rsiAlertState !== null && (
+                      <small className={`rsi-alert-badge rsi-alert-badge--${rsiAlertState}`}>
+                        {rsiAlertState === 'triggered' && `🔔 RSI ${rsi14?.toFixed(1)} ≤ ${buyRsiAlert} — Buy alert!`}
+                        {rsiAlertState === 'near' && `⚠️ RSI ${rsi14?.toFixed(1)} near ${buyRsiAlert}`}
+                        {rsiAlertState === 'approaching' && `📉 RSI ${rsi14?.toFixed(1)} approaching ${buyRsiAlert}`}
+                        {rsiAlertState === 'normal' && `RSI ${rsi14?.toFixed(1)} / alert ${buyRsiAlert}`}
+                      </small>
+                    )}
                   </label>
                   <label className="beta-field">
                     <span>Current price</span>
@@ -7370,9 +7224,11 @@ function App() {
                     </strong>
                   </div>
                   <div className="beta-field">
-                    <span>Stop-loss price</span>
+                    <span>ATR 止损价</span>
                     <strong className="field-value">
-                      {stopLossPrice === null ? '-' : formatCurrency(stopLossPrice)}
+                      {atrStopPrice === null
+                        ? '-'
+                        : `${formatCurrency(atrStopPrice)} (${atrBasisLabel} ${formatCurrency(atrBasisPrice ?? 0)} - ATR ${formatCurrency(atr14 ?? 0)})`}
                     </strong>
                   </div>
                   <div className="beta-field">
@@ -7387,6 +7243,7 @@ function App() {
                       {unrealizedPnlAmount === null ? '-' : formatCurrency(unrealizedPnlAmount)}
                     </strong>
                   </div>
+
                   <div className="beta-field">
                     <span>RSI(14, 1D)</span>
                     <strong className="field-value">{entry.rsi_14 === null ? '-' : entry.rsi_14.toFixed(1)}</strong>
@@ -7439,7 +7296,7 @@ function App() {
                   </div>
                   <div className="beta-field">
                     <span>Last updated</span>
-                    <strong className="field-value">{entry.last_updated ? new Date(entry.last_updated).toLocaleString() : '-'}</strong>
+                    <strong className="field-value">{displayedTickerUpdatedAt ? new Date(displayedTickerUpdatedAt).toLocaleString() : '-'}</strong>
                   </div>
                 </div>
                 );

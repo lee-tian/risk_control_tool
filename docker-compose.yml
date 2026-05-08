@@ -7,9 +7,18 @@ services:
     env_file:
       - .env
     environment:
-      APP_STORAGE_DRIVER: file
+      APP_STORAGE_DRIVER: sqlite
+      FUTU_OPEND_HOST: host.docker.internal
+      FUTU_OPEND_PORT: 11111
+      MOOMOO_GET_OPTION_CHAIN_SCRIPT: /opt/moomoo/scripts/quote/get_option_chain.py
+      MOOMOO_GET_OPTION_EXPIRATION_DATE_SCRIPT: /opt/moomoo/scripts/quote/get_option_expiration_date.py
+      MOOMOO_GET_OPTION_SNAPSHOTS_SCRIPT: /app/api/scripts/get_moomoo_option_snapshots.py
+      MOOMOO_GET_KLINE_SCRIPT: /opt/moomoo/scripts/quote/get_kline.py
     volumes:
       - ./data:/app/data
+      - /Users/emily/.codex/skills/moomooapi/scripts:/opt/moomoo/scripts:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   risk-exposure-tool:
@@ -26,7 +35,7 @@ services:
   unit-tests:
     profiles:
       - test
-    image: node:20-alpine
+    image: node:22-alpine
     working_dir: /app
     volumes:
       - ./:/app
