@@ -1151,7 +1151,8 @@ describe('/api/app-state integration', () => {
             rsi_14_1h: null,
             rsi_updated: null,
             ma_21: null,
-            ma_200: null
+            ma_200: null,
+            atr_14: null
           }
         ]
       }
@@ -1239,7 +1240,8 @@ describe('/api/app-state integration', () => {
             rsi_14_1h: null,
             rsi_updated: null,
             ma_21: null,
-            ma_200: null
+            ma_200: null,
+            atr_14: null
           }
         ],
         scenario: null,
@@ -1384,7 +1386,8 @@ describe('/api/app-state integration', () => {
           {
             ...baseSnapshot.data.tickerList[0],
             current_price: 375.12,
-            last_updated: '2026-04-06T04:05:00.000Z'
+            last_updated: '2026-04-06T04:05:00.000Z',
+            atr_14: 7.25
           }
         ]
       }
@@ -1407,7 +1410,8 @@ describe('/api/app-state integration', () => {
     expect(payload.snapshot.data.tickerList.find((entry) => entry.ticker === 'MSFT')).toMatchObject({
       ticker: 'MSFT',
       current_price: 375.12,
-      last_updated: '2026-04-06T04:05:00.000Z'
+      last_updated: '2026-04-06T04:05:00.000Z',
+      atr_14: 7.25
     });
     expect(payload.snapshot.data.tickerList.find((entry) => entry.ticker === 'QQQI')).toMatchObject({
       ticker: 'QQQI',

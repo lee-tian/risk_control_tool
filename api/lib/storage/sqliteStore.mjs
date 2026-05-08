@@ -76,6 +76,7 @@ function openDb() {
       rsi_14_1h          REAL,
       ma_21              REAL,
       ma_200             REAL,
+      atr_14             REAL,
       current_iv         REAL,
       historical_iv      REAL,
       iv_rank            REAL,
@@ -113,7 +114,17 @@ function openDb() {
       PRIMARY KEY (ticker, date, side, delta_target)
     );
   `);
+  ensureTableColumn(db, 'stock_daily_snapshots', 'atr_14', 'REAL');
   return db;
+}
+
+function ensureTableColumn(database, tableName, columnName, columnDefinition) {
+  const columns = database.prepare(`PRAGMA table_info(${tableName})`).all();
+  if (columns.some((column) => column.name === columnName)) {
+    return;
+  }
+
+  database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDefinition}`);
 }
 
 function readJsonKeySync(key) {
@@ -254,10 +265,10 @@ export async function writeStockDailySnapshot(entries) {
   const stmt = database.prepare(`
     INSERT OR REPLACE INTO stock_daily_snapshots
       (ticker, date, current_price, rsi_14, rsi_14_1h, ma_21, ma_200,
-       current_iv, historical_iv, iv_rank, iv_percentile, put_call_ratio,
+       atr_14, current_iv, historical_iv, iv_rank, iv_percentile, put_call_ratio,
        next_earnings_date, shares, average_cost_basis, beta, saved_at)
     VALUES
-      (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   for (const entry of entries) {
@@ -272,6 +283,7 @@ export async function writeStockDailySnapshot(entries) {
       entry.rsi_14_1h ?? null,
       entry.ma_21 ?? null,
       entry.ma_200 ?? null,
+      entry.atr_14 ?? null,
       entry.current_iv ?? null,
       entry.historical_iv ?? null,
       entry.iv_rank ?? null,

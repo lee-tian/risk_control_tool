@@ -136,4 +136,37 @@ describe('sqlite storage adapter', () => {
     await expect(sqliteStore.readAppState()).resolves.toEqual(legacySnapshot);
     await expect(sqliteStore.readVixCache()).resolves.toEqual(legacyVixCache);
   });
+
+  it('persists ATR in stock daily snapshots', async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'risk-tool-sqlite-'));
+    process.env.APP_DATA_DIR = tempDir;
+
+    const sqliteStore = await importFresh('./lib/storage/sqliteStore.mjs');
+
+    await sqliteStore.writeStockDailySnapshot([
+      {
+        ticker: 'MSFT',
+        current_price: 486.12,
+        rsi_14: 48.5,
+        rsi_14_1h: 61.2,
+        ma_21: 475.1,
+        ma_200: 452.8,
+        atr_14: 7.25,
+        current_iv: 0.21,
+        shares: 100,
+        average_cost_basis: 460,
+        beta: 0.92
+      }
+    ]);
+
+    const rows = await sqliteStore.readStockDailySnapshots({ ticker: 'MSFT' });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      ticker: 'MSFT',
+      current_price: 486.12,
+      rsi_14: 48.5,
+      rsi_14_1h: 61.2,
+      atr_14: 7.25
+    });
+  });
 });
