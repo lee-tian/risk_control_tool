@@ -950,9 +950,30 @@ function mergeSnapshotPreservingExistingCoreState(incomingSnapshot, existingSnap
       ...incomingData,
       config: incomingData.config ?? existingData.config ?? null,
       puts:
-        saveMode === 'replace' || hasSamePositionMembership
+        saveMode === 'replace'
           ? incomingPuts
-          : existingPuts,
+          : (() => {
+              const incomingById = new Map(incomingPuts.map((p) => [p.id, p]));
+              const existingById = new Map(existingPuts.map((p) => [p.id, p]));
+              const allIds = new Set([...existingById.keys(), ...incomingById.keys()]);
+
+              return [...allIds].map(id => {
+                const incoming = incomingById.get(id);
+                const existing = existingById.get(id);
+                if (!incoming) return existing;
+                if (!existing) return incoming;
+
+                // Merge: prefer background updates (market price/greeks) from existing if present
+                return {
+                  ...incoming,
+                  option_market_price_per_share: existing.option_market_price_per_share ?? incoming.option_market_price_per_share,
+                  option_market_price_updated: existing.option_market_price_updated ?? incoming.option_market_price_updated,
+                  option_theta_per_share: existing.option_theta_per_share ?? incoming.option_theta_per_share,
+                  option_delta: existing.option_delta ?? incoming.option_delta,
+                  option_gamma: existing.option_gamma ?? incoming.option_gamma
+                };
+              }).filter(Boolean);
+            })(),
       closedTrades:
         saveMode === 'replace' || hasClosedTradeSuperset || existingClosedTrades.length === 0
           ? incomingClosedTrades

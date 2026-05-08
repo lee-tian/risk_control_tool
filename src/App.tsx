@@ -538,7 +538,7 @@ async function readJsonResponse<T>(response: Response): Promise<T> {
 }
 
 async function readPersistedAppStateSnapshot() {
-  const response = await fetch('/api/app-state');
+  const response = await fetch('/api/app-state', { cache: 'no-store' });
   const payload = await readJsonResponse<{ snapshot?: unknown; error?: string }>(response);
 
   if (!response.ok || payload.error || !payload.snapshot) {
@@ -1554,7 +1554,7 @@ function App() {
 
     async function pollBackgroundRefreshStatus() {
       try {
-        const response = await fetch('/api/refresh-status');
+        const response = await fetch('/api/refresh-status', { cache: 'no-store' });
         const payload = (await response.json()) as { status?: unknown; error?: string };
         if (!response.ok || payload.error || cancelled) {
           return;

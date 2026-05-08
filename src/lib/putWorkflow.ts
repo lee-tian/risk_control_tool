@@ -37,7 +37,9 @@ export function ensureTickerExists(tickerList: TickerEntry[], ticker: string): T
       rsi_14_1h: null,
       rsi_updated: null,
       ma_21: null,
-      ma_200: null
+      ma_200: null,
+      atr_14: null,
+      buy_rsi_alert: null
     }
   ].sort((a, b) => a.ticker.localeCompare(b.ticker));
 }

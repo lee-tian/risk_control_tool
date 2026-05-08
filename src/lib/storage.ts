@@ -851,6 +851,7 @@ function normalizeImportedPuts(rawPuts: unknown[]): PutPosition[] {
   return rawPuts.map((put) => {
     const record = (typeof put === 'object' && put !== null ? put : {}) as Record<string, unknown>;
     return {
+      ...record,
       id: typeof record.id === 'string' && record.id !== '' ? record.id : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       ticker: typeof record.ticker === 'string' ? normalizeTickerSymbol(record.ticker) : '',
       option_side: normalizeOptionSide(record.option_side),
@@ -868,7 +869,7 @@ function normalizeImportedPuts(rawPuts: unknown[]): PutPosition[] {
         typeof record.option_theta_per_share === 'number' ? record.option_theta_per_share : null,
       option_delta: typeof record.option_delta === 'number' ? record.option_delta : null,
       option_gamma: typeof record.option_gamma === 'number' ? record.option_gamma : null
-    };
+    } as PutPosition;
   });
 }
 
