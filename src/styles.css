@@ -1041,6 +1041,29 @@ textarea:focus {
   min-width: 140px;
 }
 
+.buy-rsi-alert-field {
+  min-width: 300px;
+}
+
+.buy-rsi-alert-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.buy-rsi-alert-control input {
+  flex: 0 0 140px;
+}
+
+.buy-rsi-alert-control .rsi-alert-badge {
+  min-height: 30px;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .beta-field span {
   font-size: 0.82rem;
   color: #486581;

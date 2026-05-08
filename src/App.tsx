@@ -7190,26 +7190,28 @@ function App() {
                       placeholder="到价清仓"
                     />
                   </label>
-                  <label className="beta-field">
+                  <label className="beta-field buy-rsi-alert-field">
                     <span>Buy RSI Alert</span>
-                    <input
-                      type="number"
-                      step="1"
-                      min="1"
-                      max="100"
-                      value={tickerDraft.buyRsiAlert}
-                      onChange={(event) => handleChangeTickerDraft(entry.ticker, 'buyRsiAlert', event.target.value)}
-                      disabled={!isEditingTicker}
-                      placeholder="e.g. 35"
-                    />
-                    {!isEditingTicker && buyRsiAlert !== null && rsiAlertState !== null && (
-                      <small className={`rsi-alert-badge rsi-alert-badge--${rsiAlertState}`}>
-                        {rsiAlertState === 'triggered' && `🔔 RSI ${rsi14?.toFixed(1)} ≤ ${buyRsiAlert} — Buy alert!`}
-                        {rsiAlertState === 'near' && `⚠️ RSI ${rsi14?.toFixed(1)} near ${buyRsiAlert}`}
-                        {rsiAlertState === 'approaching' && `📉 RSI ${rsi14?.toFixed(1)} approaching ${buyRsiAlert}`}
-                        {rsiAlertState === 'normal' && `RSI ${rsi14?.toFixed(1)} / alert ${buyRsiAlert}`}
-                      </small>
-                    )}
+                    <div className="buy-rsi-alert-control">
+                      <input
+                        type="number"
+                        step="1"
+                        min="1"
+                        max="100"
+                        value={tickerDraft.buyRsiAlert}
+                        onChange={(event) => handleChangeTickerDraft(entry.ticker, 'buyRsiAlert', event.target.value)}
+                        disabled={!isEditingTicker}
+                        placeholder="e.g. 35"
+                      />
+                      {!isEditingTicker && buyRsiAlert !== null && rsiAlertState !== null && (
+                        <small className={`rsi-alert-badge rsi-alert-badge--${rsiAlertState}`}>
+                          {rsiAlertState === 'triggered' && `🔔 RSI ${rsi14?.toFixed(1)} ≤ ${buyRsiAlert} — Buy alert!`}
+                          {rsiAlertState === 'near' && `⚠️ RSI ${rsi14?.toFixed(1)} near ${buyRsiAlert}`}
+                          {rsiAlertState === 'approaching' && `📉 RSI ${rsi14?.toFixed(1)} approaching ${buyRsiAlert}`}
+                          {rsiAlertState === 'normal' && `RSI ${rsi14?.toFixed(1)} / alert ${buyRsiAlert}`}
+                        </small>
+                      )}
+                    </div>
                   </label>
                   <label className="beta-field">
                     <span>Current price</span>
