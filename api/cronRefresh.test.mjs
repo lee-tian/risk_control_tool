@@ -303,4 +303,116 @@ describe('refreshAppStateSnapshot', () => {
       })
     ]);
   });
+
+  it('does not assign shares again for an expired option that is already closed', async () => {
+    const result = await refreshAppStateSnapshot(
+      {
+        version: 1,
+        exported_at: '2026-05-09T16:00:00.000Z',
+        data: {
+          config: { cash: 50000, risk_limit_pct: 0.04, warning_threshold_pct: 0.8 },
+          closedTrades: [
+            {
+              id: 'closed-nflx-90',
+              position_id: 'nflx-put-90',
+              ticker: 'NFLX',
+              option_side: 'put',
+              put_strike: 90,
+              premium_sold_per_share: 1.2,
+              premium_bought_back_per_share: 0,
+              contracts: 1,
+              date_sold: '2026-04-01',
+              expiration_date: '2026-05-08',
+              closed_at: '2026-05-09T10:40:24.237Z',
+              close_reason: 'expired',
+              realized_pnl: 120
+            }
+          ],
+          stockTrades: [
+            {
+              id: 'trade-nflx-90',
+              ticker: 'NFLX',
+              action: 'buy',
+              shares: 100,
+              price_per_share: 90,
+              traded_at: '2026-05-09T10:40:24.237Z',
+              cash_change: -9000,
+              realized_pnl: 0
+            }
+          ],
+          scenario: null,
+          vixHistory: [],
+          accountValueHistory: [],
+          tickerList: [
+            {
+              ticker: 'NFLX',
+              beta: 1.71,
+              shares: 700,
+              average_cost_basis: 95.61,
+              downside_tolerance_pct: null,
+              current_price: 87.54,
+              last_updated: '2026-05-08T20:56:04.000Z',
+              next_earnings_date: null,
+              current_iv: null,
+              current_iv_updated: null,
+              historical_iv: null,
+              iv_rank: null,
+              iv_percentile: null,
+              put_call_ratio: null,
+              put_call_ratio_updated: null,
+              provider_exchange: null,
+              provider_mic_code: null,
+              rsi_14: null,
+              rsi_14_1h: null,
+              rsi_updated: null,
+              ma_21: null,
+              ma_200: null
+            }
+          ],
+          puts: [
+            {
+              id: 'nflx-put-90',
+              ticker: 'NFLX',
+              option_side: 'put',
+              put_strike: 90,
+              premium_per_share: 1.2,
+              contracts: 1,
+              iv_rank: 30,
+              date_sold: '2026-04-01',
+              expiration_date: '2026-05-08',
+              option_market_price_per_share: null,
+              option_market_price_updated: null,
+              option_theta_per_share: null
+            }
+          ]
+        }
+      },
+      {
+        now: new Date('2026-05-09T16:06:40.395Z'),
+        force: true,
+        includeVix: false,
+        fetchQuoteBundleFn: vi.fn(async () => ({
+          quoteResult: { ok: false },
+          rsiResult: { ok: false },
+          rsi1hResult: { ok: false },
+          ma21Result: { ok: false },
+          ma200Result: { ok: false },
+          atrResult: { ok: false },
+          currentIvResult: { ok: false },
+          marketMetricsResult: { ok: false }
+        })),
+        sleepFn: vi.fn(async () => {})
+      }
+    );
+
+    expect(result.snapshot.data.puts).toEqual([]);
+    expect(result.snapshot.data.closedTrades).toHaveLength(1);
+    expect(result.snapshot.data.stockTrades).toHaveLength(1);
+    expect(result.snapshot.data.tickerList[0]).toMatchObject({
+      ticker: 'NFLX',
+      shares: 700,
+      average_cost_basis: 95.61
+    });
+    expect(result.snapshot.data.config.cash).toBe(50000);
+  });
 });

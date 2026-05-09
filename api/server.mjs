@@ -3317,6 +3317,11 @@ async function computeVixSnapshot() {
 function coerceSnapshot(snapshot, now = new Date()) {
   const exportedAt = now.toISOString();
   const data = typeof snapshot?.data === 'object' && snapshot.data !== null ? snapshot.data : {};
+  const closedTrades = Array.isArray(data.closedTrades)
+    ? data.closedTrades
+    : Array.isArray(data.history)
+      ? data.history
+      : [];
 
   return {
     version: 1,
@@ -3324,7 +3329,7 @@ function coerceSnapshot(snapshot, now = new Date()) {
     data: {
       config: data.config ?? null,
       puts: Array.isArray(data.puts) ? data.puts : [],
-      closedTrades: Array.isArray(data.closedTrades) ? data.closedTrades : [],
+      closedTrades,
       stockTrades: Array.isArray(data.stockTrades) ? data.stockTrades : [],
       tickerList: Array.isArray(data.tickerList) ? data.tickerList : [],
       scenario: data.scenario ?? null,
@@ -3429,7 +3434,7 @@ export async function refreshAppStateSnapshot(
   const nowMs = now.getTime();
   const nextTickerList = normalizedSnapshot.data.tickerList.map((entry) => ({ ...entry }));
   const nextPuts = normalizedSnapshot.data.puts.map((position) => ({ ...position }));
-  const nextHistory = Array.isArray(normalizedSnapshot.data.history) ? normalizedSnapshot.data.history.map((entry) => ({ ...entry })) : [];
+  const nextHistory = normalizedSnapshot.data.closedTrades.map((entry) => ({ ...entry }));
   const nextStockTrades = Array.isArray(normalizedSnapshot.data.stockTrades) ? normalizedSnapshot.data.stockTrades.map((entry) => ({ ...entry })) : [];
   const nextConfig = normalizedSnapshot.data.config ? { ...normalizedSnapshot.data.config } : { cash: 0, risk_limit_pct: 0.01, warning_threshold_pct: 0.8 };
   const staleTickerIndexes =
@@ -3676,8 +3681,17 @@ export async function refreshAppStateSnapshot(
   }
 
   const activePuts = [];
+  const closedPositionIds = new Set(
+    nextHistory
+      .map((entry) => (typeof entry?.position_id === 'string' ? entry.position_id : null))
+      .filter((positionId) => positionId !== null)
+  );
   for (const position of nextPuts) {
     if (isExpiredDateInput(position.expiration_date, now)) {
+      if (closedPositionIds.has(position.id)) {
+        continue;
+      }
+
       const realizedPnl = (position.premium_per_share || 0) * (position.contracts || 0) * 100;
       nextHistory.push({
         id: `closed_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`,
@@ -3694,6 +3708,7 @@ export async function refreshAppStateSnapshot(
         close_reason: 'expired',
         realized_pnl: realizedPnl
       });
+      closedPositionIds.add(position.id);
 
       const tickerIndex = nextTickerList.findIndex(t => t.ticker === position.ticker);
       if (tickerIndex !== -1) {
@@ -3762,7 +3777,7 @@ export async function refreshAppStateSnapshot(
       ...normalizedSnapshot.data,
       tickerList: nextTickerList,
       puts: nextPuts,
-      history: nextHistory,
+      closedTrades: nextHistory,
       stockTrades: nextStockTrades,
       config: nextConfig,
       accountValueHistory: nextAccountValueHistory
