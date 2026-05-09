@@ -46,18 +46,14 @@ describe('tickerWorkflow', () => {
       createTickerEntryFromDraft({
         ticker: ' nvda ',
         beta: '2.1',
-        shares: '100',
-        averageCostBasis: '830.5',
-        downsideTolerancePct: '15',
-        providerExchange: 'nasdaq',
-        providerMicCode: 'xnas'
+        buyRsiAlert: '35'
       })
     ).toEqual({
       ticker: 'NVDA',
       beta: 2.1,
-      shares: 100,
-      average_cost_basis: 830.5,
-      downside_tolerance_pct: 0.15,
+      shares: null,
+      average_cost_basis: null,
+      downside_tolerance_pct: null,
       current_price: null,
       last_updated: null,
       next_earnings_date: null,
@@ -68,13 +64,14 @@ describe('tickerWorkflow', () => {
       iv_percentile: null,
       put_call_ratio: null,
       put_call_ratio_updated: null,
-      provider_exchange: 'NASDAQ',
-      provider_mic_code: 'XNAS',
+      provider_exchange: null,
+      provider_mic_code: null,
       rsi_14: null,
       rsi_14_1h: null,
       rsi_updated: null,
       ma_21: null,
-      ma_200: null
+      ma_200: null,
+      buy_rsi_alert: 35
     });
   });
 
@@ -96,6 +93,23 @@ describe('tickerWorkflow', () => {
       shares: 50,
       average_cost_basis: 420,
       downside_tolerance_pct: 0.08
+    });
+  });
+
+  it('adds a ticker with only beta and RSI alert for the simplified add flow', () => {
+    const next = addTickerEntry(baseEntries, {
+      ticker: 'mcd',
+      beta: '0.7',
+      buyRsiAlert: '35'
+    });
+
+    expect(next.map((entry) => entry.ticker)).toEqual(['AAPL', 'MCD']);
+    expect(next[1]).toMatchObject({
+      ticker: 'MCD',
+      beta: 0.7,
+      shares: null,
+      average_cost_basis: null,
+      buy_rsi_alert: 35
     });
   });
 

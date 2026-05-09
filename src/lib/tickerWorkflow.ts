@@ -7,11 +7,12 @@ const TICKER_ALIASES: Record<string, string> = {
 export type TickerDraft = {
   ticker: string;
   beta: string;
-  shares: string;
-  averageCostBasis: string;
-  downsideTolerancePct: string;
-  providerExchange: string;
-  providerMicCode: string;
+  shares?: string;
+  averageCostBasis?: string;
+  downsideTolerancePct?: string;
+  providerExchange?: string;
+  providerMicCode?: string;
+  buyRsiAlert?: string;
 };
 
 export function normalizeTickerSymbol(ticker: string): string {
@@ -38,10 +39,10 @@ export function createTickerEntryFromDraft(draft: TickerDraft): TickerEntry | nu
   return {
     ticker,
     beta: toNullableNumber(draft.beta),
-    shares: toNullableNumber(draft.shares),
-    average_cost_basis: toNullableNumber(draft.averageCostBasis),
+    shares: toNullableNumber(draft.shares ?? ''),
+    average_cost_basis: toNullableNumber(draft.averageCostBasis ?? ''),
     downside_tolerance_pct:
-      draft.downsideTolerancePct.trim() === '' ? null : toNullableNumber(draft.downsideTolerancePct) === null
+      (draft.downsideTolerancePct ?? '').trim() === '' ? null : toNullableNumber(draft.downsideTolerancePct ?? '') === null
         ? null
         : Number(draft.downsideTolerancePct) / 100,
     current_price: null,
@@ -54,13 +55,14 @@ export function createTickerEntryFromDraft(draft: TickerDraft): TickerEntry | nu
     iv_percentile: null,
     put_call_ratio: null,
     put_call_ratio_updated: null,
-    provider_exchange: draft.providerExchange.trim() === '' ? null : draft.providerExchange.trim().toUpperCase(),
-    provider_mic_code: draft.providerMicCode.trim() === '' ? null : draft.providerMicCode.trim().toUpperCase(),
+    provider_exchange: (draft.providerExchange ?? '').trim() === '' ? null : (draft.providerExchange ?? '').trim().toUpperCase(),
+    provider_mic_code: (draft.providerMicCode ?? '').trim() === '' ? null : (draft.providerMicCode ?? '').trim().toUpperCase(),
     rsi_14: null,
     rsi_14_1h: null,
     rsi_updated: null,
     ma_21: null,
-    ma_200: null
+    ma_200: null,
+    buy_rsi_alert: toNullableNumber(draft.buyRsiAlert ?? '')
   };
 }
 

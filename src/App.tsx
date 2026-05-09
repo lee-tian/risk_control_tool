@@ -54,8 +54,7 @@ import {
   normalizeTickerSymbol,
   removeTickerEntry,
   sellTickerShares,
-  updateTickerEntry,
-  type TickerDraft
+  updateTickerEntry
 } from './lib/tickerWorkflow';
 import { validateConfig, validatePut, type ValidationErrors } from './lib/validation';
 import type {
@@ -93,7 +92,10 @@ type VixSnapshot = {
   cacheWriteError: string | null;
 };
 
-type TickerEditDraftValues = Pick<TickerDraft, 'beta' | 'shares' | 'averageCostBasis'> & {
+type TickerEditDraftValues = {
+  beta: string;
+  shares: string;
+  averageCostBasis: string;
   targetTrimPrice: string;
   buyRsiAlert: string;
 };
@@ -1216,11 +1218,7 @@ function App() {
   const [editingPutId, setEditingPutId] = useState<string | null>(initialOptionDraft.editingPutId);
   const [newTicker, setNewTicker] = useState('');
   const [newTickerBeta, setNewTickerBeta] = useState('');
-  const [newTickerShares, setNewTickerShares] = useState('');
-  const [newTickerAverageCost, setNewTickerAverageCost] = useState('');
-  const [newTickerTolerancePct, setNewTickerTolerancePct] = useState('');
-  const [newTickerExchange, setNewTickerExchange] = useState('');
-  const [newTickerMicCode, setNewTickerMicCode] = useState('');
+  const [newTickerBuyRsiAlert, setNewTickerBuyRsiAlert] = useState('');
   const [editingTickers, setEditingTickers] = useState<Record<string, boolean>>({});
   const [tickerDrafts, setTickerDrafts] = useState<Record<string, TickerEditDraftValues>>({});
   const [tickerMessage, setTickerMessage] = useState('');
@@ -3167,12 +3165,10 @@ function App() {
     const nextTickerList = addTickerEntry(tickerList, {
       ticker: newTicker,
       beta: newTickerBeta,
-      shares: newTickerShares,
-      averageCostBasis: newTickerAverageCost,
-      downsideTolerancePct: newTickerTolerancePct,
-      providerExchange: newTickerExchange,
-      providerMicCode: newTickerMicCode
+      buyRsiAlert: newTickerBuyRsiAlert
     });
+    tickerListRef.current = nextTickerList;
+    setTickerList(nextTickerList);
 
     try {
       await persistAppStateSnapshot(
@@ -3187,20 +3183,18 @@ function App() {
           accountValueHistory
         }),
         `已添加 ${normalized}`,
-        '添加股票标的失败'
+        '添加股票标的失败',
+        { saveMode: 'merge' }
       );
-      setTickerList(nextTickerList);
       setDeletedTickers((current) => current.filter((item) => item !== normalized));
       setPutForm((current) => ({ ...current, ticker: normalized }));
       setNewTicker('');
       setNewTickerBeta('');
-      setNewTickerShares('');
-      setNewTickerAverageCost('');
-      setNewTickerTolerancePct('');
-      setNewTickerExchange('');
-      setNewTickerMicCode('');
+      setNewTickerBuyRsiAlert('');
       setTickerMessage(`已添加 ${normalized}`);
     } catch (error) {
+      tickerListRef.current = tickerList;
+      setTickerList(tickerList);
       setTickerMessage(error instanceof Error ? error.message : '添加股票标的失败');
     }
   }
@@ -6951,25 +6945,15 @@ function App() {
               />
             </label>
             <label>
-              <span>Shares held</span>
+              <span>Buy RSI Alert</span>
               <input
                 type="number"
                 step="1"
-                min="0"
-                value={newTickerShares}
-                onChange={(event) => setNewTickerShares(event.target.value)}
-                placeholder="例如 100"
-              />
-            </label>
-            <label>
-              <span>Average cost</span>
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={newTickerAverageCost}
-                onChange={(event) => setNewTickerAverageCost(event.target.value)}
-                placeholder="例如 185.50"
+                min="1"
+                max="100"
+                value={newTickerBuyRsiAlert}
+                onChange={(event) => setNewTickerBuyRsiAlert(event.target.value)}
+                placeholder="例如 35"
               />
             </label>
           </div>

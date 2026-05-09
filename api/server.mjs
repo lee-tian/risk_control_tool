@@ -934,6 +934,10 @@ function mergeSnapshotPreservingExistingCoreState(incomingSnapshot, existingSnap
   const existingAccountValueHistory = Array.isArray(existingData.accountValueHistory) ? existingData.accountValueHistory : [];
   const incomingPuts = Array.isArray(incomingData.puts) ? incomingData.puts : [];
   const existingPuts = Array.isArray(existingData.puts) ? existingData.puts : [];
+  const closedPositionIds = buildMembershipSet(
+    [...existingClosedTrades, ...incomingClosedTrades],
+    (item) => item?.position_id
+  );
 
   const hasSamePositionMembership = compareObjectArrayMembership(incomingPuts, existingPuts, (item) => item?.id);
   const hasClosedTradeSuperset = hasObjectArraySuperset(incomingClosedTrades, existingClosedTrades, (item) => item?.id);
@@ -955,7 +959,9 @@ function mergeSnapshotPreservingExistingCoreState(incomingSnapshot, existingSnap
           : (() => {
               const incomingById = new Map(incomingPuts.map((p) => [p.id, p]));
               const existingById = new Map(existingPuts.map((p) => [p.id, p]));
-              const allIds = new Set([...existingById.keys(), ...incomingById.keys()]);
+              const allIds = new Set(
+                [...existingById.keys(), ...incomingById.keys()].filter((id) => !closedPositionIds.has(id))
+              );
 
               return [...allIds].map(id => {
                 const incoming = incomingById.get(id);
