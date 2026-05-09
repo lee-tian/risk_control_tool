@@ -14,6 +14,7 @@ import { getHistoryAnnualizedYield, getHistoryHoldingDays, getHistoryProfitPct }
 import { compareOptionRowsByLossPct, getAttentionLevel, getAttentionReasons, isOptionLossAtTwoXCredit } from './lib/optionAlerts';
 import { comparePositionRows, type PositionSortDirection, type PositionSortField } from './lib/positionSorting';
 import { applyQuoteRefreshToTickerList, parseJsonResponseText } from './lib/quoteRefresh';
+import { assessRewardRiskRatio, calculateRewardRiskRatio } from './lib/rewardRisk';
 import { buildOptionCapitalUsageByTicker, buildTopIvRankStocks } from './lib/dashboardSignals';
 import {
   buildCapitalAllocationChart,
@@ -919,6 +920,7 @@ const CURRENT_IV_CACHE_MS = 24 * 60 * 60 * 1000;
 
 const PRICE_REFRESH_GAP_MS = 2 * 1000;
 const PRICE_REFRESH_RETRY_GAP_MS = 20 * 1000;
+const BACKGROUND_REFRESH_STATUS_POLL_MS = 10 * 60 * 1000;
 const OPTION_REFRESH_ALL_CONCURRENCY = 1;
 const VIX_STRESS_Z = 1.45;
 
@@ -1549,6 +1551,18 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
+    let timer: number | null = null;
+
+    function scheduleNextBackgroundRefreshPoll() {
+      if (cancelled || timer !== null) {
+        return;
+      }
+
+      timer = window.setTimeout(() => {
+        timer = null;
+        void pollBackgroundRefreshStatus();
+      }, BACKGROUND_REFRESH_STATUS_POLL_MS);
+    }
 
     async function pollBackgroundRefreshStatus() {
       try {
@@ -1563,12 +1577,14 @@ function App() {
           return;
         }
 
-
+        if (nextStatus.status === 'running') {
+          scheduleNextBackgroundRefreshPoll();
+          return;
+        }
 
         if (
           nextStatus.finishedAt &&
-          nextStatus.finishedAt !== latestBackgroundRefreshFinishedAtRef.current &&
-          nextStatus.status !== 'running'
+          nextStatus.finishedAt !== latestBackgroundRefreshFinishedAtRef.current
         ) {
           latestBackgroundRefreshFinishedAtRef.current = nextStatus.finishedAt;
           const snapshotResponse = await fetch('/api/app-state');
@@ -1585,13 +1601,12 @@ function App() {
     }
 
     void pollBackgroundRefreshStatus();
-    const timer = window.setInterval(() => {
-      void pollBackgroundRefreshStatus();
-    }, 15 * 1000);
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
     };
   }, []);
 
@@ -7037,6 +7052,20 @@ function App() {
                     ? '平均价'
                     : '现价';
                 const atrStopPrice = atr14 !== null && atrBasisPrice !== null ? atrBasisPrice - atr14 : null;
+                const rewardRiskStopPrice =
+                  atr14 !== null && typeof currentPrice === 'number' && Number.isFinite(currentPrice)
+                    ? currentPrice - atr14
+                    : null;
+                const targetTrimPrice =
+                  typeof entry.target_trim_price === 'number' && Number.isFinite(entry.target_trim_price)
+                    ? entry.target_trim_price
+                    : null;
+                const rewardRiskRatio = calculateRewardRiskRatio({
+                  entryPrice: currentPrice,
+                  stopPrice: rewardRiskStopPrice,
+                  targetPrice: targetTrimPrice
+                });
+                const rewardRiskAssessment = assessRewardRiskRatio(rewardRiskRatio);
 
                 const rsi14 = typeof entry.rsi_14 === 'number' ? entry.rsi_14 : null;
                 const buyRsiAlert = typeof entry.buy_rsi_alert === 'number' ? entry.buy_rsi_alert : null;
@@ -7229,6 +7258,12 @@ function App() {
                       {atrStopPrice === null
                         ? '-'
                         : `${formatCurrency(atrStopPrice)} (${atrBasisLabel} ${formatCurrency(atrBasisPrice ?? 0)} - ATR ${formatCurrency(atr14 ?? 0)})`}
+                    </strong>
+                  </div>
+                  <div className="beta-field">
+                    <span>收益风险比</span>
+                    <strong className={rewardRiskAssessment === null ? 'field-value' : `pill-badge ${rewardRiskAssessment.tone}`}>
+                      {rewardRiskRatio === null ? '-' : `${rewardRiskRatio.toFixed(2)} : 1 · ${rewardRiskAssessment?.label}`}
                     </strong>
                   </div>
                   <div className="beta-field">
